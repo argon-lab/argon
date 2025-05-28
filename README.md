@@ -7,12 +7,12 @@
 <p align="center">
   <b>Transform your MongoDB workflows with Git-style branching, stateless compute, and S3-powered time-travel!</b>
   <br><br>
-  <a href="#🤔-why-argon">🤔 Why Argon?</a> •
-  <a href="#✨-features">✨ Features</a> •
-  <a href="#⚙️-how-it-works">⚙️ How it Works</a> •
-  <a href="#🚀-quickstart">🚀 Quickstart</a> •
+  <a href="docs/wiki/01_introduction.md">🤔 Why Argon?</a> •
+  <a href="docs/wiki/02_features.md">✨ Features</a> •
+  <a href="docs/wiki/05_how_it_works.md">⚙️ How it Works</a> •
+  <a href="docs/wiki/03_quickstart_guide.md">🚀 Quickstart</a> •
   <a href="#📚-dive-deeper-wiki">📚 Dive Deeper (Wiki)</a> •
-  <a href="#🤝-contributing">🤝 Contributing</a>
+  <a href="docs/wiki/09_contributing.md">🤝 Contributing</a>
 </p>
 
 <p align="center">
