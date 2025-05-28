@@ -236,17 +236,21 @@
                         <button class="btn btn-time btn-show-versions" data-branch-name="{{ b['branch_name'] }}">Show Versions ({{ b.versions|length }})</button>
                         <div class="versions-list" id="versions-{{ b['branch_name'] }}" style="display:none; margin-top:5px;">
                             {% for version in b.versions %}
-                                {% set full_timestamp = version.timestamp.replace(' ', 'T') %}
-                                {% if not full_timestamp.endswith('Z') %}
-                                    {% set full_timestamp = full_timestamp + 'Z' %}
-                                {% endif %}
-                                <span style="font-size:0.85em; opacity:0.7; display:block; margin-bottom:3px;">
-                                    {{ full_timestamp }} ({{ version.version_id[:7] }}) <button class="copy-btn" data-copy-text="{{ full_timestamp }}"><svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path></svg></button>
+                                <span style="font-size:0.85em; opacity:0.8; display:block; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                                    <span style="flex:1;">
+                                        {{ version.timestamp[:19].replace('T',' ') }}
+                                        <span style="opacity:0.7;">({{ version.version_id[:7] }})</span>
+                                    </span>
+                                    <button class="copy-btn" data-copy-text="{{ version.timestamp }}" title="Copy timestamp">
+                                        <svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em">
+                                            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path>
+                                        </svg>
+                                    </button>
                                 </span>
                             {% endfor %}
                         </div>
                     {% else %}
-                        N/A
+                        <span style="opacity:0.7;">No versions</span>
                     {% endif %}
                 </td>
                 <td class="actions">

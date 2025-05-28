@@ -31,20 +31,24 @@ CREATE TABLE IF NOT EXISTS branch_versions (
 );
 """
 
-def init_db():
+def init_db(db_path=None):
     """Initialize the metadata database and table if not exists."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute(BRANCHES_TABLE)
     c.execute(VERSIONS_TABLE)
     conn.commit()
     conn.close()
 
-def add_branch(branch_name, project_name, port, container_id, s3_path, status='running', last_active=None):
+def add_branch(branch_name, project_name, port, container_id, s3_path, status='running', last_active=None, db_path=None):
     """Add a branch record to the database."""
     if not last_active:
         last_active = datetime.utcnow().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute(
         "INSERT INTO branches (branch_name, project_name, port, container_id, s3_path, status, last_active) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -53,25 +57,31 @@ def add_branch(branch_name, project_name, port, container_id, s3_path, status='r
     conn.commit()
     conn.close()
 
-def update_branch_status(branch_name, project_name, status):
+def update_branch_status(branch_name, project_name, status, db_path=None):
     """Update the status of a branch."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute("UPDATE branches SET status = ?, last_active = ? WHERE branch_name = ? AND project_name = ?", (status, datetime.utcnow().isoformat(), branch_name, project_name))
     conn.commit()
     conn.close()
 
-def update_branch_last_active(branch_name, project_name):
+def update_branch_last_active(branch_name, project_name, db_path=None):
     """Update the last_active timestamp for a branch."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute("UPDATE branches SET last_active = ? WHERE branch_name = ? AND project_name = ?", (datetime.utcnow().isoformat(), branch_name, project_name))
     conn.commit()
     conn.close()
 
-def get_all_branches(project_name=None):
+def get_all_branches(project_name=None, db_path=None):
     """Return all branch records, optionally filtered by project."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     if project_name:
         c.execute("SELECT branch_name, port, container_id, s3_path, status, last_active FROM branches WHERE project_name = ?", (project_name,))
@@ -90,9 +100,11 @@ def get_all_branches(project_name=None):
         } for row in rows
     ]
 
-def get_branch(branch_name, project_name):
+def get_branch(branch_name, project_name, db_path=None):
     """Return metadata for a single branch."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute("SELECT branch_name, port, container_id, s3_path, status, last_active FROM branches WHERE branch_name = ? AND project_name = ?", (branch_name, project_name))
     row = c.fetchone()
@@ -108,9 +120,11 @@ def get_branch(branch_name, project_name):
         }
     return None
 
-def remove_branch(branch_name, project_name):
+def remove_branch(branch_name, project_name, db_path=None):
     """Remove a branch record from the database."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute("DELETE FROM branches WHERE branch_name = ? AND project_name = ?", (branch_name, project_name))
     # Also remove associated versions
@@ -118,9 +132,11 @@ def remove_branch(branch_name, project_name):
     conn.commit()
     conn.close()
 
-def add_branch_version(branch_name, project_name, s3_path, version_id, timestamp):
+def add_branch_version(branch_name, project_name, s3_path, version_id, timestamp, db_path=None):
     """Add a branch version record."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute(
         "INSERT INTO branch_versions (branch_name, project_name, s3_path, version_id, timestamp) VALUES (?, ?, ?, ?, ?)",
@@ -129,9 +145,11 @@ def add_branch_version(branch_name, project_name, s3_path, version_id, timestamp
     conn.commit()
     conn.close()
 
-def get_branch_versions(branch_name, project_name):
+def get_branch_versions(branch_name, project_name, db_path=None):
     """Get all versions for a specific branch, ordered by timestamp descending."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute(
         "SELECT s3_path, version_id, timestamp FROM branch_versions WHERE branch_name = ? AND project_name = ? ORDER BY timestamp DESC",
@@ -147,9 +165,11 @@ def get_branch_versions(branch_name, project_name):
         } for row in rows
     ]
 
-def get_branch_version_by_time(branch_name, project_name, timestamp_str):
+def get_branch_version_by_time(branch_name, project_name, timestamp_str, db_path=None):
     """Get the latest branch version at or before a specific timestamp."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute(
         "SELECT version_id, timestamp, s3_path FROM branch_versions WHERE branch_name = ? AND project_name = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
