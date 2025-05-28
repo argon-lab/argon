@@ -1,3 +1,6 @@
+Wiki Navigation
+[README](../../README.md) | [Introduction & Motivation](01_introduction.md) | [Features](02_features.md) | [Quickstart Guide](03_quickstart_guide.md) | [Demo Scenario](04_demo_scenario.md) | [How it Works](05_how_it_works.md) | [Environment Variables](06_environment_variables.md) | [Folder Structure](07_folder_structure.md) | [Project Status](08_status.md) | [Contributing](09_contributing.md)
+
 ## ✨ Features
 
 Argon empowers you with a suite of powerful features:
@@ -15,3 +18,5 @@ Argon empowers you with a suite of powerful features:
 *   **🖥️ Web Dashboard (Experimental):**
     *   A basic web interface for visualizing and managing branches.
     *   Includes an experimental auto-suspend feature for idle branches to save resources.
+
+[Previous: Introduction](01_introduction.md) | [Next: Quickstart Guide](03_quickstart_guide.md)

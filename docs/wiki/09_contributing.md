@@ -1,3 +1,11 @@
+Wiki Navigation
+[README](../../README.md) | [Introduction & Motivation](01_introduction.md) | [Features](02_features.md) | [Quickstart Guide](03_quickstart_guide.md) | [Demo Scenario](04_demo_scenario.md) | [How it Works](05_how_it_works.md) | [Environment Variables](06_environment_variables.md) | [Folder Structure](07_folder_structure.md) | [Project Status](08_status.md) | [Contributing](09_contributing.md)
+
+## Table of Contents
+- [Reporting Bugs & Suggesting Features](#🐛-reporting-bugs--suggesting-features)
+- [Code Contributions](#📝-code-contributions)
+- [Further Details](#📜-further-details)
+
 ## 🤝 Contributing to Argon
 
 We welcome contributions to Argon! Whether it's bug reports, feature suggestions, documentation improvements, or code contributions, your help is appreciated.
@@ -23,3 +31,5 @@ We welcome contributions to Argon! Whether it's bug reports, feature suggestions
 More detailed contribution guidelines, coding standards, and development setup instructions will be added to the main [`CONTRIBUTING.md`](../../CONTRIBUTING.md) file in the root of the repository.
 
 Thank you for your interest in contributing to Argon! 🎉
+
+[Previous: Project Status](08_status.md)

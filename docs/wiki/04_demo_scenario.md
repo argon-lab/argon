@@ -1,3 +1,18 @@
+Wiki Navigation
+[README](../../README.md) | [Introduction & Motivation](01_introduction.md) | [Features](02_features.md) | [Quickstart Guide](03_quickstart_guide.md) | [Demo Scenario](04_demo_scenario.md) | [How it Works](05_how_it_works.md) | [Environment Variables](06_environment_variables.md) | [Folder Structure](07_folder_structure.md) | [Project Status](08_status.md) | [Contributing](09_contributing.md)
+
+## Table of Contents
+- [Create a project](#1--create-a-project)
+- [Create a branch](#2--create-a-branch)
+- [List branches](#3--list-branches)
+- [Get connection string and make a change](#4--get-connection-string-and-make-a-change)
+- [Suspend the branch](#5--suspend-the-branch-creates-version-1)
+- [Resume the branch and make another change](#6--resume-the-branch-and-make-another-change)
+- [Suspend the branch again](#7--suspend-the-branch-again-creates-version-2)
+- [Time-Travel: Create a new branch from an older version](#8--⏳-time-travel-create-a-new-branch-from-an-older-version)
+- [Verify the time-traveled branch](#9--verify-the-time-traveled-branch)
+- [Clean up](#10-🧹-clean-up)
+
 ##🧪 Demo Scenario: Your First Branch
 
 Let's walk through a common workflow with Argon:
@@ -65,3 +80,5 @@ Let's walk through a common workflow with Argon:
     python3 cli/main.py branch delete dev-branch --project my-first-project
     python3 cli/main.py branch delete dev-branch-v1 --project my-first-project
     ```
+
+[Previous: Quickstart Guide](03_quickstart_guide.md) | [Next: How it Works](05_how_it_works.md)

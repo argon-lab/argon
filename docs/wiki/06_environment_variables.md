@@ -1,3 +1,12 @@
+Wiki Navigation
+[README](../../README.md) | [Introduction & Motivation](01_introduction.md) | [Features](02_features.md) | [Quickstart Guide](03_quickstart_guide.md) | [Demo Scenario](04_demo_scenario.md) | [How it Works](05_how_it_works.md) | [Environment Variables](06_environment_variables.md) | [Folder Structure](07_folder_structure.md) | [Project Status](08_status.md) | [Contributing](09_contributing.md)
+
+## Table of Contents
+- [Environment Variables](#⚙️-environment-variables)
+- [AWS Configuration](#aws-configuration)
+- [Argon Configuration](#argon-configuration)
+- [Notes](#notes)
+
 ## ⚙️ Environment Variables
 
 Create a `.env` file in the root of the project. You can copy `.env.example` to get started:
@@ -25,3 +34,5 @@ DASHBOARD_AUTO_SUSPEND_IDLE_MINUTES=60 # Optional: Minutes of inactivity before 
 *   `ARGON_BASE_SNAPSHOT_S3_PATH`: This is the S3 key where Argon expects to find the initial MongoDB dump archive when creating the very first branch of a project if no other source is specified.
 *   `ARGON_AUTO_SUSPEND_ENABLED`: Controls the experimental auto-suspend feature in the web dashboard.
 *   `DASHBOARD_AUTO_SUSPEND_IDLE_MINUTES`: If auto-suspend is enabled, this defines the period of inactivity (no requests to the branch's MongoDB port) before a branch is automatically suspended.
+
+[Previous: How it Works](05_how_it_works.md) | [Next: Folder Structure](07_folder_structure.md)

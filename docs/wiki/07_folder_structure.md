@@ -1,3 +1,6 @@
+Wiki Navigation
+[README](../../README.md) | [Introduction & Motivation](01_introduction.md) | [Features](02_features.md) | [Quickstart Guide](03_quickstart_guide.md) | [Demo Scenario](04_demo_scenario.md) | [How it Works](05_how_it_works.md) | [Environment Variables](06_environment_variables.md) | [Folder Structure](07_folder_structure.md) | [Project Status](08_status.md) | [Contributing](09_contributing.md)
+
 ## 📁 Folder Structure
 
 Here's a brief overview of the project's layout:
@@ -43,3 +46,5 @@ argon/
 *   `dashboard/`: Contains the files for the experimental web dashboard.
 *   `data/`: Provides sample data, like a base MongoDB dump, to help users get started quickly.
 *   `docs/wiki/`: This is where detailed documentation and guides are stored.
+
+[Previous: Environment Variables](06_environment_variables.md) | [Next: Project Status](08_status.md)
