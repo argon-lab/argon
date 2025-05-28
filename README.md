@@ -1,262 +1,129 @@
 <p align="center">
-  <img src="dashboard/static/argon-logo.png" alt="Argon Logo" width="120"/>
+  <img src="dashboard/static/argon-logo.png" alt="Argon Logo" width="150"/>
 </p>
 
-<h1 align="center">Argon: Serverless, Branchable MongoDB Platform</h1>
+<h1 align="center">🚀 Argon: Serverless, Branchable MongoDB Platform 🚀</h1>
 
 <p align="center">
-  <b>Git-style branching, stateless compute, and S3-powered time-travel for MongoDB</b><br>
-  <a href="#quickstart">Quickstart</a> • <a href="#features">Features</a> • <a href="#demo-scenario">Demo Scenario</a> • <a href="#how-it-works">How it works</a> • <a href="#contributing">Contributing</a>
+  <b>Transform your MongoDB workflows with Git-style branching, stateless compute, and S3-powered time-travel!</b>
+  <br><br>
+  <a href="#🤔-why-argon">🤔 Why Argon?</a> •
+  <a href="#✨-features">✨ Features</a> •
+  <a href="#⚙️-how-it-works">⚙️ How it Works</a> •
+  <a href="#🚀-quickstart">🚀 Quickstart</a> •
+  <a href="#📚-dive-deeper-wiki">📚 Dive Deeper (Wiki)</a> •
+  <a href="#🤝-contributing">🤝 Contributing</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+"> 
+  <img src="https://img.shields.io/badge/docker-required-blue.svg" alt="Docker Required"> 
+  <img src="https://img.shields.io/badge/AWS%20S3-required-orange.svg" alt="AWS S3 Required"> 
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
 </p>
 
 ---
 
-## Why Argon? (Motivation)
-Modern data teams need to experiment, branch, and collaborate on databases just like they do with code. Traditional MongoDB deployments are monolithic, stateful, and hard to branch or time-travel. Argon brings Git-style workflows to MongoDB, enabling rapid prototyping, isolated development, and safe experimentation—without the cost and complexity of managing full database clones. By separating compute from storage and leveraging S3 for versioned snapshots, Argon enables stateless, serverless, and cost-efficient database environments that can be branched, suspended, resumed, or restored on demand.
+## 🤔 Why Argon?
 
-## Features
-- **Git-style branching for MongoDB:** Create, list, delete, suspend, and resume branches.
-- **Stateless Compute:** MongoDB instances run in Docker containers, isolated from persistent storage.
-- **S3-Powered Storage:** Branch data is stored as versioned snapshots in AWS S3, enabling durability and point-in-time recovery.
-- **Time-Travel/Restore:** Create new branches from historical snapshots of existing branches.
-- **CLI:** A command-line interface for managing projects and branches.
-- **Web Dashboard (Experimental):** A basic web interface for visualizing and managing branches. Includes an experimental auto-suspend feature for idle branches.
+Ever wished you could manage your databases with the same flexibility as your code? Traditional MongoDB setups can be rigid and resource-intensive, making it challenging to:
 
-## Quickstart
+*   🧪 **Experiment Freely:** Quickly spin up isolated environments for testing new features or data models without impacting production.
+*   🌳 **Branch & Version Data:** Create independent "branches" of your database for different development tasks, just like Git.
+*   롤백 **Rollback Easily:** "Time-travel" to previous data states effortlessly if something goes wrong.
+*   💰 **Optimize Costs:** Avoid paying for idle, full-scale database clones.
 
-1.  **Prerequisites:**
-    *   Docker installed and running.
-    *   AWS CLI installed and configured with credentials that have S3 access.
-    *   Python 3.8+
+Argon addresses these pain points by bringing the power of **Git-like branching, stateless compute, and S3-backed versioning** to MongoDB. It empowers developers and data teams to work more agilely, collaborate effectively, and innovate faster.
 
-2.  **Clone the repository:**
-    ```sh
-    git clone https://github.com/your-username/argon.git # Replace with your repo path
-    cd argon
-    ```
+👉 **[Discover the full motivation (Wiki)](./docs/wiki/01_introduction.md)**
 
-3.  **Install dependencies:**
-    ```sh
-    pip install -r requirements.txt
-    ```
+## ✨ Features
 
-4.  **Set up environment variables:**
-    *   Copy the provided `.env.example` file to a new file named `.env`:
-        ```sh
-        cp .env.example .env
-        ```
-    *   Edit the `.env` file to provide your AWS S3 bucket name, AWS credentials, and other configurations as needed. See the "Environment Variables" section below for details on each variable.
+Argon is packed with features to supercharge your database workflows:
 
-5.  **Prepare a base MongoDB snapshot:**
-    *   Argon needs an initial `dump.archive` in your S3 bucket at the path `base/dump.archive`.
-    *   You can create this from any MongoDB database. For a quick test, you can use the provided `data/base_dump.archive`:
-        *   Copy the sample dump to your S3 bucket (replace `<your-s3-bucket>`):\n            ```sh\n            aws s3 cp data/base_dump.archive s3://<your-s3-bucket>/base/dump.archive\n            ```
-        *   Alternatively, to create one from scratch:
-            *   Ensure a local MongoDB instance is running.
-            *   Insert some data if it's a new instance:
-                ```sh
-                mongo --eval \'db.test.insertOne({message: "Hello Argon Base!"});\'
-                ```
-            *   Create the dump:
-                ```sh
-                mongodump --archive=./base_dump.archive --gzip --db test 
-                ```
-            *   Upload to your S3 bucket (replace `<your-s3-bucket>`):
-                ```sh
-                aws s3 cp ./base_dump.archive s3://<your-s3-bucket>/base/dump.archive
-                ```
-        *   Make sure your `.env` file has `S3_BUCKET=<your-s3-bucket>`.
+*   **🌿 Git-style Branching:** Create, suspend, resume, and delete database branches.
+*   **💨 Stateless Compute:** MongoDB runs in lightweight Docker containers, decoupled from persistent storage.
+*   **💾 S3-Powered Storage:** Durable, versioned snapshots of your data are stored efficiently in AWS S3.
+*   **⏳ Time-Travel:** Restore or create new branches from any historical snapshot.
+*   **⌨️ Powerful CLI:** A comprehensive command-line interface to manage all aspects of Argon.
+*   **🖥️ Web Dashboard (Experimental):** Visualize and manage branches, with an optional auto-suspend feature for idle instances.
 
-6.  **Initialize Argon's metadata database:**
-    ```sh
-    python3 cli/main.py
-    ```
-    *(Running the CLI for the first time initializes the necessary local SQLite databases.)*
+👉 **[Explore all features in detail (Wiki)](./docs/wiki/02_features.md)**
 
+## ⚙️ How it Works
 
-## Demo Scenario: Your First Branch
+Argon cleverly combines Docker for containerization, AWS S3 for persistent, versioned storage, and a local metadata database to manage your branches:
 
-1.  **Create a project:**
-    ```sh
-    python3 cli/main.py project create my-first-project
-    ```
+1.  **Branch Creation:** When you create a branch, Argon can start from a base snapshot (e.g., a clean database or a production dump) stored in S3. It pulls this snapshot and launches a new, isolated MongoDB instance in a Docker container.
+2.  **Making Changes:** You connect to this containerized MongoDB as usual and make your changes.
+3.  **Suspending a Branch:** When you suspend a branch, Argon takes a snapshot (dump) of the container's current data, uploads it to S3 (creating a new version), and then stops and removes the Docker container, freeing up local resources.
+4.  **Resuming a Branch:** To resume, Argon pulls the latest (or a specified) snapshot for that branch from S3 and starts a fresh Docker container with that data.
+5.  **Time-Travel:** You can create a *new* branch from any historical snapshot of an existing branch, effectively rolling back to or inspecting a previous data state in an isolated environment.
 
-2.  **Create a branch:** This will pull the `base/dump.archive` from S3 and start a new MongoDB container.
-    ```sh
-    python3 cli/main.py branch create dev-branch --project my-first-project
-    ```
-
-3.  **List branches:** You\'ll see `dev-branch` running on a specific port.
-    ```sh
-    python3 cli/main.py branch list --project my-first-project
-    ```
-
-4.  **Get connection string and make a change:**
-    ```sh
-    python3 cli/main.py connect dev-branch --project my-first-project
-    # Use the output connection string with mongo shell or Compass
-    # mongo "mongodb://localhost:PORT" --eval \'db.test.insertOne({change: "first change"});\'
-    ```
-
-5.  **Suspend the branch (creates version 1):** This snapshots its current state to S3 and stops the container.
-    ```sh
-    python3 cli/main.py branch suspend dev-branch --project my-first-project
-    ```
-
-6.  **Resume the branch and make another change:**
-    ```sh
-    python3 cli/main.py branch resume dev-branch --project my-first-project
-    python3 cli/main.py connect dev-branch --project my-first-project
-    # mongo "mongodb://localhost:PORT" --eval \'db.test.insertOne({change: "second change"});\'
-    ```
-
-7.  **Suspend the branch again (creates version 2):**
-    ```sh
-    python3 cli/main.py branch suspend dev-branch --project my-first-project
-    ```
-
-8.  **Time-Travel: Create a new branch from an older version:**
-    *   First, list available versions for `dev-branch`. Note the `timestamp` of the *first* snapshot (after "first change").
-        ```sh
-        python3 cli/main.py branch list-versions dev-branch --project my-first-project
-        ```
-    *   Create `dev-branch-v1` from that specific snapshot using its timestamp. The `NAME` argument (`dev-branch-v1` here) is the name for the new branch. Replace `<TIMESTAMP_OF_FIRST_SNAPSHOT>` with the actual timestamp (e.g., `YYYY-MM-DDTHH:MM:SSZ`).
-        ```sh
-        python3 cli/main.py branch time-travel dev-branch-v1 --project my-first-project --from-branch dev-branch --timestamp <TIMESTAMP_OF_FIRST_SNAPSHOT>
-        ```
-    *   (Alternatively, if your S3 bucket has versioning enabled and `list-versions` shows valid S3 Version IDs, you might need a different command or the `time-travel` command would need to be enhanced to support `--version-id`. For now, timestamp is the primary method.)
-
-9.  **Verify the time-traveled branch:**
-    Connect to `dev-branch-v1` and check its data. It should only contain "first change".
-    ```sh
-    python3 cli/main.py connect dev-branch-v1 --project my-first-project
-    # mongo "mongodb://localhost:PORT_OF_V1" --eval \'db.test.find();\' 
-    # This should show {change: "first change"} but not {change: "second change"}
-    ```
-
-10. **Clean up:** Delete the branches.
-    ```sh
-    python3 cli/main.py branch delete dev-branch --project my-first-project
-    python3 cli/main.py branch delete dev-branch-v1 --project my-first-project
-    ```
-
-## How it works
-- **Create branch:** Restores MongoDB from S3 snapshot, starts a container.
-- **Suspend branch:** Snapshots running container to S3, stops/removes container.
-- **Resume branch:** Restores from S3, starts a new container (stateless compute).
-- **Delete branch:** Snapshots to S3, removes container and metadata.
-- **S3:** All branch data is versioned and stored in S3 for time-travel/restore.
-
-## High-Level Design
-
-Argon consists of a few key components that work together to provide branchable, serverless MongoDB environments.
-
-### Core Components:
-*   **Argon CLI (`cli/main.py`):** The primary user interface for managing projects and branches. It interacts with the `BranchManager` and `Metadata` store.
-*   **Branch Manager (`core/branch_manager.py`):** Contains the core logic for branch operations (create, suspend, resume, delete, time-travel). It orchestrates interactions between Docker, S3, and the metadata store.
-*   **Docker Utilities (`core/docker_utils.py`):** Manages Docker containers for running MongoDB instances. Handles starting, stopping, and interacting with containers.
-*   **S3 Utilities (`core/s3_utils.py`):** Handles uploading and downloading MongoDB snapshots (dumps) to/from AWS S3.
-*   **Metadata Store (`core/metadata.py`):** A SQLite database that stores information about projects, branches, their states, container details, S3 paths, and versions.
-*   **Dashboard (`dashboard/app.py`):** An experimental web interface providing a GUI for some operations.
-
-### Component Interaction Diagram:
+This architecture ensures that your MongoDB instances are **stateless** (compute is separate from storage), **cost-effective** (only pay for S3 storage for suspended branches and compute when running), and **highly flexible**.
 
 ```text
-                               +-----------------+
-                               |      User       |
-                               +-----------------+
-                                   /          \\
-                                  /            \\
-                 +-----------------+      +----------------------+
-                 |    Argon CLI    |      | Web Dashboard (Exp.) |
-                 +-----------------+      +----------------------+
-                       \\                         /
-                        \\                       /
-                         +---------------------+
-                         |  Branch Manager API |
-                         +---------------------+
-                           /       |         \\
-                          /        |          \\
-   +------------------------+  +---------------------+  +--------------------+
-   | Metadata Service (.py) |  | Docker Service (.py)|  | S3 Service (.py)   |
-   +------------------------+  +---------------------+  +--------------------+
-           |                            |                        |
-           |                            |                        |
-+------------------------+  +---------------------+  +--------------------+
-|   SQLite Metadata DB   |  |    Docker Engine    |  | AWS S3 Bucket      |
-+------------------------+  +---------------------+  +--------------------+
++-----------------+      +---------------------+      +-----------------+
+|      User       |----->|      Argon CLI      |<---->| Metadata (SQLite)|
++-----------------+      +---------------------+      +-----------------+
+                             |          ^
+                             |          | (Snapshot/Restore)
+                             V          |
+                       +---------------------+      +-----------------+
+                       | Docker (MongoDB     |----->|  AWS S3 Bucket  |
+                       |       Containers)   |      | (Snapshots)     |
+                       +---------------------+      +-----------------+
 ```
 
-### Branch State Flowchart:
+👉 **[Get the deep dive on architecture and state flows (Wiki)](./docs/wiki/05_how_it_works.md)**
 
-A branch in Argon can go through several states:
+## 🚀 Quickstart
 
-```text
-+----------------+
-| Does Not Exist |
-+----------------+
-       |
-       | create
-       V
-+----------------+
-|    Running     | ----> suspend ----> +-----------+
-+----------------+ <---- resume  <---- | Suspended |
-       |    ^                             +-----------+
-       |    |                                  |
-       | delete                              | delete
-       |    |                                  |
-       V    +---------------------------------+
-+----------------+
-|     Deleted    |
-| (Snapshotted)  |
-+----------------+
+Ready to jump in? Get Argon running in minutes!
 
+1.  **✅ Prerequisites:** Docker, AWS CLI (configured), Python 3.8+.
+2.  **📥 Clone:** `git clone https://github.com/jakezwang/argon.git && cd argon`
+3.  **🛠️ Install:** `pip install -r requirements.txt`
+4.  **🔑 Configure:** Copy `.env.example` to `.env` and fill in your details (especially `S3_BUCKET`).
+5.  **📦 Base Snapshot:** Ensure `base/dump.archive` is in your S3 bucket (see wiki for details).
+6.  **🏁 Initialize:** `python3 cli/main.py` (first run initializes local DB).
 
-Running State ----> time-travel (creates new branch in Running state)
-Suspended State --> time-travel (creates new branch in Running state)
-```
+👉 **[View the full Quickstart Guide (Wiki)](./docs/wiki/03_quickstart_guide.md)**
 
-*   **Running:** The branch has an active MongoDB container associated with it.
-*   **Suspended:** The branch data is snapshotted to S3, and the container is stopped/removed.
-*   **Deleted/Snapshotted:** The branch metadata is removed (or marked deleted), and its final state is snapshotted to S3. The container is removed.
-*   **Time-travel:** Creates a *new* branch from a historical snapshot of an existing branch. The original branch's state doesn't change directly due to this operation on its history.
+## 🧪 Demo Scenario
 
-## Environment Variables
-Create a `.env` file in the root of the project with the following variables:
+See Argon in action! Follow our step-by-step demo to create, branch, modify, and time-travel your first Argon-powered MongoDB.
 
-```env
-# AWS Configuration
-AWS_ACCESS_KEY_ID=your_aws_access_key_id
-AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
-AWS_DEFAULT_REGION=your_aws_region # e.g., us-east-1
-S3_BUCKET=your_argon_s3_bucket_name # The S3 bucket Argon will use
+👉 **[Walk through the Demo Scenario (Wiki)](./docs/wiki/04_demo_scenario.md)**
 
-# Argon Configuration
-ARGON_BASE_SNAPSHOT_S3_PATH=base/dump.archive # Default S3 path for the base snapshot
-ARGON_AUTO_SUSPEND_ENABLED=true # Set to true to enable dashboard auto-suspend, false to disable
-DASHBOARD_AUTO_SUSPEND_IDLE_MINUTES=60 # Optional: Minutes of inactivity before auto-suspend (if enabled)
-```
-*(Note: For local development without exposing AWS keys directly in `.env`, consider using AWS CLI profiles or instance roles if deploying.)*
+## 📚 Dive Deeper (Wiki)
 
+Want to understand the nuts and bolts? Our wiki has you covered:
 
-## Folder Structure
-- `core/` - Core logic (branching, Docker, S3, metadata)
-- `cli/` - CLI tool
-- `dashboard/` - Minimal dashboard
-- `data/` - Sample data (e.g., `base_dump.archive`).
+*   [🤔 Introduction & Motivation](./docs/wiki/01_introduction.md)
+*   [✨ Features](./docs/wiki/02_features.md)
+*   [⚙️ How Argon Works & High-Level Design](./docs/wiki/05_how_it_works.md)
+*   [🚀 Quickstart Guide](./docs/wiki/03_quickstart_guide.md)
+*   [🧪 Demo Scenario](./docs/wiki/04_demo_scenario.md)
+*   [🔑 Environment Variables](./docs/wiki/06_environment_variables.md)
+*   [📁 Folder Structure](./docs/wiki/07_folder_structure.md)
+*   [📊 Project Status](./docs/wiki/08_status.md)
+*   [🤝 Contributing to Argon](./docs/wiki/09_contributing.md)
 
-## Status (Initial Launch)
-- [x] Core: Project and Branch CRUD (create, list, delete, suspend, resume) via CLI.
-- [x] Core: Stateless compute with Docker.
-- [x] Core: S3 backend for snapshot/restore.
-- [x] Core: Time-travel for branches via CLI.
-- [x] CLI for all core operations.
-- [x] Basic Web Dashboard (experimental, with auto-suspend feature).
-- [ ] Comprehensive automated tests.
-- [ ] Detailed contribution guidelines.
+## 📈 Status
 
-See the dashboard or run `python3 cli/main.py --help` for more.
+Argon is currently in its initial launch phase. Key features are operational, and we're actively working on improvements and new capabilities.
 
-## Contributing
-Contributions are welcome! Please open an issue to discuss your ideas or report bugs.
-(Further details to be added in `CONTRIBUTING.md`)
+👉 **[Check the current Project Status (Wiki)](./docs/wiki/08_status.md)**
+
+## 🤝 Contributing
+
+Contributions are highly welcome! Whether it's bug reports, feature ideas, or code, let's make Argon better together.
+
+👉 **[Learn how to Contribute (Wiki)](./docs/wiki/09_contributing.md)**
+
+(Further details in [`CONTRIBUTING.md`](./CONTRIBUTING.md))
+
+## 📜 License
+
+Argon is open-source software licensed under the [MIT License](./LICENSE).
