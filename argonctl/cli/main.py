@@ -26,10 +26,10 @@ elif os.path.exists(dotenv_path_user):
 # Core module imports (direct, assuming correct packaging)
 # These are placed after dotenv loading so modules can use env vars at import time if they need to
 try:
-    from core.project_manager import ProjectManager
-    from core.db_utils import get_core_db_path # Corrected import
-    from core.branch_manager import BranchManager
-    from core.metadata import init_db as init_core_db # Removed broken imports
+    from argonctl.core.project_manager import ProjectManager
+    from argonctl.core.db_utils import get_core_db_path # Corrected import
+    from argonctl.core.branch_manager import BranchManager
+    from argonctl.core.metadata import init_db as init_core_db # Removed broken imports
     # from core.utils import ensure_argon_dir # If needed
 except ImportError as e:
     print(f"Error importing core modules: {e}. Ensure Argon is installed correctly and core modules are accessible.")
@@ -251,7 +251,7 @@ def time_travel(
 ):
     """Restore a new branch from a historical snapshot of another branch (time-travel)."""
     _check_project_exists(project)
-    from core.metadata import get_branch_version_by_time
+    from argonctl.core.metadata import get_branch_version_by_time
     # Normalize timestamp: replace space with T if needed
     ts = timestamp.strip().replace(' ', 'T')
     vinfo = get_branch_version_by_time(from_branch, project, ts, db_path=None)
@@ -290,7 +290,7 @@ def list_versions(
 ):
     """List all available snapshot versions for a branch."""
     _check_project_exists(project)
-    from core.metadata import get_branch_versions
+    from argonctl.core.metadata import get_branch_versions
     versions = get_branch_versions(name, project)
     if not versions:
         console.print(f"[yellow]No versions found for branch '{name}' in project '{project}'.[/yellow]")

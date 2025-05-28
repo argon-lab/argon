@@ -18,9 +18,26 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+"> 
   <img src="https://img.shields.io/badge/docker-required-blue.svg" alt="Docker Required"> 
-  <img src="https://img.shields.io/badge/AWS%20S3-required-orange.svg" alt="AWS S3 Required"> 
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/AWS%20S3-required-orange.svg" alt="AWS S3 Required">
+  <img src="https://img.shields.io/pypi/v/argonctl.svg" alt="PyPI version">
+  <img src="https://img.shields.io/pypi/dm/argonctl.svg" alt="PyPI downloads">
 </p>
+
+## 🚀 Installation
+
+### Via pip (Recommended)
+
+```bash
+pip install argonctl
+```
+
+### From source
+
+```bash
+git clone https://github.com/argon-lab/argon.git
+cd argon
+pip install -e .
+```
 
 ---
 
@@ -82,11 +99,10 @@ This architecture ensures that your MongoDB instances are **stateless** (compute
 Ready to jump in? Get Argon running in minutes!
 
 1.  **✅ Prerequisites:** Docker, AWS CLI (configured), Python 3.8+.
-2.  **📥 Clone:** `git clone https://github.com/jakezwang/argon.git && cd argon`
-3.  **🛠️ Install:** `pip install -r requirements.txt`
-4.  **🔑 Configure:** Copy `.env.example` to `.env` and fill in your details (especially `S3_BUCKET`).
-5.  **📦 Base Snapshot:** Ensure `base/dump.archive` is in your S3 bucket (see wiki for details).
-6.  **🏁 Initialize:** `python3 cli/main.py` (first run initializes local DB).
+2.  **🛠️ Install:** `pip install argonctl`
+3.  **🔑 Configure:** Create a `.env` file and add your AWS S3 bucket name and other settings.
+4.  **📦 Base Snapshot:** Ensure `base/dump.archive` is in your S3 bucket (see wiki for details).
+5.  **🏁 Initialize:** `argonctl init` (first run initializes local DB).
 
 👉 **[View the full Quickstart Guide (Wiki)](./docs/wiki/03_quickstart_guide.md)**
 

@@ -2,9 +2,9 @@ from fastapi import FastAPI, Request, Form, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, PlainTextResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from core import branch_manager, metadata
-from core.metadata import get_all_branches, update_branch_status, get_branch_versions, init_db # Added init_db
-from core.db_utils import get_project_db_path, get_core_db_path
+from argonctl.core import branch_manager, metadata
+from argonctl.core.metadata import get_all_branches, update_branch_status, get_branch_versions, init_db # Added init_db
+from argonctl.core.db_utils import get_project_db_path, get_core_db_path
 from rich import print
 import uvicorn
 import os
@@ -32,7 +32,7 @@ def dashboard_log(msg):
         log_queue.put_nowait(f"[{datetime.utcnow().isoformat()}] {msg}")
 
 # Patch core.branch_manager and dashboard actions to log to dashboard_log
-from core import branch_manager
+from argonctl.core import branch_manager
 branch_manager.dashboard_log = dashboard_log
 
 def get_all_projects():
@@ -256,8 +256,8 @@ def time_travel(request: Request, new_branch: str = Form(...), from_branch: str 
             return RedirectResponse(url=f"/?project={project}&error={error_msg}", status_code=status.HTTP_303_SEE_OTHER)
             
         # Try to find the version in both default and project DB
-        from core.metadata import get_branch_version_by_time
-        from core.db_utils import get_project_db_path
+        from argonctl.core.metadata import get_branch_version_by_time
+        from argonctl.core.db_utils import get_project_db_path
         
         # Try default DB first
         vinfo = get_branch_version_by_time(from_branch, project, ts)
@@ -384,3 +384,10 @@ def resume_branch_route(request: Request, branch_name: str = Form(...), project:
         dashboard_log(f"[Dashboard] Error resuming branch: {branch_name} in project: {project}: {e}")
         return RedirectResponse(url=f"/?project={project}&error={str(e)}", status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse(url=f"/?project={project}", status_code=status.HTTP_303_SEE_OTHER)
+
+def run_dashboard():
+    """Entry point for running the dashboard via CLI"""
+    uvicorn.run("dashboard.app:app", host="0.0.0.0", port=8000, reload=True)
+
+if __name__ == "__main__":
+    run_dashboard()

@@ -1,40 +1,54 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "argonctl"
 version = "0.1.0"
 authors = [
-  { name="Jake Wang", email="jake@argonlabs.tech" },
+  { name="Jake Wang", email="jake.wang@argonlabs.tech" },
 ]
-description = "Argon CLI for managing data science projects"
+description = "Argon CLI brings Git-style branching to MongoDB, streamlining AI, ML, and data science project management."
 readme = "README.md"
 requires-python = ">=3.8"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+
     "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Version Control",
 ]
 dependencies = [
-    "boto3",
-    "python-dotenv",
-    "docker",
-    "typer[all]",
-    "fastapi",
-    "uvicorn",
-    "jinja2",
-    "rich"
+    "boto3>=1.26.0",
+    "python-dotenv>=0.19.0",
+    "docker>=6.1.0",
+    "typer[all]>=0.9.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "jinja2>=3.1.0",
+    "rich>=13.0.0"
 ]
+keywords = ["mongodb", "data-science", "branching", "version-control", "database"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project.urls]
 "Homepage" = "https://github.com/argon-lab/argon"
 "Bug Tracker" = "https://github.com/argon-lab/argon/issues"
 
 [project.scripts]
-argonctl = "cli.main:run_app"
+argonctl = "argonctl.cli.main:run_app"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cli*", "core*"]
+include = ["argonctl*"]
 namespaces = false
