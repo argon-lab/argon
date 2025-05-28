@@ -126,5 +126,20 @@ metadata.db
 argon_projects.db
 *.db-journal
 dump.archive 
-# If you have a local dump.archive for testing that shouldn't be committed
-# data/base_dump.archive # Keep this if it's a sample, ignore if it's large/user-specific
+
+# Local development
+*.db
+dump.archive
+metadata.db
+argon_projects.db
+.DS_Store
+
+# IDE settings
+.vscode/
+.idea/
+
+# Docker related
+.docker/
+
+# Local testing
+test_dump.archive
