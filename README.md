@@ -30,7 +30,7 @@ Ever wished you could manage your databases with the same flexibility as your co
 
 *   🧪 **Experiment Freely:** Quickly spin up isolated environments for testing new features or data models without impacting production.
 *   🌳 **Branch & Version Data:** Create independent "branches" of your database for different development tasks, just like Git.
-*   롤백 **Rollback Easily:** "Time-travel" to previous data states effortlessly if something goes wrong.
+*   ⏪ **Rollback Easily:** "Time-travel" to previous data states effortlessly if something goes wrong.
 *   💰 **Optimize Costs:** Avoid paying for idle, full-scale database clones.
 
 Argon addresses these pain points by bringing the power of **Git-like branching, stateless compute, and S3-backed versioning** to MongoDB. It empowers developers and data teams to work more agilely, collaborate effectively, and innovate faster.
