@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Argon Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: 'Inter', Arial, sans-serif; background: #1a2233; margin: 0; padding: 0; }
+        .navbar { background: #232e47; color: #fff; padding: 18px 0 18px 32px; font-size: 1.5em; font-weight: 700; letter-spacing: 1px; box-shadow: 0 2px 8px #0002; }
+        .container {
+            max-width: 95%; /* Changed from 980px to a percentage */
+            margin: 20px auto; /* Reduced top/bottom margin */
+            background: #232e47;
+            border-radius: 12px;
+            box-shadow: 0 4px 24px #0004;
+            padding: 24px 30px; /* Adjusted padding */
+        }
+        h1, h2 { color: #7ee787; margin-top: 0; }
+        h2 { font-size: 1.3em; margin-bottom: 12px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 28px; background: #1a2233; border-radius: 8px; overflow: hidden; }
+        th, td { padding: 14px 16px; border-bottom: 1px solid #2d3953; color: #e6e6e6; position: relative; }
+        th { background: #232e47; color: #7ee787; font-weight: 600; }
+        tr:last-child td { border-bottom: none; }
+        .actions { display: flex; gap: 8px; }
+        .btn { padding: 7px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; font-weight: 500; transition: background 0.2s, color 0.2s; }
+        .btn-create { background: #7ee787; color: #232e47; }
+        .btn-create:hover { background: #5fd16b; }
+        .btn-delete { background: #ef4444; color: #fff; }
+        .btn-delete:hover { background: #b91c1c; }
+        .btn-time { background: #f59e42; color: #232e47; }
+        .btn-time:hover { background: #d97706; color: #fff; }
+        .copy-btn {
+            background: #3b4a6b; color: #a0aec0; border: none; border-radius: 3px;
+            padding: 3px 6px; /* Adjusted padding for icon */
+            font-size: 1em; /* Reset font-size if icon is SVG based */
+            cursor: pointer;
+            margin-left: 8px;
+            line-height: 1; /* Helps align SVG */
+            display: inline-flex; /* For aligning SVG */
+            align-items: center; /* For aligning SVG */
+            justify-content: center; /* For aligning SVG */
+        }
+        .copy-btn svg {
+            width: 0.9em; /* Adjust size as needed */
+            height: 0.9em; /* Adjust size as needed */
+            fill: currentColor;
+        }
+        .copy-btn:hover { background: #4a5a8b; color: #cbd5e0; }
+        .copy-btn.copied { background: #7ee787; color: #232e47; }
+        .copy-btn.error { background: #ef4444; color: #fff; } /* For error state */
+        form.inline { display: inline; }
+        .section { margin-bottom: 36px; }
+        .branch-name-cell {
+            white-space: nowrap;
+            max-width: 250px; /* Adjust as needed */
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        label { font-weight: 600; color: #7ee787; }
+        input, select { padding: 7px; margin: 0 8px 0 0; border-radius: 4px; border: 1px solid #2d3953; background: #1a2233; color: #e6e6e6; font-size: 1em; }
+        input:focus { outline: 2px solid #7ee787; }
+        .footer { text-align: center; color: #7ee787; margin-top: 40px; font-size: 1em; opacity: 0.7; }
+        .logo { height: 56px; vertical-align: middle; margin-right: 18px; }
+        .branch-table th, .branch-table td { text-align: left; }
+        .branch-table tr:hover { background: #232e47; }
+        @media (max-width: 1100px) {
+            .container {
+                max-width: 95%; /* Ensures it remains responsive */
+                padding: 20px 2vw; /* Adjusted padding */
+            }
+        }
+        @media (max-width: 700px) {
+            .navbar {
+                font-size: 1.2em; /* Slightly larger for tablet */
+                padding: 15px 0 15px 20px;
+            }
+            .logo {
+                height: 40px;
+                margin-right: 12px;
+            }
+            .container {
+                max-width: 96vw;
+                padding: 15px 2vw;
+                margin: 15px auto;
+            }
+            th, td { padding: 10px 8px; font-size: 0.95em; }
+            h1 { font-size: 1.3em; }
+            h2 { font-size: 1.1em; }
+            .btn { padding: 8px 15px; font-size: 0.95em; }
+            input, select { font-size: 0.95em; padding: 8px; }
+            .branch-name-cell { max-width: 180px; }
+
+            /* Forms adjustments */
+            .section form, div.section[style*="display:flex"] {
+                flex-direction: column;
+                align-items: stretch !important; /* Override inline style */
+                gap: 10px !important; /* Override inline style */
+            }
+            .section form label, .section form input, .section form select, .section form button,
+            div.section[style*="display:flex"] form label,
+            div.section[style*="display:flex"] form input,
+            div.section[style*="display:flex"] form select,
+            div.section[style*="display:flex"] form button {
+                width: auto !important; /* Reset for flex column */
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                flex: none !important; /* Reset flex if previously set */
+            }
+             .section form input, .section form select,
+             div.section[style*="display:flex"] form input,
+             div.section[style*="display:flex"] form select {
+                width: calc(100% - 18px) !important; /* Account for padding */
+             }
+
+            #dashboard-log {
+                height: 150px;
+                font-size: 0.9em;
+            }
+            .actions { flex-wrap: wrap; } /* Allow action buttons to wrap */
+            .actions .btn { margin-bottom: 5px;} /* Add some space when wrapped */
+        }
+        @media (max-width: 500px) {
+            .navbar {
+                font-size: 1em;
+                padding: 10px 0 10px 10px;
+            }
+            .logo {
+                height: 32px;
+                margin-right: 8px;
+            }
+            .container {
+                padding: 10px 2vw;
+                margin: 10px auto;
+                border-radius: 8px;
+            }
+            th, td {
+                padding: 8px 5px;
+                font-size: 0.88em;
+            }
+            .branch-name-cell { max-width: 120px; } /* Further reduce for small phones */
+            .copy-btn svg { width: 0.8em; height: 0.8em;}
+            .copy-btn { padding: 2px 4px; margin-left: 4px;}
+
+            h1 { font-size: 1.1em; }
+            h2 { font-size: 0.95em; }
+            .btn { padding: 7px 10px; font-size: 0.9em; }
+
+            /* Ensure form elements are fully stacked and take up reasonable width */
+            .section form input, .section form select,
+            div.section[style*="display:flex"] form input,
+            div.section[style*="display:flex"] form select {
+                 font-size: 0.9em;
+            }
+            .actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .actions .btn {
+                width: 100%;
+                margin-bottom: 5px;
+                padding: 8px 5px; /* Make buttons taller for easier tapping */
+            }
+            .actions form.inline:last-child .btn {
+                margin-bottom: 0;
+            }
+
+            #dashboard-log {
+                height: 100px;
+                font-size: 0.8em;
+                padding: 8px;
+            }
+            .footer {
+                font-size: 0.75em;
+                padding: 0 10px; /* Add padding to footer text */
+            }
+            /* Hide S3 Path on very small screens if it causes too much clutter */
+            .branch-table th:nth-child(4), .branch-table td:nth-child(4) { /* S3 Path column */
+                 display: none;
+            }
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="navbar">
+    <img src="/static/argon-logo.png" class="logo" alt="Argon Logo"> Argon Dashboard
+    <!-- Removed project selection form -->
+</div>
+<div class="container">
+    {% if request.query_params.error %}
+    <div style="background:#ef4444; color:#fff; padding:12px 18px; border-radius:6px; margin-bottom:18px; font-weight:600;">
+        {{ request.query_params.error }}
+    </div>
+    {% endif %}
+    <div class="section" style="margin-bottom:18px; display:flex; align-items:center; gap:18px;">
+        <form method="post" action="/create-project" style="display:flex; align-items:center; gap:8px;">
+            <label style="margin-bottom:0;">New Project:</label>
+            <input name="project_name" required placeholder="Project name" style="min-width:120px;">
+            <button class="btn btn-create" type="submit">Create</button>
+        </form>
+        {% if projects|length > 0 %}
+        <form method="post" action="/delete-project" style="display:flex; align-items:center; gap:8px;">
+            <label style="margin-bottom:0;">Delete Project:</label>
+            <select name="project_name" required style="min-width:120px;">
+                {% for p in projects %}
+                <option value="{{ p }}" {% if p == selected_project %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+            </select>
+            <button class="btn btn-delete" type="submit" onclick="return confirm('Delete this project and all its branches?')">Delete</button>
+        </form>
+        {% endif %}
+    </div>
+    <h1>MongoDB Branches{% if selected_project %} — <span style="color:#7ee787;">{{ selected_project }}</span>{% endif %}</h1>
+    <div class="section">
+        <table class="branch-table">
+            <tr>
+                <th>Name</th>
+                <th>Port</th>
+                <th>Container ID</th>
+                <th>S3 Path</th>
+                <th>Status</th>
+                <th>Last Active</th>
+                <th>Versions</th>
+                <th>Actions</th>
+            </tr>
+            {% for b in branches %}
+            <tr>
+                <td class="branch-name-cell" title="{{ b['branch_name'] }}">{{ b['branch_name'] }} <button class="copy-btn" data-copy-text="{{ b['branch_name'] }}"><svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path></svg></button></td>
+                <td>{{ b['port'] }} <button class="copy-btn" data-copy-text="{{ b['port'] }}"><svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path></svg></button></td>
+                <td style="font-size:0.95em; opacity:0.8;">{{ b['container_id'][:12] }} <button class="copy-btn" data-copy-text="{{ b['container_id'] }}"><svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path></svg></button></td>
+                <td style="font-size:0.95em; opacity:0.8;">{{ b['s3_path'] }}</td>
+                <td>{{ b['status']|capitalize }}</td>
+                <td style="font-size:0.95em; opacity:0.8;">{{ b['last_active'][:19].replace('T',' ') if b['last_active'] else '' }}</td>
+                <td>
+                    {% if b.versions %}
+                        <button class="btn btn-time btn-show-versions" data-branch-name="{{ b['branch_name'] }}">Show Versions ({{ b.versions|length }})</button>
+                        <div class="versions-list" id="versions-{{ b['branch_name'] }}" style="display:none; margin-top:5px;">
+                            {% for version in b.versions %}
+                                {% set full_timestamp = version.timestamp.replace(' ', 'T') %}
+                                {% if not full_timestamp.endswith('Z') %}
+                                    {% set full_timestamp = full_timestamp + 'Z' %}
+                                {% endif %}
+                                <span style="font-size:0.85em; opacity:0.7; display:block; margin-bottom:3px;">
+                                    {{ full_timestamp }} ({{ version.version_id[:7] }}) <button class="copy-btn" data-copy-text="{{ full_timestamp }}"><svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path></svg></button>
+                                </span>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+                <td class="actions">
+                    <form class="inline" method="post" action="/delete-branch">
+                        <input type="hidden" name="branch_name" value="{{ b['branch_name'] }}">
+                        <input type="hidden" name="project" value="{{ selected_project }}">
+                        <button class="btn btn-delete" type="submit">Delete</button>
+                    </form>
+                    {% if b['status'] == 'running' %}
+                    <form class="inline" method="post" action="/suspend-branch">
+                        <input type="hidden" name="branch_name" value="{{ b['branch_name'] }}">
+                        <input type="hidden" name="project" value="{{ selected_project }}">
+                        <button class="btn btn-time" type="submit">Suspend</button>
+                    </form>
+                    {% elif b['status'] == 'stopped' %}
+                    <form class="inline" method="post" action="/resume-branch">
+                        <input type="hidden" name="branch_name" value="{{ b['branch_name'] }}">
+                        <input type="hidden" name="project" value="{{ selected_project }}">
+                        <button class="btn btn-create" type="submit">Resume</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    <div class="section">
+        <h2>Create Branch</h2>
+        <form method="post" action="/create-branch" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+            <input type="hidden" name="project" value="{{ selected_project }}">
+            <label style="margin-bottom:0;">Branch Name:</label>
+            <input name="branch_name" required style="flex:1 1 120px; min-width:100px;">
+            <label style="margin-bottom:0;">From Branch:</label>
+            <input name="from_branch" placeholder="(optional)" style="flex:1 1 120px; min-width:100px;">
+            <button class="btn btn-create" type="submit" style="margin-left:10px; white-space:nowrap;">Create</button>
+        </form>
+    </div>
+    <div class="section">
+        <h2>Time Travel (Restore)</h2>
+        <form method="post" action="/time-travel" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+            <input type="hidden" name="project" value="{{ selected_project }}">
+            <label style="margin-bottom:0;">New Branch Name:</label>
+            <input name="new_branch" required style="flex:1 1 120px; min-width:100px;">
+            <label style="margin-bottom:0;">From Branch:</label>
+            <input name="from_branch" required style="flex:1 1 120px; min-width:100px;">
+            <label style="margin-bottom:0;">Timestamp (ISO):</label>
+            <input name="timestamp" required placeholder="2025-05-27T12:00:00Z" style="flex:2 1 180px; min-width:120px;">
+            <button class="btn btn-time" type="submit" style="margin-left:10px; white-space:nowrap;">Restore</button>
+        </form>
+    </div>
+    <div class="section" style="margin-bottom:24px;">
+        <h2>Console Log (Recent Activity)</h2>
+        <pre id="dashboard-log" style="background:#181f2a; color:#7ee787; padding:12px; border-radius:6px; height:180px; overflow:auto; font-size:0.98em; margin-bottom:0;"></pre>
+    </div>
+</div>
+<div class="footer">
+    Argon MongoDB Platform &copy; 2025
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const forms = document.querySelectorAll('form');
+    forms.forEach(form => {
+        form.addEventListener('submit', function(e) {
+            if (form.method.toLowerCase() === 'post') {
+                e.preventDefault();
+                const formData = new FormData(form);
+                fetch(form.action, {
+                    method: 'POST',
+                    body: formData
+                }).then(() => {
+                    if (form.action.includes('project')) {
+                        fetch('/?project=' + (formData.get('project') || formData.get('project_name') || ''))
+                            .then(r => r.text())
+                            .then(html => {
+                                const parser = new DOMParser();
+                                const doc = parser.parseFromString(html, 'text/html');
+                                const container = document.querySelector('.container');
+                                const newContainer = doc.querySelector('.container');
+                                if (container && newContainer) container.innerHTML = newContainer.innerHTML;
+                            });
+                    } else {
+                        window.location.reload();
+                    }
+                });
+            }
+        });
+    });
+
+    // Fetch and display logs
+    const logConsole = document.getElementById('dashboard-log'); // Corrected ID
+    if (logConsole) {
+        setInterval(() => {
+            fetch('/logs').then(r => r.json()).then(data => { // Corrected: was `then data =>`
+                const logConsole = document.getElementById('dashboard-log');
+                if (logConsole) {
+                    logConsole.innerHTML = data.logs.join('\n'); // THIS IS THE LINE TO CHANGE
+                }
+            });
+        }, 2000); // Refresh logs every 2 seconds
+    }
+
+    // Toggle versions display
+    document.querySelectorAll('.btn-show-versions').forEach(button => {
+        button.addEventListener('click', function() {
+            const branchName = this.dataset.branchName;
+            const versionsDiv = document.getElementById('versions-' + branchName);
+            if (versionsDiv) {
+                if (versionsDiv.style.display === 'none') {
+                    versionsDiv.style.display = 'block';
+                    this.textContent = 'Hide Versions';
+                } else {
+                    versionsDiv.style.display = 'none';
+                    // Update button text to show count again, assuming b.versions is accessible or we store count
+                    // For simplicity, just changing to "Show Versions" - to get count dynamically would need more complex JS or passing data
+                    const versionCount = versionsDiv.querySelectorAll('span').length;
+                    this.textContent = `Show Versions (${versionCount})`;
+                }
+            }
+        });
+    });
+
+    // Clipboard copy functionality
+    document.querySelectorAll('.copy-btn').forEach(button => {
+        const originalContent = button.innerHTML; // Store original SVG content
+        button.addEventListener('click', function(event) {
+            event.stopPropagation(); 
+            const textToCopy = this.dataset.copyText;
+            if (textToCopy) {
+                navigator.clipboard.writeText(textToCopy).then(() => {
+                    this.innerHTML = 'Copied!'; // Replace SVG with text
+                    this.classList.add('copied');
+                    this.classList.remove('error');
+                    setTimeout(() => {
+                        this.innerHTML = originalContent; // Restore SVG
+                        this.classList.remove('copied');
+                    }, 1500);
+                }).catch(err => {
+                    console.error('Failed to copy text: ', err);
+                    this.innerHTML = 'Error!'; // Replace SVG with text
+                    this.classList.add('error');
+                    this.classList.remove('copied');
+                    setTimeout(() => {
+                        this.innerHTML = originalContent; // Restore SVG
+                        this.classList.remove('error');
+                    }, 1500);
+                });
+            }
+        });
+    });
+});
+</script>
+</body>
+</html>

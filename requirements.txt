@@ -1,0 +1,12 @@
+# Core dependencies
+boto3
+python-dotenv
+docker
+# CLI
+Typer
+rich
+# Dashboard
+fastapi
+uvicorn
+# For dashboard templates (optional, minimal)
+jinja2
