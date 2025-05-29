@@ -1,6 +1,6 @@
 [project]
 name = "argonctl"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
   { name="Jake Wang", email="jake.wang@argonlabs.tech" },
 ]

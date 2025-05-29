@@ -1,38 +1,34 @@
 from fastapi import FastAPI, Request, Form, status
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, PlainTextResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from argonctl.core import branch_manager, metadata
-from argonctl.core.metadata import get_all_branches, update_branch_status, get_branch_versions, init_db # Added init_db
-from argonctl.core.db_utils import get_project_db_path, get_core_db_path
+from argonctl.core import branch_manager
+from argonctl.core.metadata import get_all_branches, get_branch_versions, init_db
+from argonctl.core.db_utils import get_project_db_path
 from rich import print
 import uvicorn
 import os
-import sqlite3
 import threading
-import time
 from datetime import datetime
 import queue
 from dotenv import load_dotenv
-import threading # Ensure threading is imported if Thread is used directly
 
 app = FastAPI(title="Argon Dashboard")
-load_dotenv() # Load .env file
+load_dotenv()  # Load .env file
 
-# Start auto-suspend thread after all imports
 # Global in-memory log queue for dashboard console
 log_queue = queue.Queue(maxsize=100)
 
 def dashboard_log(msg):
     print(msg)
+    timestamped_msg = f"[{datetime.utcnow().isoformat()}] {msg}"
     try:
-        log_queue.put_nowait(f"[{datetime.utcnow().isoformat()}] {msg}")
+        log_queue.put_nowait(timestamped_msg)
     except queue.Full:
         log_queue.get_nowait()
-        log_queue.put_nowait(f"[{datetime.utcnow().isoformat()}] {msg}")
+        log_queue.put_nowait(timestamped_msg)
 
 # Patch core.branch_manager and dashboard actions to log to dashboard_log
-from argonctl.core import branch_manager
 branch_manager.dashboard_log = dashboard_log
 
 def get_all_projects():

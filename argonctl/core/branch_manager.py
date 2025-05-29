@@ -18,11 +18,12 @@ from .metadata import (
 )
 from .db_utils import get_project_db_path, get_core_db_path # Import from db_utils
 import os
-import tempfile
 import random
+import tempfile
+import subprocess
+import sqlite3
 from datetime import datetime
 import docker
-import subprocess
 
 class BranchManager:
     def __init__(self):
@@ -31,30 +32,31 @@ class BranchManager:
         self.console = Console()
         self.client = None
         try:
+            # Try connecting with default environment first
             self.client = docker.from_env()
             self.client.ping()
-            self.console.print(Text("INFO", style="bold green").append(" Docker client initialized successfully using from_env().", style="white"))
-        except docker.errors.DockerException as e_env:
-            self.console.print(Text("WARN", style="bold yellow").append(f" Docker from_env() failed: {e_env}. Trying specific socket paths.", style="white"))
+
+        except docker.errors.DockerException:
+            # If default fails, try specific socket paths silently
             socket_paths_to_try = [
                 'unix://var/run/docker.sock',
                 f'unix://{os.path.join(os.path.expanduser("~"), ".docker", "run", "docker.sock")}'
             ]
-            connected_via_socket = False
+            
             for sock_path in socket_paths_to_try:
                 try:
                     self.client = docker.DockerClient(base_url=sock_path)
                     self.client.ping()
-                    self.console.print(Text("INFO", style="bold green").append(f" Docker client initialized successfully using socket: {sock_path}.", style="white"))
-                    connected_via_socket = True
                     break
-                except docker.errors.DockerException as e_sock_path:
-                    self.console.print(Text("WARN", style="bold yellow").append(f" Connection to Docker socket {sock_path} failed: {e_sock_path}", style="white"))
+                except docker.errors.DockerException:
                     self.client = None
-            if not connected_via_socket:
-                self.console.print(Text("ERROR", style="bold red").append(" Failed to connect to Docker using all attempted methods. Docker-dependent features will be unavailable.", style="white"))
+            
+            # Only log if all connection attempts fail
+            if not self.client:
+                self.console.print(Text("ERROR", style="bold red").append(" Docker is not available. Docker-dependent features will be unavailable.", style="white"))
+
         except Exception as e_general:
-            self.console.print(Text("ERROR", style="bold red").append(f" An unexpected error occurred during Docker client initialization: {e_general}", style="white"))
+            self.console.print(Text("ERROR", style="bold red").append(" Docker is not available due to an unexpected error.", style="white"))
             self.client = None
 
     def _get_free_port(self):
@@ -147,73 +149,54 @@ class BranchManager:
 
     def snapshot_branch_to_s3(self, branch_name, project_name, container_id, s3_path_target):
         """Take a snapshot of a branch and upload it to S3."""
-        if not self.client:
-            self.console.print("[bold red][ERROR][/bold red] Docker client not available, cannot snapshot branch.")
-            return None
-
-        project_db_path = get_project_db_path(project_name)
-        
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dump_path = os.path.join(tmpdir, 'dump.archive')
-            container_archive_path = "/tmp/dump.archive"
+        console = Console()
+        try:
+            console.print(f"[bold green][INFO][/bold green] Attempting to snapshot branch '[bold]{branch_name}[/bold]' to S3 path '[green]{s3_path_target}[/green]' before stopping.")
             
-            # 1. Verify container status
-            try:
-                container = self.client.containers.get(container_id)
-                if container.status != 'running':
-                    self.console.print(f"[bold yellow][WARN][/bold yellow] Container {container_id} is not running. Cannot perform mongodump.")
-                    return None
-            except Exception as e:
-                self.console.print(f"[bold red][ERROR][/bold red] Error checking container {container_id}: {e}")
-                return None
-
-            # 2. Run mongodump
-            dump_cmd = ['docker', 'exec', container_id, 'mongodump', f'--archive={container_archive_path}', '--gzip']
-            self.console.print(f"[bold green][INFO][/bold green] Running mongodump: {' '.join(dump_cmd)}")
-            result = subprocess.run(dump_cmd, capture_output=True, text=True, check=False)
-            if result.returncode != 0:
-                self.console.print(f"[bold red][ERROR][/bold red] mongodump failed (Code: {result.returncode}): {result.stderr or result.stdout}")
-                return None
-
-            # 3. Copy dump file from container
-            cp_cmd = ['docker', 'cp', f'{container_id}:{container_archive_path}', dump_path]
-            self.console.print(f"[bold green][INFO][/bold green] Running docker cp: {' '.join(cp_cmd)}")
-            cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, check=False)
-            if cp_result.returncode != 0:
-                self.console.print(f"[bold red][ERROR][/bold red] docker cp failed: {cp_result.stderr or cp_result.stdout}")
-                return None
-
-            # 4. Verify dump file and upload to S3
-            if not os.path.exists(dump_path):
-                self.console.print(f"[bold red][ERROR][/bold red] Dump file not found: {dump_path}")
-                return None
+            # Create snapshot and save locally first
+            with tempfile.TemporaryDirectory() as temp_dir:
+                dump_path = os.path.join(temp_dir, "dump.archive")
                 
-            file_size = os.path.getsize(dump_path)
-            if file_size == 0:
-                self.console.print("[bold red][ERROR][/bold red] Dump file is empty")
-                return None
-                
-            self.console.print(f"[bold green][INFO][/bold green] Dump file created: {dump_path} ({file_size} bytes)")
-            
-            try:
-                # 5. Upload to S3 and create version record
-                from .s3_utils import test_s3_connection
-                if not test_s3_connection():
-                    self.console.print("[bold red][ERROR][/bold red] S3 connection test failed. Cannot upload snapshot.")
+                # Run mongodump inside container
+                mongodump_cmd = f"docker exec {container_id} mongodump --archive=/tmp/dump.archive --gzip"
+                console.print(f"[green][INFO][/green] Running mongodump: {mongodump_cmd}")
+                result = subprocess.run(mongodump_cmd, shell=True, capture_output=True, text=True)
+                if result.returncode != 0:
+                    console.print(f"[bold red][ERROR][/bold red] Failed to run mongodump: {result.stderr}")
                     return None
+
+                # Copy dump file from container
+                cp_cmd = f"docker cp {container_id}:/tmp/dump.archive {dump_path}"
+                console.print(f"[green][INFO][/green] Running docker cp: {cp_cmd}")
+                result = subprocess.run(cp_cmd, shell=True, capture_output=True, text=True)
+                if result.returncode != 0:
+                    console.print(f"[bold red][ERROR][/bold red] Failed to copy dump file from container: {result.stderr}")
+                    return None
+
+                if os.path.exists(dump_path):
+                    file_size = os.path.getsize(dump_path)
+                    console.print(f"[green][INFO][/green] Dump file created: {dump_path} ({file_size} bytes)")
                     
-                version_id = upload_to_s3(dump_path, s3_path_target)
-                if not version_id:
-                    self.console.print("[bold red][ERROR][/bold red] S3 upload failed - no version ID returned")
+                    # Upload to S3
+                    version_id = upload_to_s3(dump_path, s3_path_target)
+                    if version_id:
+                        console.print(f"[bold green][SUCCESS][/bold green] Snapshot uploaded to S3: {s3_path_target} (Version: {version_id})")
+                        
+                        # Record version in database
+                        project_db_path = get_project_db_path(project_name)
+                        add_branch_version(branch_name, project_name, s3_path_target, version_id, datetime.now().isoformat(), db_path=project_db_path)
+                        
+                        return version_id
+                    else:
+                        console.print(f"[bold red][ERROR][/bold red] Failed to upload snapshot to S3")
+                        return None
+                else:
+                    console.print(f"[bold red][ERROR][/bold red] No dump file created at {dump_path}")
                     return None
 
-                add_branch_version(branch_name, project_name, s3_path_target, version_id, datetime.utcnow().isoformat(), db_path=project_db_path)
-                self.console.print(f"[bold green][SUCCESS][/bold green] Snapshot uploaded to S3: {s3_path_target} (Version: {version_id})")
-                return version_id
-                
-            except Exception as e:
-                self.console.print(f"[bold red][ERROR][/bold red] Failed to create snapshot: {str(e)}")
-                return None
+        except Exception as e:
+            console.print(f"[bold red][ERROR][/bold red] Failed to take snapshot: {e}")
+            return None
 
     def delete_branch(self, branch_name, project_name):
         console = Console()
@@ -561,7 +544,7 @@ class BranchManager:
                 console.print(f"[bold yellow][WARN][/bold yellow] Container [yellow]{current_container_id}[/yellow] not found. Proceeding with time travel restore.")
             except Exception as e:
                 console.print(f"[bold red][ERROR][/bold red] Failed to stop/remove current container [yellow]{current_container_id}[/yellow]: {e}. Aborting time travel.")
-                return False, f"Failed to manage current container: {e}"
+                return False, f"Failed to stop/remove current container: {e}"
         
         # 2. Download the specific version from S3
         new_port = self._get_free_port()
@@ -575,56 +558,54 @@ class BranchManager:
                 download_from_s3_versioned(s3_path_to_restore, dump_path, actual_version_id_to_restore)
                 if os.path.exists(dump_path) and os.path.getsize(dump_path) > 0:
                     effective_dump_path = dump_path
-                    console.print(f"[bold green][INFO][/bold green] S3 version \'[yellow]{actual_version_id_to_restore}[/yellow]\' downloaded successfully.")
+                    console.print(f"[bold green][INFO][/bold green] Successfully downloaded version \'[yellow]{actual_version_id_to_restore}[/yellow]\' ({os.path.getsize(dump_path)} bytes).")
                 else:
-                    console.print(f"[bold red][ERROR][/bold red] Download of S3 version \'[yellow]{actual_version_id_to_restore}[/yellow]\' resulted in an empty/missing file. Aborting.")
-                    return False, "Failed to download S3 version: empty or missing file."
+                    console.print(f"[bold red][ERROR][/bold red] Downloaded file is empty or missing for version \'[yellow]{actual_version_id_to_restore}[/yellow]\'.")
+                    return False, "Downloaded file is empty or missing."
             except Exception as e:
-                console.print(f"[bold red][ERROR][/bold red] Failed to download S3 version \'[yellow]{actual_version_id_to_restore}[/yellow]\': {e}. Aborting.")
-                return False, f"Failed to download S3 version: {e}"
+                console.print(f"[bold red][ERROR][/bold red] Failed to download version \'[yellow]{actual_version_id_to_restore}[/yellow]\': {e}")
+                return False, f"Failed to download version: {e}"
 
             # 3. Start a new container with the downloaded dump
-            console.print(f"[bold green][INFO][/bold green] Starting new container for branch \'[bold]{branch_name}[/bold]' (time travel) on port [yellow]{new_port}[/yellow].")
+            console.print(f"[bold green][INFO][/bold green] Starting new container for branch \'[bold]{branch_name}[/bold]\' (time travel) on port [yellow]{new_port}[/yellow].")
             try:
                 new_container_id = start_mongo_container(branch_name, project_name, effective_dump_path, new_port, self.client)
             except Exception as e:
-                console.print(f"[bold red][ERROR][/bold red] Failed to start MongoDB container for time-traveled branch \'[bold]{branch_name}[/bold]': {e}")
-                return False, f"Failed to start MongoDB container: {e}"
+                console.print(f"[bold red][ERROR][/bold red] Failed to start container with version \'[yellow]{actual_version_id_to_restore}[/yellow]\': {e}")
+                return False, f"Failed to start container: {e}"
 
             if not new_container_id:
-                console.print(f"[bold red][ERROR][/bold red] Failed to obtain container ID for time-traveled branch \'[bold]{branch_name}[/bold]\'.")
-                return False, "Failed to obtain container ID."
+                console.print(f"[bold red][ERROR][/bold red] Failed to obtain container ID for branch '[bold]{branch_name}[/bold]'.")
+                return False, f"Failed to obtain container ID for branch '{branch_name}'."
 
             # 4. Update branch metadata
             try:
-                import sqlite3
-                from datetime import datetime
                 conn = sqlite3.connect(project_db_path)
                 c = conn.cursor()
-                # The S3 path for the branch itself doesn't change, only the version we restore from.
-                # The port, container_id, status, and last_active time are updated.
                 c.execute("""
                     UPDATE branches SET port = ?, container_id = ?, status = ?, last_active = ?
                     WHERE branch_name = ? AND project_name = ?
                 """, (new_port, new_container_id, 'running', datetime.utcnow().isoformat(), branch_name, project_name))
                 conn.commit()
                 conn.close()
-                console.print(f"[bold green][SUCCESS][/bold green] Branch \'[bold]{branch_name}[/bold]\' successfully time-traveled to version \'[yellow]{version_id}[/yellow]\'.")
-                console.print(f"New Container ID: [yellow]{new_container_id}[/yellow], Port: [yellow]{new_port}[/yellow].")
+                
+                state_msg = f"Branch time-traveled: '[bold]{branch_name}[/bold]' to version '[yellow]{actual_version_id_to_restore}[/yellow]'."
+                console.print(Panel(Align(state_msg, align='center'), title="[bold green]TIME TRAVEL COMPLETE[/bold green]", border_style="green", style="white"))
+                
                 return True, {
                     'branch_name': branch_name,
                     'project_name': project_name,
                     'port': new_port,
                     'container_id': new_container_id,
-                    's3_path': branch['s3_path'], # Original S3 base path for future snapshots
-                    'status': 'running',
-                    'restored_version_id': version_id
+                    's3_path': s3_path_to_restore,
+                    'version_id': actual_version_id_to_restore,
+                    'status': 'running'
                 }
             except Exception as e:
-                console.print(f"[bold red][ERROR][/bold red] Failed to update branch metadata after time travel for \'[bold]{branch_name}[/bold]\'. Attempting cleanup. Error: {e}")
+                console.print(f"[bold red][ERROR][/bold red] Failed to update branch metadata after time travel: {e}. Cleaning up.")
                 if self.client and new_container_id:
                     try:
                         stop_mongo_container(new_container_id, self.client, remove=True)
                     except Exception as cleanup_e:
-                        console.print(f"[bold red][ERROR][/bold red] Failed to cleanup container [yellow]{new_container_id}[/yellow] after DB error: {cleanup_e}")
+                        console.print(f"[bold red][ERROR][/bold red] Failed to cleanup container after metadata error: {cleanup_e}")
                 return False, f"Failed to update branch metadata: {e}"

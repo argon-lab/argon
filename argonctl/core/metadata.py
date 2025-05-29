@@ -24,23 +24,53 @@ VERSIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS branch_versions (
     branch_name TEXT,
     project_name TEXT,
-    s3_path TEXT,
     version_id TEXT,
+    s3_path TEXT,
     timestamp TEXT,
-    PRIMARY KEY (branch_name, project_name, version_id)
+    PRIMARY KEY (branch_name, project_name, version_id),
+    FOREIGN KEY (branch_name, project_name) 
+        REFERENCES branches(branch_name, project_name)
+        ON DELETE CASCADE
 );
 """
 
 def init_db(db_path=None):
-    """Initialize the metadata database and table if not exists."""
+    """Initialize the database with the required schema."""
     if db_path is None:
         db_path = DB_PATH
     conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    c.execute(BRANCHES_TABLE)
-    c.execute(VERSIONS_TABLE)
-    conn.commit()
-    conn.close()
+    try:
+        with conn:
+            # Create tables if they don't exist
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS branches (
+                    branch_name TEXT,
+                    project_name TEXT,
+                    port INTEGER,
+                    container_id TEXT,
+                    s3_path TEXT,
+                    status TEXT DEFAULT 'running',
+                    last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (branch_name, project_name)
+                )
+            """)
+
+            # Add branch_versions table for version history
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS branch_versions (
+                    branch_name TEXT,
+                    project_name TEXT,
+                    version_id TEXT,
+                    s3_path TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (branch_name, project_name, version_id),
+                    FOREIGN KEY (branch_name, project_name) 
+                        REFERENCES branches(branch_name, project_name)
+                        ON DELETE CASCADE
+                )
+            """)
+    finally:
+        conn.close()
 
 def add_branch(branch_name, project_name, port, container_id, s3_path, status='running', last_active=None, db_path=None):
     """Add a branch record to the database."""
@@ -152,7 +182,10 @@ def get_branch_versions(branch_name, project_name, db_path=None):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute(
-        "SELECT s3_path, version_id, timestamp FROM branch_versions WHERE branch_name = ? AND project_name = ? ORDER BY timestamp DESC",
+        """SELECT s3_path, version_id, timestamp 
+           FROM branch_versions 
+           WHERE branch_name = ? AND project_name = ? 
+           ORDER BY timestamp DESC""",
         (branch_name, project_name)
     )
     rows = c.fetchall()
