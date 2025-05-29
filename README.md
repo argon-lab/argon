@@ -100,9 +100,9 @@ Ready to jump in? Get Argon running in minutes!
 
 1.  **✅ Prerequisites:** Docker, AWS CLI (configured), Python 3.8+.
 2.  **🛠️ Install:** `pip install argonctl`
-3.  **🔑 Configure:** Create a `.env` file and add your AWS S3 bucket name and other settings.
+3.  **🔑 Configure:** Run any `argonctl` command to start the interactive first-time setup, or manually create a `.env` file.
 4.  **📦 Base Snapshot:** Ensure `base/dump.archive` is in your S3 bucket (see wiki for details).
-5.  **🏁 Initialize:** `argonctl init` (first run initializes local DB).
+5.  **🏁 Start Using:** Run `argonctl project create your-project` to create your first project.
 
 👉 **[View the full Quickstart Guide (Wiki)](./docs/wiki/03_quickstart_guide.md)**
 

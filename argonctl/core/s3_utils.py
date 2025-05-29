@@ -9,43 +9,63 @@ COLOR_WARN = "\033[33m[WARN]\033[0m"
 COLOR_ERROR = "\033[31m[ERROR]\033[0m"
 
 # Load environment variables for AWS configuration
-# Load .env file if present
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    print(f"{COLOR_WARN} python-dotenv not installed, skipping .env loading")
+from .setup_utils import load_environment
+
+# Global variables for AWS configuration
+env_vars = load_environment()
 AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
 S3_BUCKET = os.getenv('S3_BUCKET')
-print(f"{COLOR_INFO} Loaded S3 config: bucket={S3_BUCKET}, region={AWS_REGION}, access_key_id={'***' if AWS_ACCESS_KEY_ID else None}")
 
-if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET]):
-    raise ValueError("Missing required AWS environment variables. Please check AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and S3_BUCKET are set.")
+# Global S3 client - initialized on first use
+s3 = None
 
-s3_config = Config(
-    region_name=AWS_REGION,
-    retries=dict(
-        max_attempts=3,
-        mode='standard'
-    ),
-    connect_timeout=5,
-    read_timeout=10
-)
+def get_s3_client():
+    """Get or create the S3 client with current configuration."""
+    global s3
+    if s3 is None:
+        s3_config = Config(
+            region_name=AWS_REGION,
+            retries=dict(
+                max_attempts=3,
+                mode='standard'
+            ),
+            connect_timeout=5,
+            read_timeout=10
+        )
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            config=s3_config
+        )
+    return s3
 
-s3 = boto3.client(
-    's3',
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    config=s3_config
-)
+def check_s3_config():
+    """Check if S3 configuration is complete without making API calls."""
+    if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET]):
+        missing = []
+        if not AWS_ACCESS_KEY_ID:
+            missing.append("AWS_ACCESS_KEY_ID")
+        if not AWS_SECRET_ACCESS_KEY:
+            missing.append("AWS_SECRET_ACCESS_KEY")
+        if not S3_BUCKET:
+            missing.append("S3_BUCKET")
+        print(f"{COLOR_WARN} Incomplete S3 configuration. Missing: {', '.join(missing)}")
+        return False
+    print(f"{COLOR_INFO} S3 config loaded: bucket={S3_BUCKET}, region={AWS_REGION}, access_key_id={'***' if AWS_ACCESS_KEY_ID else None}")
+    return True
 
 def test_s3_connection():
     """Test S3 connection and bucket access, including versioning status."""
+    if not check_s3_config():
+        return False
+        
     try:
-        s3.head_bucket(Bucket=S3_BUCKET)
-        versioning = s3.get_bucket_versioning(Bucket=S3_BUCKET)
+        s3_client = get_s3_client()
+        s3_client.head_bucket(Bucket=S3_BUCKET)
+        versioning = s3_client.get_bucket_versioning(Bucket=S3_BUCKET)
         if versioning.get('Status') != 'Enabled':
             print(f"{COLOR_WARN} Bucket versioning not enabled on {S3_BUCKET}. Some features may not work correctly.")
         print(f"{COLOR_INFO} Successfully connected to S3 bucket: {S3_BUCKET} (Region: {AWS_REGION})")
@@ -69,6 +89,8 @@ def upload_to_s3(local_path, s3_path):
     """
     if not local_path or not s3_path:
         print(f"{COLOR_ERROR} Both local_path and s3_path must be provided")
+        return None
+    if not test_s3_connection():
         return None
     try:
         if not os.path.exists(local_path):
@@ -117,19 +139,53 @@ def upload_to_s3(local_path, s3_path):
 
 def download_from_s3(s3_path, local_path):
     """Download a file from S3."""
-    s3.download_file(S3_BUCKET, s3_path, local_path)
+    if not test_s3_connection():
+        return False
+    try:
+        s3_client = get_s3_client()
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        s3_client.download_file(S3_BUCKET, s3_path, local_path)
+        print(f"{COLOR_INFO} Successfully downloaded s3://{S3_BUCKET}/{s3_path} to {local_path}")
+        return True
+    except ClientError as e:
+        print(f"{COLOR_ERROR} Failed to download from S3: {str(e)}")
+        return False
+    except Exception as e:
+        print(f"{COLOR_ERROR} Unexpected error downloading from S3: {str(e)}")
+        return False
 
 def download_from_s3_versioned(s3_path, local_path, version_id):
     """Download a specific version of a file from S3."""
-    s3.download_file(Bucket=S3_BUCKET, Key=s3_path, Filename=local_path, ExtraArgs={'VersionId': version_id})
+    if not test_s3_connection():
+        return False
+    try:
+        s3_client = get_s3_client()
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        s3_client.download_file(
+            Bucket=S3_BUCKET,
+            Key=s3_path,
+            Filename=local_path,
+            ExtraArgs={'VersionId': version_id}
+        )
+        print(f"{COLOR_INFO} Successfully downloaded version {version_id} of s3://{S3_BUCKET}/{s3_path} to {local_path}")
+        return True
+    except ClientError as e:
+        print(f"{COLOR_ERROR} Failed to download version {version_id} from S3: {str(e)}")
+        return False
+    except Exception as e:
+        print(f"{COLOR_ERROR} Unexpected error downloading from S3: {str(e)}")
+        return False
 
 def delete_from_s3(s3_path):
     """
     Delete an object and all its versions from S3.
     """
+    if not test_s3_connection():
+        return False
     try:
+        s3_client = get_s3_client()
         print(f"{COLOR_INFO} Attempting to delete S3 path: {s3_path} from bucket {S3_BUCKET}")
-        response = s3.list_object_versions(
+        response = s3_client.list_object_versions(
             Bucket=S3_BUCKET,
             Prefix=s3_path
         )

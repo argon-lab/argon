@@ -23,12 +23,16 @@ Get up and running with Argon in a few simple steps:
     ```
 
 3.  **🔑 Set Up Environment Variables:**
-    * Create a new `.env` file in your working directory:
+    * The CLI will guide you through first-time setup when you run your first command.
+    * Alternatively, create a `.env` file in your working directory or `~/.argon/.env`:
         ```sh
+        # Project-level config
         touch .env
+        
+        # OR user-level config (recommended)
+        mkdir -p ~/.argon && touch ~/.argon/.env
         ```
-    * Add your AWS S3 bucket name, AWS credentials, and other configurations as needed.
-    * See [Environment Variables](./06_environment_variables.md) for details on each variable.
+    * See [Environment Variables](./06_environment_variables.md) for details on configuration options.
 
 4.  **📦 Prepare a Base MongoDB Snapshot:**
     * Argon needs an initial `dump.archive` in your S3 bucket at the path specified by `ARGON_BASE_SNAPSHOT_S3_PATH` (default: `base/dump.archive`).

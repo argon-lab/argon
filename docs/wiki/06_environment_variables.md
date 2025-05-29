@@ -9,24 +9,40 @@ Wiki Navigation
 
 ## ⚙️ Environment Variables
 
-Create a `.env` file in the root of the project. You can copy `.env.example` to get started:
+The `argonctl` CLI provides an interactive first-time setup that will help you configure all required environment variables. However, you can also set them up manually using a `.env` file.
+
+### Configuration File Locations
+
+The CLI looks for environment variables in the following locations, in order:
+1. Project-level: `./.env` in your current directory
+2. User-level: `~/.argon/.env` in your home directory
+
+To manually create a configuration file:
 ```sh
-cp .env.example .env
+# Project-level config
+touch .env
+
+# OR user-level config (recommended)
+mkdir -p ~/.argon && touch ~/.argon/.env
 ```
 
-Then, populate it with the following variables:
-
+### Required Variables
 ```env
-# AWS Configuration
+# AWS Configuration (Required for S3 operations)
 AWS_ACCESS_KEY_ID=your_aws_access_key_id
 AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
-AWS_DEFAULT_REGION=your_aws_region # e.g., us-east-1
 S3_BUCKET=your_argon_s3_bucket_name # The S3 bucket Argon will use for snapshots
+```
 
-# Argon Configuration
+### Optional Variables
+```env
+# AWS Configuration (Optional)
+AWS_DEFAULT_REGION=your_aws_region # e.g., us-east-1 (default)
+
+# Argon Configuration (Optional)
 ARGON_BASE_SNAPSHOT_S3_PATH=base/dump.archive # Default S3 path for the base snapshot
-ARGON_AUTO_SUSPEND_ENABLED=true # Set to true to enable dashboard auto-suspend, false to disable
-DASHBOARD_AUTO_SUSPEND_IDLE_MINUTES=60 # Optional: Minutes of inactivity before auto-suspend (if enabled)
+ARGON_AUTO_SUSPEND_ENABLED=true # Set to true to enable dashboard auto-suspend
+DASHBOARD_AUTO_SUSPEND_IDLE_MINUTES=60 # Minutes before auto-suspend (if enabled)
 ```
 
 **Notes:**

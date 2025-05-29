@@ -82,6 +82,8 @@ except ImportError as e:
 
 from argonctl.core.metadata import init_db, DB_PATH
 
+from argonctl.core.setup_utils import check_environment
+
 # --- Config from Env ---
 ARGON_MAIN_DB_NAME = os.getenv("DB_NAME", "argon.db")
 ARGON_DOCS_URL = os.getenv("ARGON_DOCS_URL", "https://github.com/argon-lab/argon")
@@ -109,6 +111,16 @@ def main_callback(ctx: typer.Context):
     ensure_user_dir()
     init_cli_projects_db()
     init_db(DB_PATH)
+    
+    # Check if this is a help command or version flag
+    help_commands = {'--help', '-h', '--version', '-v'}
+    if not any(arg in help_commands for arg in sys.argv[1:]):
+        # For non-help commands, ensure environment is set up
+        # Only validate AWS credentials for commands that need them
+        needs_aws = {'branch', 'snapshot'}  # Commands that require AWS
+        skip_aws = ctx.invoked_subcommand not in needs_aws
+        check_environment(skip_aws_validation=skip_aws)
+
     # Only show quickstart for the root command
     if ctx.invoked_subcommand is None:
         print_quickstart()
