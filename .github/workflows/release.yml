@@ -23,7 +23,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.24'
+        go-version: '1.21'
 
     - name: Build binary
       working-directory: ./cli
@@ -31,6 +31,7 @@ jobs:
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
       run: |
+        mkdir -p ../dist
         if [ "$GOOS" = "windows" ]; then
           go build -ldflags="-s -w" -o ../dist/argon-${{ matrix.goos }}-${{ matrix.goarch }}.exe .
         else
@@ -66,21 +67,21 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-npm:
-    name: Publish to npm
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '18'
-        registry-url: 'https://registry.npmjs.org'
-
-    - name: Publish to npm
-      working-directory: ./npm
-      run: npm publish --access public
-      env:
-        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  # publish-npm:
+  #   name: Publish to npm
+  #   needs: release
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #
+  #   - name: Setup Node.js
+  #     uses: actions/setup-node@v3
+  #     with:
+  #       node-version: '18'
+  #       registry-url: 'https://registry.npmjs.org'
+  #
+  #   - name: Publish to npm
+  #     working-directory: ./npm
+  #     run: npm publish --access public
+  #     env:
+  #       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
