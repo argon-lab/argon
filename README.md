@@ -73,7 +73,7 @@ sudo mv argon /usr/local/bin/
 brew install argon-lab/tap/argonctl
 ```
 
-#### npm (Cross-platform) - Coming Soon
+#### npm (Cross-platform)
 ```bash
 npm install -g argonctl
 ```
@@ -150,7 +150,7 @@ argon projects list
 ## Coming Soon
 
 ✅ **Homebrew** - `brew install argon-lab/tap/argonctl` (live now!)  
-🚧 **npm Package** - `npm install -g argonctl` (binary downloads needed)  
+✅ **npm Package** - `npm install -g argonctl` (live now!)  
 🚧 **Hosted Service** - Cloud-hosted Argon for instant use  
 🚧 **Web Dashboard** - Visual branch management  
 🚧 **ML Integrations** - MLflow, DVC, Weights & Biases  

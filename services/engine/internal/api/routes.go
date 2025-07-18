@@ -6,6 +6,7 @@ import (
 
 	"argon/engine/internal/branch"
 	"argon/engine/internal/streams"
+	"argon/engine/internal/workers"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -14,12 +15,14 @@ import (
 type Handlers struct {
 	branchService  *branch.Service
 	streamsService *streams.Service
+	workerPool     workers.WorkerPool
 }
 
-func SetupRoutes(router *gin.Engine, branchService *branch.Service, streamsService *streams.Service) {
+func SetupRoutes(router *gin.Engine, branchService *branch.Service, streamsService *streams.Service, workerPool workers.WorkerPool) {
 	h := &Handlers{
 		branchService:  branchService,
 		streamsService: streamsService,
+		workerPool:     workerPool,
 	}
 
 	// Health check
@@ -57,6 +60,14 @@ func SetupRoutes(router *gin.Engine, branchService *branch.Service, streamsServi
 		{
 			internal.POST("/branches/create", h.createBranch)
 			internal.GET("/branches/:id/status", h.getBranchStatus)
+		}
+
+		// Worker monitoring
+		workers := v1.Group("/workers")
+		{
+			workers.GET("/stats", h.getWorkerStats)
+			workers.GET("/queue", h.getQueueStats)
+			workers.POST("/scale", h.scaleWorkers)
 		}
 	}
 }
@@ -262,5 +273,90 @@ func (h *Handlers) getBranchStatus(c *gin.Context) {
 		"id":     branch.ID,
 		"status": branch.Status,
 		"name":   branch.Name,
+	})
+}
+
+// Worker monitoring handlers
+
+func (h *Handlers) getWorkerStats(c *gin.Context) {
+	if h.workerPool == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "worker pool not available"})
+		return
+	}
+
+	stats := h.workerPool.GetWorkerStats()
+	
+	// Calculate aggregate statistics
+	totalProcessed := int64(0)
+	totalSucceeded := int64(0)
+	totalFailed := int64(0)
+	activeWorkers := 0
+	
+	for _, stat := range stats {
+		totalProcessed += stat.JobsProcessed
+		totalSucceeded += stat.JobsSucceeded
+		totalFailed += stat.JobsFailed
+		if stat.IsActive {
+			activeWorkers++
+		}
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"workers": stats,
+		"summary": gin.H{
+			"total_workers":     len(stats),
+			"active_workers":    activeWorkers,
+			"total_processed":   totalProcessed,
+			"total_succeeded":   totalSucceeded,
+			"total_failed":      totalFailed,
+			"success_rate":      func() float64 {
+				if totalProcessed > 0 {
+					return float64(totalSucceeded) / float64(totalProcessed) * 100
+				}
+				return 0
+			}(),
+		},
+	})
+}
+
+func (h *Handlers) getQueueStats(c *gin.Context) {
+	if h.workerPool == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "worker pool not available"})
+		return
+	}
+
+	stats, err := h.workerPool.GetQueueStats(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, stats)
+}
+
+func (h *Handlers) scaleWorkers(c *gin.Context) {
+	if h.workerPool == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "worker pool not available"})
+		return
+	}
+
+	var req struct {
+		TargetWorkers int `json:"target_workers" binding:"required,min=1,max=20"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.workerPool.ScaleWorkers(c.Request.Context(), req.TargetWorkers); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":         "workers scaled successfully",
+		"target_workers":  req.TargetWorkers,
+		"current_workers": h.workerPool.GetWorkerCount(),
 	})
 }

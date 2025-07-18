@@ -14,6 +14,7 @@ import (
 	"argon/engine/internal/config"
 	"argon/engine/internal/storage"
 	"argon/engine/internal/streams"
+	"argon/engine/internal/workers"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -36,9 +37,35 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to initialize storage service:", err)
 	}
+	
+	// Initialize job queue
+	jobQueue := workers.NewMongoQueue(client, "argon")
+	if err := jobQueue.Initialize(context.Background()); err != nil {
+		log.Fatal("Failed to initialize job queue:", err)
+	}
+	
+	// Initialize services
 	branchService := branch.NewService(client, storageService)
-	streamsService := streams.NewService(client, storageService)
-
+	
+	// Initialize worker pool
+	workerPool := workers.NewWorkerPool(jobQueue, branchService, storageService)
+	
+	// Configure workers (5 sync workers, 2 compression workers, etc.)
+	workerPool.SetWorkerConfiguration(map[workers.JobType]int{
+		workers.JobTypeSync:        5,
+		workers.JobTypeCompression: 2,
+		workers.JobTypeNotification: 1,
+		workers.JobTypeCleanup:     1,
+	})
+	
+	// Start worker pool
+	if err := workerPool.Start(context.Background()); err != nil {
+		log.Fatal("Failed to start worker pool:", err)
+	}
+	
+	// Initialize streams service with worker pool
+	streamsService := streams.NewService(client, storageService, workerPool)
+	
 	// Start change streams processor
 	go func() {
 		if err := streamsService.Start(context.Background()); err != nil {
@@ -68,7 +95,7 @@ func main() {
 	})
 
 	// Setup API routes
-	api.SetupRoutes(router, branchService, streamsService)
+	api.SetupRoutes(router, branchService, streamsService, workerPool)
 
 	// Setup HTTP server with graceful shutdown
 	srv := &http.Server{
@@ -95,6 +122,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Stop worker pool first
+	if err := workerPool.Stop(ctx); err != nil {
+		log.Printf("Error stopping worker pool: %v", err)
+	}
+
+	// Then stop HTTP server
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal("Server forced to shutdown:", err)
 	}

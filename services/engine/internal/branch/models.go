@@ -100,3 +100,15 @@ type BranchStats struct {
 	LastChangeAt    *time.Time `json:"last_change_at,omitempty"`
 	CompressionRatio float64   `json:"compression_ratio"`
 }
+
+// BranchStorageStats represents detailed storage statistics for a branch
+type BranchStorageStats struct {
+	BranchID         string     `json:"branch_id"`
+	DeltaCount       int64      `json:"delta_count"`
+	UncompressedSize int64      `json:"uncompressed_size"`
+	CompressedSize   int64      `json:"compressed_size"`
+	CompressionRatio float64    `json:"compression_ratio"`
+	TotalOperations  int64      `json:"total_operations"`
+	StoragePath      string     `json:"storage_path"`
+	LastSyncAt       *time.Time `json:"last_sync_at,omitempty"`
+}

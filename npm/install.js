@@ -6,7 +6,7 @@ const https = require('https');
 const { execSync } = require('child_process');
 
 const GITHUB_REPO = 'argon-lab/argon';
-const VERSION = require('./package.json').version;
+const VERSION = '1.0.0'; // Use fixed version since that's where binaries are
 
 function getPlatform() {
   const platform = process.platform;
@@ -61,7 +61,22 @@ function downloadBinary() {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(binaryPath);
     
-    https.get(downloadUrl, (response) => {
+    function handleResponse(response) {
+      // Handle redirects
+      if (response.statusCode === 302 || response.statusCode === 301) {
+        const redirectUrl = response.headers.location;
+        console.log(`Following redirect to: ${redirectUrl}`);
+        const url = require('url');
+        const parsed = url.parse(redirectUrl);
+        const client = parsed.protocol === 'https:' ? https : require('http');
+        
+        client.get(redirectUrl, handleResponse).on('error', (err) => {
+          fs.unlink(binaryPath, () => {}); // Delete partial file
+          reject(err);
+        });
+        return;
+      }
+      
       if (response.statusCode !== 200) {
         reject(new Error(`Failed to download binary: HTTP ${response.statusCode}`));
         return;
@@ -85,7 +100,9 @@ function downloadBinary() {
         console.log('Run "argon --version" to verify installation.');
         resolve();
       });
-    }).on('error', (err) => {
+    }
+    
+    https.get(downloadUrl, handleResponse).on('error', (err) => {
       fs.unlink(binaryPath, () => {}); // Delete partial file
       reject(err);
     });

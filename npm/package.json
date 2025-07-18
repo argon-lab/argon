@@ -1,6 +1,6 @@
 {
   "name": "argonctl",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Git-like MongoDB branching for ML/AI workflows",
   "main": "index.js",
   "bin": {
