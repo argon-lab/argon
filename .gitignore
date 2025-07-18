@@ -143,3 +143,34 @@ argon_projects.db
 
 # Local testing
 test_dump.archive
+
+# Claude AI assistant files
+CLAUDE.md
+claude.md
+.claude/
+*claude*
+*CLAUDE*
+
+# AI assistant conversation logs  
+*.ai_conversation
+*.claude_conversation
+conversation_*.md
+
+# Development notes and AI-generated content
+AI_NOTES.md
+DEVELOPMENT_LOG.md
+*_ai_generated*
+
+# Temporary files
+*.tmp
+*.temp
+
+# Built binaries
+/cli/argon
+argon
+argon.exe
+
+# Go specific
+*.test
+*.out
+vendor/

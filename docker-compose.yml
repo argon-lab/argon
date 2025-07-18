@@ -62,19 +62,22 @@ services:
       dockerfile: Dockerfile
     container_name: argon-api
     ports:
-      - "8000:8000"
+      - "3000:3000"
     environment:
-      - MONGODB_URI=mongodb://admin:password@mongodb:27017/?replicaSet=rs0
-      - REDIS_URL=redis://redis:6379
-      - ENGINE_SERVICE_URL=http://engine:8080
-      - LOG_LEVEL=debug
+      - GO_ENGINE_HOST=engine
+      - GO_ENGINE_PORT=8080
+      - PORT=3000
+      - LOG_LEVEL=info
     depends_on:
-      - mongodb
-      - redis
       - engine
     volumes:
       - ./services/api:/app
     working_dir: /app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Next.js Web Dashboard (Development mode)
   web:
@@ -83,10 +86,10 @@ services:
       dockerfile: Dockerfile.dev
     container_name: argon-web
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-      - NEXT_PUBLIC_WS_URL=ws://localhost:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:3000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:3000
     depends_on:
       - api
     volumes:

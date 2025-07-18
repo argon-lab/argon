@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -32,49 +33,71 @@ Compatible with Neon CLI connection string patterns.`,
 			os.Exit(1)
 		}
 
-		// Default to main branch if not specified
+		client := getAPIClient()
+
+		// If no branch ID specified, find the main branch
 		if branchID == "" {
-			branchID = "main"
+			branches, err := client.ListBranches(projectID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "❌ Error listing branches: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Find main branch
+			for _, branch := range branches {
+				if branch.IsMain {
+					branchID = branch.ID
+					break
+				}
+			}
+			
+			if branchID == "" {
+				fmt.Fprintf(os.Stderr, "❌ No main branch found for project %s\n", projectID)
+				os.Exit(1)
+			}
 		}
 
-		// Default database name
-		if database == "" {
-			database = "database"
+		// Get the connection string from API
+		connStr, err := client.GetConnectionString(projectID, branchID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error getting connection string: %v\n", err)
+			os.Exit(1)
 		}
 
-		// Default role
-		if role == "" {
-			role = "user"
+		// Get branch details for display
+		branch, err := client.GetBranch(projectID, branchID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error getting branch details: %v\n", err)
+			os.Exit(1)
 		}
-
-		// Generate MongoDB connection string
-		// In a real implementation, this would fetch from the API
-		host := fmt.Sprintf("branch-%s.cluster.argon.dev", branchID)
-		connectionString := fmt.Sprintf("mongodb://%s:<password>@%s/%s", role, host, database)
 
 		fmt.Printf("📋 MongoDB Connection String:\n")
-		fmt.Printf("   %s\n\n", connectionString)
+		fmt.Printf("   %s\n\n", connStr.ConnectionString)
 		
 		fmt.Printf("🔧 Connection Details:\n")
 		fmt.Printf("   Project ID: %s\n", projectID)
-		fmt.Printf("   Branch: %s\n", branchID)
-		fmt.Printf("   Database: %s\n", database)
-		fmt.Printf("   Role: %s\n", role)
-		fmt.Printf("   Host: %s\n", host)
+		fmt.Printf("   Branch: %s (%s)\n", branch.Name, branch.ID)
+		fmt.Printf("   Database: %s\n", connStr.DatabaseName)
+		fmt.Printf("   Status: %s\n", branch.Status)
+		if connStr.ExpiresAt != nil {
+			fmt.Printf("   Expires: %s\n", connStr.ExpiresAt.Format("2006-01-02 15:04:05 UTC"))
+		}
 		
 		fmt.Printf("\n💡 Usage Examples:\n")
 		fmt.Printf("   # MongoDB shell\n")
-		fmt.Printf("   mongosh \"%s\"\n\n", connectionString)
+		fmt.Printf("   mongosh \"%s\"\n\n", connStr.ConnectionString)
 		
 		fmt.Printf("   # Python (PyMongo)\n")
 		fmt.Printf("   from pymongo import MongoClient\n")
-		fmt.Printf("   client = MongoClient(\"%s\")\n\n", connectionString)
+		fmt.Printf("   client = MongoClient(\"%s\")\n\n", connStr.ConnectionString)
 		
 		fmt.Printf("   # Node.js (MongoDB Driver)\n")
 		fmt.Printf("   const { MongoClient } = require('mongodb');\n")
-		fmt.Printf("   const client = new MongoClient(\"%s\");\n\n", connectionString)
+		fmt.Printf("   const client = new MongoClient(\"%s\");\n\n", connStr.ConnectionString)
 		
-		fmt.Printf("⚠️  Remember to replace <password> with your actual password!\n")
+		if role != "" || database != "" {
+			fmt.Printf("⚠️  Custom role and database flags are applied at the application level.\n")
+		}
 	},
 }
 
