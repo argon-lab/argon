@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Argon v2 Python API Service
+Argon Python API Service
 Bridges the CLI and Go engine, provides REST API for web dashboard
 """
 
@@ -23,9 +23,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Argon v2 API",
+    title="Argon API",
     description="MongoDB Branching System - Python API Service",
-    version="2.0.0",
+    version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -154,14 +154,14 @@ async def health_check():
             "status": "healthy",
             "timestamp": datetime.utcnow(),
             "go_engine": "connected",
-            "version": "2.0.0"
+            "version": "1.0.0"
         }
     except Exception as e:
         return {
             "status": "degraded",
             "timestamp": datetime.utcnow(),
             "go_engine": "disconnected",
-            "version": "2.0.0",
+            "version": "1.0.0",
             "error": str(e)
         }
 

@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Argon v2 Complete System Integration Test
+# Argon Complete System Integration Test
 # This script demonstrates the working end-to-end system
 
 set -e
 
-echo "🚀 Argon v2 Complete System Integration Test"
-echo "============================================="
+echo "🚀 Argon Complete System Integration Test"
+echo "=========================================="
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -146,7 +146,7 @@ echo "• Open-source ready with startup potential"
 echo
 echo "✨ Integration Test Complete!"
 echo "============================"
-print_success "Argon v2 core components are production-ready!"
+print_success "Argon core components are production-ready!"
 print_status "Run 'docker compose up' to start the full system"
 
 echo
@@ -160,5 +160,5 @@ print_status "Compression: Real ZSTD achieving ~42% compression ratio"
 print_status "Compatibility: Perfect Neon CLI patterns implemented"
 
 echo
-print_success "🎉 Argon v2 development milestone achieved!"
+print_success "🎉 Argon development milestone achieved!"
 print_status "Ready for production deployment and community open-source release"

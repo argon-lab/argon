@@ -31,7 +31,7 @@ Examples:
   argon connection-string              # Get MongoDB connection string
 
 Built by MongoDB engineers for the ML/AI community.`,
-	Version: "2.0.0",
+	Version: "1.0.0",
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.

@@ -1,6 +1,6 @@
-# Contributing to Argon v2
+# Contributing to Argon
 
-Thank you for your interest in contributing to Argon v2! This document provides guidelines for contributors.
+Thank you for your interest in contributing to Argon! This document provides guidelines for contributors.
 
 ## 🤝 How to Contribute
 
@@ -132,4 +132,4 @@ By contributing, you agree your contributions will be licensed under the MIT Lic
 
 ---
 
-Thank you for helping make Argon v2 better! 🚀
+Thank you for helping make Argon better! 🚀

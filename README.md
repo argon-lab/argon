@@ -1,15 +1,17 @@
-# Argon v2: Git-like MongoDB Branching for ML/AI Workflows
+# Argon 🚀
+
+**Git-like MongoDB Branching for ML/AI Workflows**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](https://golang.org)
-[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python)](https://python.org)
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://golang.org)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python)](https://python.org)
 [![MongoDB](https://img.shields.io/badge/MongoDB-7.0+-47A248?logo=mongodb)](https://mongodb.com)
 
-> **🚀 Complete rewrite in progress!** Argon v2 brings enterprise-grade MongoDB branching with sub-500ms operations, ML-native features, and a hybrid Go+Python architecture.
+> **🎉 Now Available!** Argon brings enterprise-grade MongoDB branching with sub-500ms operations, ML-native features, and a hybrid Go+Python architecture.
 
-## What is Argon v2?
+## What is Argon?
 
-Argon v2 is a MongoDB branching system that provides Git-like database operations optimized for ML/AI workflows. Think "Neon for MongoDB" with first-class support for data science teams.
+Argon is a MongoDB branching system that provides Git-like database operations optimized for ML/AI workflows. Think "Neon for MongoDB" with first-class support for data science teams.
 
 ### Key Features
 
@@ -200,25 +202,26 @@ argon/
 
 ## Roadmap
 
-### v2.0 (Current) - Foundation
+### v1.0 (Current) - Production Ready
 - Hybrid Go+Python architecture
 - Core branching operations
 - MongoDB change streams
-- Basic CLI and web interface
+- CLI and API interface
+- S3 storage with compression
 
-### v2.1 - ML Integration
+### v1.1 - ML Integration
 - MLflow connector
 - DVC integration
 - Weights & Biases support
 - Jupyter notebook examples
 
-### v2.2 - Enterprise Features
+### v1.2 - Enterprise Features
 - User authentication and RBAC
 - Team collaboration features
 - Advanced branch operations
 - Performance optimization
 
-### v2.3 - Scale & Polish
+### v1.3 - Scale & Polish
 - Multi-region deployment
 - Advanced analytics
 - Plugin architecture
@@ -244,7 +247,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Built by MongoDB Engineers
 
-Argon v2 is built with deep MongoDB expertise, leveraging advanced features like change streams, optimized aggregation pipelines, and performance best practices learned from production deployments.
+Argon is built with deep MongoDB expertise, leveraging advanced features like change streams, optimized aggregation pipelines, and performance best practices learned from production deployments.
 
 ---
 
