@@ -60,6 +60,13 @@ func (s *Service) CreateBranch(ctx context.Context, req *BranchCreateRequest) (*
 		return nil, fmt.Errorf("failed to create branch: %w", err)
 	}
 	
+	// Create initial storage structure for the branch
+	if err := s.initializeBranchStorage(ctx, branch); err != nil {
+		// Rollback branch creation
+		collection.DeleteOne(ctx, bson.M{"_id": branch.ID})
+		return nil, fmt.Errorf("failed to initialize branch storage: %w", err)
+	}
+	
 	// If this has a parent branch, copy initial data
 	if req.ParentBranch != nil {
 		if err := s.copyFromParent(ctx, branch, *req.ParentBranch); err != nil {
@@ -239,4 +246,147 @@ func calculateCompressionRatio(storageSize int64) float64 {
 		return 0
 	}
 	return 0.7 // Assume 70% compression ratio
+}
+
+// initializeBranchStorage creates the initial storage structure for a branch
+func (s *Service) initializeBranchStorage(ctx context.Context, branch *Branch) error {
+	// Create initial metadata for the branch in storage
+	branchMetadata := map[string]interface{}{
+		"id":          branch.ID.Hex(),
+		"name":        branch.Name,
+		"project_id":  branch.ProjectID.Hex(),
+		"created_at":  branch.CreatedAt,
+		"is_main":     branch.IsMain,
+		"parent":      branch.ParentBranch,
+		"storage_version": "1.0",
+	}
+	
+	// Store initial metadata
+	metadataPath := fmt.Sprintf("%s/metadata.json", branch.StoragePath)
+	metadataBytes, err := json.Marshal(branchMetadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal branch metadata: %w", err)
+	}
+	
+	if err := s.storage.Upload(metadataPath, metadataBytes); err != nil {
+		return fmt.Errorf("failed to upload branch metadata: %w", err)
+	}
+	
+	// Create initial empty delta index
+	deltaIndex := map[string]interface{}{
+		"version":    "1.0",
+		"branch_id":  branch.ID.Hex(),
+		"deltas":     []string{}, // Empty initially
+		"created_at": time.Now(),
+	}
+	
+	deltaIndexPath := fmt.Sprintf("%s/delta_index.json", branch.StoragePath)
+	deltaIndexBytes, err := json.Marshal(deltaIndex)
+	if err != nil {
+		return fmt.Errorf("failed to marshal delta index: %w", err)
+	}
+	
+	if err := s.storage.Upload(deltaIndexPath, deltaIndexBytes); err != nil {
+		return fmt.Errorf("failed to upload delta index: %w", err)
+	}
+	
+	return nil
+}
+
+// StoreBranchChanges stores changes for a branch using the storage engine
+func (s *Service) StoreBranchChanges(ctx context.Context, branchID primitive.ObjectID, changes []ChangeEvent) error {
+	// Convert change events to delta operations
+	operations := make([]storage.DeltaOperation, len(changes))
+	for i, change := range changes {
+		operations[i] = storage.DeltaOperation{
+			ID:            primitive.NewObjectID().Hex(),
+			OperationType: change.OperationType,
+			Collection:    change.Collection,
+			DocumentID:    change.DocumentID,
+			FullDocument:  change.FullDocument,
+			Timestamp:     change.Timestamp,
+			ResumeToken:   change.ResumeToken,
+		}
+	}
+	
+	// Get branch to get project ID
+	branch, err := s.GetBranch(ctx, branchID)
+	if err != nil {
+		return fmt.Errorf("failed to get branch: %w", err)
+	}
+	
+	// Store delta using storage service
+	deltaPath, err := s.storage.StoreDelta(branchID.Hex(), branch.ProjectID.Hex(), operations)
+	if err != nil {
+		return fmt.Errorf("failed to store delta: %w", err)
+	}
+	
+	// Update branch metadata with new delta
+	update := bson.M{
+		"$inc": bson.M{
+			"document_count": len(changes),
+		},
+		"$set": bson.M{
+			"updated_at":        time.Now(),
+			"current_revision":  generateRevision(),
+			"last_sync_at":      time.Now(),
+		},
+		"$push": bson.M{
+			"metadata.deltas": deltaPath,
+		},
+	}
+	
+	collection := s.db.Collection("branches")
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": branchID}, update)
+	if err != nil {
+		return fmt.Errorf("failed to update branch metadata: %w", err)
+	}
+	
+	return nil
+}
+
+// GetBranchStorageStats returns storage statistics for a branch
+func (s *Service) GetBranchStorageStats(ctx context.Context, branchID primitive.ObjectID) (*BranchStorageStats, error) {
+	branch, err := s.GetBranch(ctx, branchID)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Get delta files for the branch
+	deltas, err := s.storage.ListDeltas(branch.ProjectID.Hex(), branchID.Hex())
+	if err != nil {
+		return nil, fmt.Errorf("failed to list deltas: %w", err)
+	}
+	
+	var totalSize int64
+	var totalCompressedSize int64
+	var totalOperations int64
+	
+	// Calculate storage statistics from deltas
+	for _, deltaPath := range deltas {
+		delta, err := s.storage.LoadDelta(deltaPath)
+		if err != nil {
+			continue // Skip corrupted deltas
+		}
+		
+		totalSize += delta.Metadata.UncompressedSize
+		totalCompressedSize += delta.Metadata.CompressedSize
+		totalOperations += int64(delta.Metadata.OperationCount)
+	}
+	
+	compressionRatio := float64(0)
+	if totalSize > 0 {
+		compressionRatio = float64(totalCompressedSize) / float64(totalSize)
+	}
+	
+	return &BranchStorageStats{
+		BranchID:           branchID.Hex(),
+		DeltaCount:         int64(len(deltas)),
+		UncompressedSize:   totalSize,
+		CompressedSize:     totalCompressedSize,
+		CompressionRatio:   compressionRatio,
+		TotalOperations:    totalOperations,
+		StoragePath:        branch.StoragePath,
+		LastSyncAt:         branch.LastSyncAt,
+	}, nil
 }

@@ -32,7 +32,10 @@ func main() {
 	defer client.Disconnect(context.Background())
 
 	// Initialize services
-	storageService := storage.NewService(cfg)
+	storageService, err := storage.NewService(cfg)
+	if err != nil {
+		log.Fatal("Failed to initialize storage service:", err)
+	}
 	branchService := branch.NewService(client, storageService)
 	streamsService := streams.NewService(client, storageService)
 
