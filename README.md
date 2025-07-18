@@ -24,7 +24,7 @@ Argon is a MongoDB branching system that provides Git-like database operations o
 
 ## Architecture
 
-Argon v2 uses a hybrid architecture optimizing for both performance and developer productivity:
+Argon uses a hybrid architecture optimizing for both performance and developer productivity:
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
