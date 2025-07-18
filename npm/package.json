@@ -1,0 +1,49 @@
+{
+  "name": "@argon-lab/cli",
+  "version": "1.0.0",
+  "description": "Git-like MongoDB branching for ML/AI workflows",
+  "main": "index.js",
+  "bin": {
+    "argon": "./bin/argon"
+  },
+  "scripts": {
+    "postinstall": "node install.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/argon-lab/argon.git"
+  },
+  "keywords": [
+    "mongodb",
+    "branching",
+    "database",
+    "ml",
+    "ai",
+    "data-science",
+    "cli"
+  ],
+  "author": "Argon Lab",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/argon-lab/argon/issues"
+  },
+  "homepage": "https://github.com/argon-lab/argon#readme",
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md"
+  ]
+}

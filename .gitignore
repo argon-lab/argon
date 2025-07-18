@@ -169,6 +169,7 @@ DEVELOPMENT_LOG.md
 /cli/argon
 argon
 argon.exe
+/dist/
 
 # Go specific
 *.test

@@ -55,13 +55,54 @@ Argon uses a hybrid architecture optimizing for both performance and developer p
 
 ## Quick Start
 
-### Prerequisites
+### Installation
 
-- Docker & Docker Compose
-- Go 1.21+ (for CLI development)
-- Python 3.9+ (for API development)
+Choose your preferred installation method:
 
-### Development Setup
+#### Quick Install (Recommended)
+```bash
+curl -sSL https://raw.githubusercontent.com/argon-lab/argon/main/scripts/install.sh | bash
+```
+
+#### Homebrew (macOS/Linux)
+```bash
+brew install argon-lab/tap/argon
+```
+
+#### npm (Cross-platform)
+```bash
+npm install -g @argon-lab/cli
+```
+
+#### Direct Download
+```bash
+# Linux (x64)
+curl -L https://github.com/argon-lab/argon/releases/latest/download/argon-linux-amd64 -o argon
+chmod +x argon && sudo mv argon /usr/local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/argon-lab/argon/releases/latest/download/argon-darwin-amd64 -o argon
+chmod +x argon && sudo mv argon /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -L https://github.com/argon-lab/argon/releases/latest/download/argon-darwin-arm64 -o argon
+chmod +x argon && sudo mv argon /usr/local/bin/
+```
+
+#### From Source
+```bash
+git clone https://github.com/argon-lab/argon.git
+cd argon/cli
+go build -o argon .
+```
+
+### Verify Installation
+```bash
+argon --version
+# argon version 1.0.0
+```
+
+### Development Setup (Contributors)
 
 ```bash
 # Clone the repository
@@ -69,37 +110,30 @@ git clone https://github.com/argon-lab/argon.git
 cd argon
 
 # Start the development environment
-docker-compose up -d
+docker compose up -d
 
 # Verify services are running
 curl http://localhost:8080/health  # Go engine
-curl http://localhost:8000/docs    # Python API (when implemented)
-curl http://localhost:3000         # Web dashboard (when implemented)
+curl http://localhost:3000/health  # Python API
 ```
 
-### CLI Usage (Coming Soon)
+### Basic Usage
 
 ```bash
-# Install the CLI
-pip install argon-cli
+# Create a new project
+argon projects create --name my-ml-project --mongodb-uri mongodb://localhost:27017
 
-# Initialize a project
-argon init my-ml-project
+# List your projects
+argon projects list
 
-# Create a branch
-argon branch create experiment-1
+# Create a branch for experimentation  
+argon branches create --name experiment-1 --project-id proj_abc123
 
-# Make changes to your data
-# ... modify MongoDB collections ...
+# Get connection string for your branch
+argon connection-string --project-id proj_abc123 --branch-id br_def456
 
-# See what changed
-argon status
-
-# Sync changes to cloud
-argon push
-
-# Switch branches instantly
-argon switch main
+# Switch between branches instantly
+argon branches switch --branch-id br_def456
 ```
 
 ## Development Status
