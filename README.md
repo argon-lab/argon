@@ -68,9 +68,9 @@ go build -o argon .
 sudo mv argon /usr/local/bin/
 ```
 
-#### Homebrew (macOS/Linux) - Coming Soon
+#### Homebrew (macOS/Linux) 
 ```bash
-brew install argonctl
+brew install argon-lab/tap/argonctl
 ```
 
 #### npm (Cross-platform) - Coming Soon
@@ -149,7 +149,8 @@ argon projects list
 
 ## Coming Soon
 
-🚧 **Package Managers** - `brew install argonctl` and `npm install -g argonctl`  
+✅ **Homebrew** - `brew install argon-lab/tap/argonctl` (live now!)  
+🚧 **npm Package** - `npm install -g argonctl` (binary downloads needed)  
 🚧 **Hosted Service** - Cloud-hosted Argon for instant use  
 🚧 **Web Dashboard** - Visual branch management  
 🚧 **ML Integrations** - MLflow, DVC, Weights & Biases  
