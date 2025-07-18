@@ -1,7 +1,0 @@
-body { background: #f7f7fa; }
-.container { max-width: 900px; margin: 40px auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px #0001; padding: 32px; }
-h1 { color: #3b82f6; }
-.btn { transition: background 0.2s; }
-.btn-create:hover { background: #2563eb; }
-.btn-delete:hover { background: #b91c1c; }
-.btn-time:hover { background: #d97706; }
