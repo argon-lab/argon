@@ -1,11 +1,11 @@
-# Argon CLI
+# argonctl
 
 Git-like MongoDB branching for ML/AI workflows.
 
 ## Installation
 
 ```bash
-npm install -g @argon-lab/cli
+npm install -g argonctl
 ```
 
 ## Usage

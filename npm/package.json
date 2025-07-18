@@ -1,10 +1,11 @@
 {
-  "name": "@argon-lab/cli",
+  "name": "argonctl",
   "version": "1.0.0",
   "description": "Git-like MongoDB branching for ML/AI workflows",
   "main": "index.js",
   "bin": {
-    "argon": "./bin/argon"
+    "argon": "./bin/argon",
+    "argonctl": "./bin/argon"
   },
   "scripts": {
     "postinstall": "node install.js",

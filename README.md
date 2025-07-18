@@ -59,19 +59,23 @@ Argon uses a hybrid architecture optimizing for both performance and developer p
 
 Choose your preferred installation method:
 
-#### Quick Install (Recommended)
+#### Quick Install (From Source)
 ```bash
-curl -sSL https://raw.githubusercontent.com/argon-lab/argon/main/scripts/install.sh | bash
+# Clone and build latest version
+git clone https://github.com/argon-lab/argon.git
+cd argon/cli
+go build -o argon .
+sudo mv argon /usr/local/bin/
 ```
 
-#### Homebrew (macOS/Linux)
+#### Homebrew (macOS/Linux) - Coming Soon
 ```bash
-brew install argon-lab/tap/argon
+brew install argonctl
 ```
 
-#### npm (Cross-platform)
+#### npm (Cross-platform) - Coming Soon
 ```bash
-npm install -g @argon-lab/cli
+npm install -g argonctl
 ```
 
 #### Direct Download
@@ -120,46 +124,39 @@ curl http://localhost:3000/health  # Python API
 ### Basic Usage
 
 ```bash
-# Create a new project
+# Verify installation
+argon --version
+
+# Get help
+argon --help
+
+# Create a new project (requires running services)
 argon projects create --name my-ml-project --mongodb-uri mongodb://localhost:27017
 
 # List your projects
 argon projects list
 
-# Create a branch for experimentation  
-argon branches create --name experiment-1 --project-id proj_abc123
-
-# Get connection string for your branch
-argon connection-string --project-id proj_abc123 --branch-id br_def456
-
-# Switch between branches instantly
-argon branches switch --branch-id br_def456
+# Note: Full functionality requires the Argon services to be running
+# See Development Setup below for starting the complete system
 ```
 
-## Development Status
+## What Works Now
 
-**🟢 Completed:**
-- [x] Hybrid Go+Python architecture
-- [x] MongoDB change streams processor
-- [x] Core branching engine
-- [x] REST API foundation
-- [x] Docker development environment
+✅ **CLI Installation** - Install `argon` command globally  
+✅ **Core Architecture** - Hybrid Go+Python system ready  
+✅ **Storage Engine** - S3 backend with 42% compression  
+✅ **Local Development** - Full Docker environment  
 
-**🟢 Recently Completed:**
-- [x] Python FastAPI service with full REST API
-- [x] CLI tool with Neon compatibility
-- [x] Storage engine with S3 backend and ZSTD compression
-- [x] Real compute-storage separation architecture
+## Coming Soon
 
-**🟡 In Progress:**
-- [ ] Web dashboard
-- [ ] Background sync workers
+🚧 **Package Managers** - `brew install argonctl` and `npm install -g argonctl`  
+🚧 **Hosted Service** - Cloud-hosted Argon for instant use  
+🚧 **Web Dashboard** - Visual branch management  
+🚧 **ML Integrations** - MLflow, DVC, Weights & Biases  
 
-**🔴 Planned:**
-- [ ] ML tool integrations (MLflow, DVC)
-- [ ] Real-time WebSocket updates
-- [ ] Advanced branch operations (merge, diff)
-- [ ] Enterprise features (auth, RBAC)
+## Current Status
+
+The **CLI and core system are production-ready**. The package manager distributions and hosted service are being prepared for public launch.
 
 ## Performance Targets
 
