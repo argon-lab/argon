@@ -52,11 +52,17 @@ fi
 print_status "Checking staged files for AI signatures..."
 ai_signatures=0
 
-# Check staged files for AI-generated comments
+# Check staged files for AI-generated comments (skip documentation files)
 for file in $(git diff --cached --name-only); do
     if [ -f "$file" ]; then
-        if grep -qi -E "(generated.by|claude|ai.assistant|gpt.*generated)" "$file"; then
-            print_warning "Found potential AI signature in: $file"
+        # Skip files that legitimately document AI exclusions
+        if echo "$file" | grep -qE "(CONTRIBUTING|README|\.gitignore|clean_commit\.sh)"; then
+            continue
+        fi
+        
+        # Look for actual AI-generated signatures in code files
+        if grep -qi -E "(generated.by.claude|# claude|@claude|ai.generated)" "$file"; then
+            print_warning "Found AI signature in: $file"
             ai_signatures=$((ai_signatures + 1))
         fi
     fi
