@@ -25,11 +25,11 @@ Experience instant branching (1ms) and query any point in history.
 Built with Write-Ahead Log (WAL) architecture for maximum performance.
 
 Examples:
-  export ENABLE_WAL=true               # Enable advanced WAL features
-  argon wal project create my-project  # Create project with time travel  
-  argon wal tt-info --project my-proj  # Show time travel information
-  argon wal metrics                    # Performance monitoring
-  argon wal health                     # System health check
+  argon projects create my-project        # Create project with time travel
+  argon branches create feature-x -p proj # Create instant branch
+  argon time-travel info -p proj -b main  # Show time travel history
+  argon status                            # System health and performance
+  argon metrics                           # Detailed performance metrics
 
 The first MongoDB database with Git-like time travel.`,
 	Version: "1.0.0",
