@@ -557,7 +557,7 @@ func toFloat64(v interface{}) float64 {
 		if str := fmt.Sprintf("%v", v); str != "" {
 			if f, err := fmt.Sscanf(str, "%f", new(float64)); err == nil && f == 1 {
 				var result float64
-				fmt.Sscanf(str, "%f", &result)
+				_, _ = fmt.Sscanf(str, "%f", &result)
 				return result
 			}
 		}

@@ -112,7 +112,7 @@ const (
 func NewValidationError(message string, details map[string]interface{}) *WALError {
 	err := NewWALError(ErrorTypeValidation, message, nil, false)
 	for k, v := range details {
-		err.WithDetail(k, v)
+		_ = err.WithDetail(k, v)
 	}
 	return err
 }
@@ -138,7 +138,7 @@ func NewNotFoundError(resource string, id string) *WALError {
 func NewConflictError(message string, details map[string]interface{}) *WALError {
 	err := NewWALError(ErrorTypeConflict, message, nil, false)
 	for k, v := range details {
-		err.WithDetail(k, v)
+		_ = err.WithDetail(k, v)
 	}
 	return err
 }

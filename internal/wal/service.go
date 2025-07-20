@@ -121,7 +121,7 @@ func (s *Service) GetEntries(filter bson.M, opts ...*options.FindOptions) ([]*En
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var entries []*Entry
 	if err := cursor.All(ctx, &entries); err != nil {
@@ -200,7 +200,7 @@ func (s *Service) GetProjectEntries(projectID, collection string, startLSN, endL
 }
 
 // GetMetrics returns a snapshot of current metrics
-func (s *Service) GetMetrics() Metrics {
+func (s *Service) GetMetrics() MetricsSnapshot {
 	return s.metrics.GetSnapshot()
 }
 

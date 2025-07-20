@@ -235,8 +235,8 @@ func TestInterceptor_BranchIsolation(t *testing.T) {
 		
 		// Verify different content
 		var doc1Saved, doc2Saved bson.M
-		bson.Unmarshal(entries1[0].Document, &doc1Saved)
-		bson.Unmarshal(entries2[0].Document, &doc2Saved)
+		_ = bson.Unmarshal(entries1[0].Document, &doc1Saved)
+		_ = bson.Unmarshal(entries2[0].Document, &doc2Saved)
 		
 		assert.Equal(t, "Branch1User", doc1Saved["name"])
 		assert.Equal(t, "Branch2User", doc2Saved["name"])

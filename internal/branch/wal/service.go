@@ -167,7 +167,7 @@ func (s *BranchService) ListBranches(projectID string) ([]*wal.Branch, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var branches []*wal.Branch
 	if err := cursor.All(ctx, &branches); err != nil {
@@ -250,7 +250,7 @@ func (s *BranchService) GetChildBranches(parentID string) ([]*wal.Branch, error)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var branches []*wal.Branch
 	if err := cursor.All(ctx, &branches); err != nil {

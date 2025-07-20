@@ -228,7 +228,7 @@ func (i *Interceptor) ensureDocumentID(document interface{}) (interface{}, inter
 	default:
 		// For other types, marshal and unmarshal to bson.M
 		bytes, _ := bson.Marshal(document)
-		bson.Unmarshal(bytes, &doc)
+		_ = bson.Unmarshal(bytes, &doc)
 	}
 	
 	// Check if _id exists

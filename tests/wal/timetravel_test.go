@@ -140,7 +140,7 @@ func TestTimeTravel_MaterializeAtTime(t *testing.T) {
 		assert.Nil(t, state["e3"])
 		
 		// Query before any events
-		state, err = timeTravelService.MaterializeAtTime(branch, "events", startTime.Add(-1*time.Second))
+		_, err = timeTravelService.MaterializeAtTime(branch, "events", startTime.Add(-1*time.Second))
 		assert.Error(t, err) // No entries before this time
 	})
 }

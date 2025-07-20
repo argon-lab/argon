@@ -130,12 +130,39 @@ func (m *Metrics) UpdateActiveProjects(count int) {
 	m.mu.Unlock()
 }
 
+// MetricsSnapshot represents a read-only snapshot of metrics without mutexes
+type MetricsSnapshot struct {
+	// Operation counters
+	AppendOps   int64 `json:"append_ops"`
+	QueryOps    int64 `json:"query_ops"`
+	MaterialOps int64 `json:"material_ops"`
+	BranchOps   int64 `json:"branch_ops"`
+	RestoreOps  int64 `json:"restore_ops"`
+	
+	// Error counters
+	AppendErrors     int64 `json:"append_errors"`
+	QueryErrors      int64 `json:"query_errors"`
+	MaterialErrors   int64 `json:"material_errors"`
+	ConnectionErrors int64 `json:"connection_errors"`
+	
+	// Performance metrics
+	AvgAppendLatency   time.Duration `json:"avg_append_latency"`
+	AvgQueryLatency    time.Duration `json:"avg_query_latency"`
+	AvgMaterialLatency time.Duration `json:"avg_material_latency"`
+	
+	// Current state
+	CurrentLSN        int64     `json:"current_lsn"`
+	ActiveBranches    int       `json:"active_branches"`
+	ActiveProjects    int       `json:"active_projects"`
+	LastOperationTime time.Time `json:"last_operation_time"`
+}
+
 // GetSnapshot returns a read-only snapshot of current metrics
-func (m *Metrics) GetSnapshot() Metrics {
+func (m *Metrics) GetSnapshot() MetricsSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	
-	snapshot := Metrics{
+	snapshot := MetricsSnapshot{
 		AppendOps:          atomic.LoadInt64(&m.AppendOps),
 		QueryOps:           atomic.LoadInt64(&m.QueryOps),
 		MaterialOps:        atomic.LoadInt64(&m.MaterialOps),

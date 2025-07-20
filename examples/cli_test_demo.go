@@ -12,8 +12,8 @@ import (
 // CLI Test Demo - demonstrates WAL CLI functionality programmatically
 func main() {
 	// Set WAL environment
-	os.Setenv("ENABLE_WAL", "true")
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	_ = os.Setenv("ENABLE_WAL", "true")
+	_ = os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
 
 	fmt.Println("=== WAL CLI Integration Demo ===")
 	

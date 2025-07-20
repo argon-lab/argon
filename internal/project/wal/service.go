@@ -137,7 +137,7 @@ func (s *ProjectService) ListProjects() ([]*wal.Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var projects []*wal.Project
 	if err := cursor.All(ctx, &projects); err != nil {

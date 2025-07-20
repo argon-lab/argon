@@ -215,8 +215,8 @@ func TestProjectService_EdgeCases(t *testing.T) {
 		// Create additional branches
 		branches, _ := branchService.ListBranches(project.ID)
 		mainBranch := branches[0]
-		branchService.CreateBranch(project.ID, "feature-1", mainBranch.ID)
-		branchService.CreateBranch(project.ID, "feature-2", mainBranch.ID)
+		_, _ = branchService.CreateBranch(project.ID, "feature-1", mainBranch.ID)
+		_, _ = branchService.CreateBranch(project.ID, "feature-2", mainBranch.ID)
 		
 		// Delete project
 		err := projectService.DeleteProject(project.ID)
@@ -270,7 +270,7 @@ func TestWALService_TimestampOrdering(t *testing.T) {
 				BranchID:  "main",
 				Operation: wal.OpInsert,
 			}
-			walService.Append(entry)
+			_, _ = walService.Append(entry)
 			
 			if i == 2 {
 				midTimestamp = time.Now()
@@ -309,7 +309,7 @@ func TestBranchService_LSNConsistency(t *testing.T) {
 				Collection: "data",
 			}
 			lsn, _ := walService.Append(entry)
-			branchService.UpdateBranchHead(main.ID, lsn)
+			_ = branchService.UpdateBranchHead(main.ID, lsn)
 		}
 		
 		// Get updated main

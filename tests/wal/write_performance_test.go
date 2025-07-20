@@ -186,8 +186,8 @@ func setupBenchDB(b *testing.B) *mongo.Database {
 	db := client.Database(dbName)
 
 	b.Cleanup(func() {
-		db.Drop(context.Background())
-		client.Disconnect(context.Background())
+		_ = db.Drop(context.Background())
+		_ = client.Disconnect(context.Background())
 	})
 
 	return db
@@ -208,7 +208,7 @@ func BenchmarkWALWrites(b *testing.B) {
 				"index": i,
 				"name":  fmt.Sprintf("User %d", i),
 			}
-			interceptor.InsertOne(ctx, "bench_users", doc)
+			_, _ = interceptor.InsertOne(ctx, "bench_users", doc)
 		}
 		b.StopTimer()
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")
@@ -218,14 +218,14 @@ func BenchmarkWALWrites(b *testing.B) {
 		// Pre-insert documents
 		for i := 0; i < 100; i++ {
 			doc := bson.M{"_id": fmt.Sprintf("update-%d", i), "value": 0}
-			interceptor.InsertOne(ctx, "bench_updates", doc)
+			_, _ = interceptor.InsertOne(ctx, "bench_updates", doc)
 		}
 		
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			filter := bson.M{"_id": fmt.Sprintf("update-%d", i%100)}
 			update := bson.M{"$set": bson.M{"value": i}}
-			interceptor.UpdateOne(ctx, "bench_updates", filter, update)
+			_, _ = interceptor.UpdateOne(ctx, "bench_updates", filter, update)
 		}
 		b.StopTimer()
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")

@@ -116,7 +116,7 @@ func (c *Collection) Find(ctx context.Context, filter interface{}, opts ...*opti
 			filterDoc = bson.M(f)
 		default:
 			bytes, _ := bson.Marshal(filter)
-			bson.Unmarshal(bytes, &filterDoc)
+			_ = bson.Unmarshal(bytes, &filterDoc)
 		}
 	}
 	
@@ -153,7 +153,7 @@ func (c *Collection) FindOne(ctx context.Context, filter interface{}, opts ...*o
 			filterDoc = bson.M(f)
 		default:
 			bytes, _ := bson.Marshal(filter)
-			bson.Unmarshal(bytes, &filterDoc)
+			_ = bson.Unmarshal(bytes, &filterDoc)
 		}
 	}
 	
@@ -188,7 +188,7 @@ func (c *Collection) CountDocuments(ctx context.Context, filter interface{}, opt
 			filterDoc = bson.M(f)
 		default:
 			bytes, _ := bson.Marshal(filter)
-			bson.Unmarshal(bytes, &filterDoc)
+			_ = bson.Unmarshal(bytes, &filterDoc)
 		}
 	}
 	
@@ -301,8 +301,8 @@ func isEqual(a, b interface{}) bool {
 	bBytes, _ := bson.Marshal(bson.M{"v": b})
 	
 	var aDoc, bDoc bson.M
-	bson.Unmarshal(aBytes, &aDoc)
-	bson.Unmarshal(bBytes, &bDoc)
+	_ = bson.Unmarshal(aBytes, &aDoc)
+	_ = bson.Unmarshal(bBytes, &bDoc)
 	
 	return fmt.Sprintf("%v", aDoc["v"]) == fmt.Sprintf("%v", bDoc["v"])
 }
@@ -387,7 +387,7 @@ func toFloat64(v interface{}) float64 {
 		if str := fmt.Sprintf("%v", v); str != "" {
 			if f, err := fmt.Sscanf(str, "%f", new(float64)); err == nil && f == 1 {
 				var result float64
-				fmt.Sscanf(str, "%f", &result)
+				_, _ = fmt.Sscanf(str, "%f", &result)
 				return result
 			}
 		}

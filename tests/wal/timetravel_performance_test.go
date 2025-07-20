@@ -243,7 +243,7 @@ func BenchmarkTimeTravel(b *testing.B) {
 	// Create test data
 	for i := 0; i < 1000; i++ {
 		doc := bson.M{"_id": fmt.Sprintf("bench%d", i), "value": i}
-		interceptor.InsertOne(ctx, "bench", doc)
+		_, _ = interceptor.InsertOne(ctx, "bench", doc)
 	}
 	
 	branch, _ = branchService.GetBranchByID(branch.ID)
