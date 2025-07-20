@@ -33,9 +33,10 @@ type Branch struct {
 	CurrentRevision string `bson:"current_revision" json:"current_revision"`
 	
 	// Metadata
-	CreatedBy   primitive.ObjectID `bson:"created_by" json:"created_by"`
-	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
-	UpdatedAt   time.Time          `bson:"updated_at" json:"updated_at"`
+	CreatedBy      primitive.ObjectID `bson:"created_by" json:"created_by"`
+	CreatedAt      time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt      time.Time          `bson:"updated_at" json:"updated_at"`
+	LastAccessedAt *time.Time         `bson:"last_accessed_at,omitempty" json:"last_accessed_at,omitempty"`
 	
 	// Storage information
 	StoragePath   string                 `bson:"storage_path" json:"storage_path"`

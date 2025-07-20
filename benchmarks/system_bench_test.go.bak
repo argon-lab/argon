@@ -1,0 +1,448 @@
+package benchmarks
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"math/rand"
+	"testing"
+	"time"
+
+	"github.com/your-org/argon/engine"
+	"github.com/your-org/argon/storage"
+	"github.com/your-org/argon/worker"
+)
+
+// BenchmarkConfig holds configuration for benchmarks
+type BenchmarkConfig struct {
+	NumBranches    int
+	NumDocuments   int
+	DocumentSize   int
+	NumWorkers     int
+	NumOperations  int
+}
+
+// GenerateTestData creates test data for benchmarks
+func GenerateTestData(size int) []byte {
+	data := make([]byte, size)
+	rand.Read(data)
+	return data
+}
+
+// GenerateJSONDocument creates a realistic JSON document
+func GenerateJSONDocument(id int) []byte {
+	doc := fmt.Sprintf(`{
+		"_id": "%d",
+		"user_id": "user_%d",
+		"name": "Test User %d",
+		"email": "user%d@example.com",
+		"age": %d,
+		"created_at": "%s",
+		"tags": ["tag1", "tag2", "tag3"],
+		"metadata": {
+			"source": "benchmark",
+			"version": 1,
+			"active": true
+		},
+		"history": [
+			{"action": "created", "timestamp": "%s"},
+			{"action": "updated", "timestamp": "%s"}
+		]
+	}`, id, id%1000, id, id, 20+id%50, 
+		time.Now().Format(time.RFC3339),
+		time.Now().Add(-24*time.Hour).Format(time.RFC3339),
+		time.Now().Add(-1*time.Hour).Format(time.RFC3339))
+	
+	return []byte(doc)
+}
+
+// BenchmarkBranchCreation tests branch creation performance
+func BenchmarkBranchCreation(b *testing.B) {
+	ctx := context.Background()
+	
+	// Setup storage
+	tempDir := b.TempDir()
+	storage, err := storage.NewStorageManager("local", map[string]interface{}{
+		"path": tempDir,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Create branch engine
+	branchEngine := engine.NewBranchEngine(nil, storage)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		branchName := fmt.Sprintf("bench-branch-%d", i)
+		_, err := branchEngine.CreateBranch(ctx, branchName, "main")
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	b.StopTimer()
+	
+	// Report metrics
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "branches/sec")
+}
+
+// BenchmarkStorageWrite tests storage write performance
+func BenchmarkStorageWrite(b *testing.B) {
+	sizes := []int{1024, 10240, 102400, 1048576} // 1KB, 10KB, 100KB, 1MB
+	
+	for _, size := range sizes {
+		b.Run(fmt.Sprintf("size-%d", size), func(b *testing.B) {
+			ctx := context.Background()
+			tempDir := b.TempDir()
+			
+			storage, err := storage.NewStorageManager("local", map[string]interface{}{
+				"path": tempDir,
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+			
+			// Enable compression
+			storage.EnableCompression("zstd", 3)
+			
+			data := GenerateTestData(size)
+			
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				key := fmt.Sprintf("bench/doc-%d", i)
+				err := storage.Store(ctx, key, data)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+			
+			b.StopTimer()
+			
+			// Report metrics
+			throughputMB := float64(size*b.N) / 1024 / 1024 / b.Elapsed().Seconds()
+			b.ReportMetric(throughputMB, "MB/sec")
+			b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "docs/sec")
+		})
+	}
+}
+
+// BenchmarkStorageRead tests storage read performance
+func BenchmarkStorageRead(b *testing.B) {
+	ctx := context.Background()
+	tempDir := b.TempDir()
+	
+	storage, err := storage.NewStorageManager("local", map[string]interface{}{
+		"path": tempDir,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	
+	// Pre-populate data
+	numDocs := 10000
+	docSize := 10240 // 10KB
+	for i := 0; i < numDocs; i++ {
+		key := fmt.Sprintf("bench/doc-%d", i)
+		data := GenerateTestData(docSize)
+		storage.Store(ctx, key, data)
+	}
+	
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := fmt.Sprintf("bench/doc-%d", i%numDocs)
+		_, err := storage.Retrieve(ctx, key)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	
+	b.StopTimer()
+	
+	// Report metrics
+	throughputMB := float64(docSize*b.N) / 1024 / 1024 / b.Elapsed().Seconds()
+	b.ReportMetric(throughputMB, "MB/sec")
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "docs/sec")
+}
+
+// BenchmarkCompressionRatio tests compression effectiveness
+func BenchmarkCompressionRatio(b *testing.B) {
+	dataTypes := []struct {
+		name      string
+		generator func(int) []byte
+	}{
+		{"json", GenerateJSONDocument},
+		{"random", GenerateTestData},
+		{"repetitive", func(n int) []byte {
+			return bytes.Repeat([]byte("test data "), 100)
+		}},
+	}
+	
+	for _, dt := range dataTypes {
+		b.Run(dt.name, func(b *testing.B) {
+			ctx := context.Background()
+			tempDir := b.TempDir()
+			
+			storage, err := storage.NewStorageManager("local", map[string]interface{}{
+				"path": tempDir,
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+			
+			storage.EnableCompression("zstd", 3)
+			
+			var totalOriginal, totalCompressed int64
+			
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				data := dt.generator(i)
+				totalOriginal += int64(len(data))
+				
+				key := fmt.Sprintf("compress/%d", i)
+				err := storage.Store(ctx, key, data)
+				if err != nil {
+					b.Fatal(err)
+				}
+				
+				// Get compressed size
+				stats, _ := storage.GetFileStats(key)
+				totalCompressed += stats.CompressedSize
+			}
+			
+			b.StopTimer()
+			
+			// Report compression ratio
+			ratio := float64(totalOriginal-totalCompressed) / float64(totalOriginal) * 100
+			b.ReportMetric(ratio, "compression%")
+		})
+	}
+}
+
+// BenchmarkWorkerThroughput tests worker pool throughput
+func BenchmarkWorkerThroughput(b *testing.B) {
+	workerCounts := []int{1, 2, 4, 8, 16}
+	
+	for _, numWorkers := range workerCounts {
+		b.Run(fmt.Sprintf("workers-%d", numWorkers), func(b *testing.B) {
+			config := worker.WorkerConfig{
+				NumWorkers: numWorkers,
+				QueueSize:  10000,
+			}
+			
+			pool := worker.NewWorkerPool(config)
+			pool.Start()
+			defer pool.Stop()
+			
+			// Create lightweight jobs
+			jobs := make([]worker.Job, b.N)
+			for i := 0; i < b.N; i++ {
+				jobs[i] = &worker.SimpleJob{
+					ID: fmt.Sprintf("job-%d", i),
+					Fn: func(ctx context.Context) error {
+						// Simulate minimal work
+						time.Sleep(1 * time.Microsecond)
+						return nil
+					},
+				}
+			}
+			
+			b.ResetTimer()
+			
+			// Submit all jobs
+			for i := 0; i < b.N; i++ {
+				pool.Submit(jobs[i])
+			}
+			
+			// Wait for completion
+			for pool.GetMetrics().TotalJobs < int64(b.N) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			
+			b.StopTimer()
+			
+			// Report metrics
+			jobsPerSec := float64(b.N) / b.Elapsed().Seconds()
+			b.ReportMetric(jobsPerSec, "jobs/sec")
+			b.ReportMetric(jobsPerSec/float64(numWorkers), "jobs/sec/worker")
+		})
+	}
+}
+
+// BenchmarkEndToEnd tests complete branch operation workflow
+func BenchmarkEndToEnd(b *testing.B) {
+	ctx := context.Background()
+	tempDir := b.TempDir()
+	
+	// Setup components
+	storage, err := storage.NewStorageManager("local", map[string]interface{}{
+		"path": tempDir,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	storage.EnableCompression("zstd", 3)
+	
+	branchEngine := engine.NewBranchEngine(nil, storage)
+	
+	workerPool := worker.NewWorkerPool(worker.WorkerConfig{
+		NumWorkers: 4,
+		QueueSize:  1000,
+	})
+	workerPool.Start()
+	defer workerPool.Stop()
+	
+	b.ResetTimer()
+	
+	for i := 0; i < b.N; i++ {
+		// 1. Create branch
+		branchName := fmt.Sprintf("e2e-branch-%d", i)
+		branch, err := branchEngine.CreateBranch(ctx, branchName, "main")
+		if err != nil {
+			b.Fatal(err)
+		}
+		
+		// 2. Simulate document changes
+		for j := 0; j < 10; j++ {
+			doc := GenerateJSONDocument(j)
+			key := fmt.Sprintf("branch/%s/doc-%d", branch.ID, j)
+			
+			// Submit storage job to worker
+			job := &worker.SimpleJob{
+				ID: key,
+				Fn: func(ctx context.Context) error {
+					return storage.Store(ctx, key, doc)
+				},
+			}
+			workerPool.Submit(job)
+		}
+		
+		// 3. Update branch stats
+		stats := &engine.BranchStats{
+			Documents:   10,
+			StorageSize: 10 * 1024,
+			Collections: []string{"test"},
+			LastWrite:   time.Now(),
+		}
+		branchEngine.UpdateBranchStats(ctx, branchName, stats)
+	}
+	
+	// Wait for all jobs
+	time.Sleep(100 * time.Millisecond)
+	
+	b.StopTimer()
+	
+	// Report end-to-end metrics
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "branches/sec")
+	b.ReportMetric(float64(b.N*10)/b.Elapsed().Seconds(), "docs/sec")
+}
+
+// BenchmarkMemoryUsage tests memory consumption
+func BenchmarkMemoryUsage(b *testing.B) {
+	ctx := context.Background()
+	tempDir := b.TempDir()
+	
+	storage, err := storage.NewStorageManager("local", map[string]interface{}{
+		"path": tempDir,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	
+	branchEngine := engine.NewBranchEngine(nil, storage)
+	
+	// Track memory allocations
+	b.ReportAllocs()
+	
+	b.ResetTimer()
+	
+	for i := 0; i < b.N; i++ {
+		// Create branch with metadata
+		metadata := map[string]interface{}{
+			"description": fmt.Sprintf("Test branch %d", i),
+			"owner":       fmt.Sprintf("user%d@example.com", i),
+			"tags":        []string{"test", "benchmark", fmt.Sprintf("batch-%d", i/100)},
+		}
+		
+		branchName := fmt.Sprintf("mem-branch-%d", i)
+		_, err := branchEngine.CreateBranchWithMetadata(ctx, branchName, "main", metadata)
+		if err != nil {
+			b.Fatal(err)
+		}
+		
+		// Store some data
+		for j := 0; j < 5; j++ {
+			key := fmt.Sprintf("branch/%s/doc-%d", branchName, j)
+			data := GenerateJSONDocument(j)
+			storage.Store(ctx, key, data)
+		}
+	}
+}
+
+// BenchmarkConcurrentBranches tests concurrent branch operations
+func BenchmarkConcurrentBranches(b *testing.B) {
+	ctx := context.Background()
+	tempDir := b.TempDir()
+	
+	storage, err := storage.NewStorageManager("local", map[string]interface{}{
+		"path": tempDir,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	
+	branchEngine := engine.NewBranchEngine(nil, storage)
+	
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			branchName := fmt.Sprintf("concurrent-%d-%d", i, time.Now().UnixNano())
+			_, err := branchEngine.CreateBranch(ctx, branchName, "main")
+			if err != nil {
+				b.Fatal(err)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkLargeBranch tests performance with large branches
+func BenchmarkLargeBranch(b *testing.B) {
+	ctx := context.Background()
+	tempDir := b.TempDir()
+	
+	storage, err := storage.NewStorageManager("local", map[string]interface{}{
+		"path": tempDir,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	storage.EnableCompression("zstd", 3)
+	
+	// Create a large branch
+	branchName := "large-branch"
+	numDocs := 100000
+	
+	// Populate branch
+	b.ResetTimer()
+	
+	for i := 0; i < numDocs; i++ {
+		key := fmt.Sprintf("branch/%s/doc-%d", branchName, i)
+		data := GenerateJSONDocument(i)
+		err := storage.Store(ctx, key, data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		
+		if i%1000 == 0 {
+			b.Logf("Stored %d documents", i)
+		}
+	}
+	
+	b.StopTimer()
+	
+	// Report large branch metrics
+	docsPerSec := float64(numDocs) / b.Elapsed().Seconds()
+	b.ReportMetric(docsPerSec, "docs/sec")
+	b.ReportMetric(float64(numDocs), "total_docs")
+}

@@ -149,6 +149,9 @@ type Worker interface {
 	
 	// CanProcess returns true if the worker can process the given job type
 	CanProcess(jobType JobType) bool
+	
+	// IsRunning returns true if the worker is currently running
+	IsRunning() bool
 }
 
 // Queue interface defines the behavior of a job queue

@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
+	"argon/engine/internal/monitoring"
 	"argon/engine/internal/storage"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -15,9 +18,13 @@ import (
 )
 
 type Service struct {
-	client  *mongo.Client
-	db      *mongo.Database
-	storage storage.Service
+	client     *mongo.Client
+	db         *mongo.Database
+	storage    storage.Service
+	
+	// Branch context (can be set for branch-specific operations)
+	currentBranchID string
+	branchDB        *BranchDatabase
 }
 
 func NewService(client *mongo.Client, storage storage.Service) *Service {
@@ -28,8 +35,39 @@ func NewService(client *mongo.Client, storage storage.Service) *Service {
 	}
 }
 
+// WithBranchContext creates a new service instance with branch context
+func (s *Service) WithBranchContext(branchID string) *Service {
+	branchDB := NewBranchDatabase(s.client, "argon", branchID)
+	return &Service{
+		client:          s.client,
+		db:              s.db,
+		storage:         s.storage,
+		currentBranchID: branchID,
+		branchDB:        branchDB,
+	}
+}
+
+// GetBranchDatabase returns the branch-aware database for the current branch context
+func (s *Service) GetBranchDatabase() *BranchDatabase {
+	if s.branchDB == nil {
+		// Default to main branch if no context set
+		s.branchDB = NewBranchDatabase(s.client, "argon", "main")
+	}
+	return s.branchDB
+}
+
 // CreateBranch creates a new database branch with copy-on-write semantics
 func (s *Service) CreateBranch(ctx context.Context, req *BranchCreateRequest) (*Branch, error) {
+	start := time.Now()
+	var success bool
+	defer func() {
+		duration := time.Since(start)
+		monitoring.RecordBranchOperation(ctx, "create", duration, success)
+		if success {
+			monitoring.GlobalMetrics.ActiveBranches.Add(ctx, 1)
+		}
+	}()
+	
 	now := time.Now()
 	
 	// Generate unique storage path for this branch
@@ -68,15 +106,18 @@ func (s *Service) CreateBranch(ctx context.Context, req *BranchCreateRequest) (*
 		return nil, fmt.Errorf("failed to initialize branch storage: %w", err)
 	}
 	
-	// If this has a parent branch, copy initial data
+	// If this has a parent branch, copy initial data with real data isolation
 	if req.ParentBranch != nil {
 		if err := s.copyFromParent(ctx, branch, *req.ParentBranch); err != nil {
-			// Rollback branch creation
+			// Rollback branch creation and cleanup any created collections
 			collection.DeleteOne(ctx, bson.M{"_id": branch.ID})
+			branchDB := NewBranchDatabase(s.client, "argon", branch.ID.Hex())
+			branchDB.DeleteBranchCollections(ctx) // Clean up any partially created collections
 			return nil, fmt.Errorf("failed to copy from parent branch: %w", err)
 		}
 	}
 	
+	success = true
 	return branch, nil
 }
 
@@ -143,18 +184,57 @@ func (s *Service) UpdateBranch(ctx context.Context, branchID primitive.ObjectID,
 	return s.GetBranch(ctx, branchID)
 }
 
-// DeleteBranch deletes a branch (soft delete by marking as archived)
+// DeleteBranch deletes a branch (can be soft or hard delete)
 func (s *Service) DeleteBranch(ctx context.Context, branchID primitive.ObjectID) error {
-	collection := s.db.Collection("branches")
-	
-	update := bson.M{
-		"status":     BranchStatusArchived,
-		"updated_at": time.Now(),
+	return s.DeleteBranchWithOptions(ctx, branchID, false)
+}
+
+// DeleteBranchWithOptions deletes a branch with options for hard delete
+func (s *Service) DeleteBranchWithOptions(ctx context.Context, branchID primitive.ObjectID, hardDelete bool) error {
+	// Get branch information first
+	branch, err := s.GetBranch(ctx, branchID)
+	if err != nil {
+		return fmt.Errorf("branch not found: %w", err)
 	}
 	
-	_, err := collection.UpdateOne(ctx, bson.M{"_id": branchID}, bson.M{"$set": update})
-	if err != nil {
-		return fmt.Errorf("failed to delete branch: %w", err)
+	// Don't allow deletion of main branch
+	if branch.IsMain {
+		return fmt.Errorf("cannot delete main branch")
+	}
+	
+	collection := s.db.Collection("branches")
+	
+	if hardDelete {
+		// Hard delete: remove collections and branch metadata
+		branchDB := NewBranchDatabase(s.client, "argon", branchID.Hex())
+		
+		log.Printf("Hard deleting branch %s (%s) - removing all collections", branch.Name, branchID.Hex())
+		
+		// Delete all branch-specific collections
+		if err := branchDB.DeleteBranchCollections(ctx); err != nil {
+			log.Printf("Warning: failed to delete some collections for branch %s: %v", branch.Name, err)
+		}
+		
+		// Delete branch metadata
+		_, err = collection.DeleteOne(ctx, bson.M{"_id": branchID})
+		if err != nil {
+			return fmt.Errorf("failed to delete branch metadata: %w", err)
+		}
+		
+		log.Printf("Successfully hard deleted branch %s", branch.Name)
+	} else {
+		// Soft delete: mark as archived
+		update := bson.M{
+			"status":     BranchStatusArchived,
+			"updated_at": time.Now(),
+		}
+		
+		_, err = collection.UpdateOne(ctx, bson.M{"_id": branchID}, bson.M{"$set": update})
+		if err != nil {
+			return fmt.Errorf("failed to archive branch: %w", err)
+		}
+		
+		log.Printf("Successfully archived branch %s", branch.Name)
 	}
 	
 	return nil
@@ -162,11 +242,10 @@ func (s *Service) DeleteBranch(ctx context.Context, branchID primitive.ObjectID)
 
 // SwitchBranch switches the active branch for a project
 func (s *Service) SwitchBranch(ctx context.Context, projectID, branchID primitive.ObjectID) error {
-	// This is a metadata operation - actual data switching happens at the application level
-	// For now, we just verify the branch exists and is active
+	// Verify the branch exists and is active
 	branch, err := s.GetBranch(ctx, branchID)
 	if err != nil {
-		return err
+		return fmt.Errorf("branch not found: %w", err)
 	}
 	
 	if branch.ProjectID != projectID {
@@ -174,15 +253,62 @@ func (s *Service) SwitchBranch(ctx context.Context, projectID, branchID primitiv
 	}
 	
 	if branch.Status != BranchStatusActive {
-		return fmt.Errorf("cannot switch to inactive branch")
+		return fmt.Errorf("cannot switch to inactive branch: %s", branch.Status)
 	}
 	
-	// In a full implementation, we would:
-	// 1. Update connection strings/routing
-	// 2. Ensure data consistency
-	// 3. Handle any pending changes
+	// Verify branch collections exist
+	branchDB := NewBranchDatabase(s.client, "argon", branchID.Hex())
+	collections, err := branchDB.ListBranchCollections(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to verify branch collections: %w", err)
+	}
 	
+	log.Printf("Switching to branch %s (%s) with %d collections", 
+		branch.Name, branchID.Hex(), len(collections))
+	
+	// For now, switching is handled by the client creating a new service instance
+	// with the branch context. In a full implementation, this might also:
+	// 1. Update a global branch registry
+	// 2. Notify change stream processors
+	// 3. Update connection routing tables
+	// 4. Handle pending transactions
+	
+	// Update branch last accessed time
+	collection := s.db.Collection("branches")
+	_, err = collection.UpdateOne(ctx, 
+		bson.M{"_id": branchID}, 
+		bson.M{"$set": bson.M{
+			"last_accessed_at": time.Now(),
+			"updated_at": time.Now(),
+		}})
+	
+	if err != nil {
+		log.Printf("Warning: failed to update branch access time: %v", err)
+	}
+	
+	log.Printf("Successfully switched to branch %s", branch.Name)
 	return nil
+}
+
+// GetActiveBranch returns the currently active branch for a project
+func (s *Service) GetActiveBranch(ctx context.Context, projectID primitive.ObjectID) (*Branch, error) {
+	// This is a placeholder implementation
+	// In a real system, this would track the active branch per session/connection
+	
+	// For now, return the main branch as default
+	branches, err := s.ListBranches(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Find main branch
+	for _, branch := range branches {
+		if branch.IsMain && branch.Status == BranchStatusActive {
+			return branch, nil
+		}
+	}
+	
+	return nil, fmt.Errorf("no active main branch found for project")
 }
 
 // GetBranchStats returns statistics about a branch
@@ -221,20 +347,108 @@ func (s *Service) GetBranchStats(ctx context.Context, branchID primitive.ObjectI
 // Helper functions
 
 func (s *Service) copyFromParent(ctx context.Context, branch *Branch, parentID primitive.ObjectID) error {
-	// In a full implementation, this would:
-	// 1. Copy metadata pointers from parent
-	// 2. Set up copy-on-write references
-	// 3. Initialize change tracking
+	// Get parent branch information
+	parentBranch, err := s.GetBranch(ctx, parentID)
+	if err != nil {
+		return fmt.Errorf("failed to get parent branch: %w", err)
+	}
 	
-	// For now, just create a reference
+	// Create branch databases for parent and child
+	parentBranchDB := NewBranchDatabase(s.client, "argon", parentBranch.ID.Hex())
+	childBranchDB := NewBranchDatabase(s.client, "argon", branch.ID.Hex())
+	
+	// Get all collections from parent branch that should be copied
+	collections, err := s.getDataCollections(ctx, parentBranchDB)
+	if err != nil {
+		return fmt.Errorf("failed to get parent collections: %w", err)
+	}
+	
+	log.Printf("Copying %d collections from parent branch %s to new branch %s", 
+		len(collections), parentBranch.Name, branch.Name)
+	
+	// Copy collections from parent to child branch
+	if err := childBranchDB.CreateBranchCollections(ctx, parentBranchDB, collections); err != nil {
+		return fmt.Errorf("failed to create branch collections: %w", err)
+	}
+	
+	// Update branch metadata with copy information
 	branch.Metadata["parent_copied_at"] = time.Now()
+	branch.Metadata["parent_collections_copied"] = len(collections)
+	branch.Metadata["collections"] = collections
 	
+	// Update branch document with metadata
 	collection := s.db.Collection("branches")
-	_, err := collection.UpdateOne(ctx, 
+	_, err = collection.UpdateOne(ctx, 
 		bson.M{"_id": branch.ID}, 
-		bson.M{"$set": bson.M{"metadata": branch.Metadata}})
+		bson.M{"$set": bson.M{
+			"metadata": branch.Metadata,
+			"document_count": calculateTotalDocuments(collections, parentBranchDB, ctx),
+		}})
 	
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to update branch metadata: %w", err)
+	}
+	
+	log.Printf("Successfully copied %d collections from parent branch %s", len(collections), parentBranch.Name)
+	return nil
+}
+
+// getDataCollections returns all data collections (non-metadata) that should be copied
+func (s *Service) getDataCollections(ctx context.Context, branchDB *BranchDatabase) ([]string, error) {
+	// Get all collections in the database
+	db := branchDB.Database()
+	cursor, err := db.ListCollections(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	
+	var collections []string
+	for cursor.Next(ctx) {
+		var result bson.M
+		if err := cursor.Decode(&result); err != nil {
+			continue
+		}
+		
+		if name, ok := result["name"].(string); ok {
+			// Only include data collections (skip metadata collections)
+			if !isMetadataCollection(name) && branchDB.belongsToBranch(name) {
+				// Get the base collection name (without branch prefix)
+				baseName := s.getBaseCollectionName(name, branchDB)
+				collections = append(collections, baseName)
+			}
+		}
+	}
+	
+	// If no collections found, create some default collections for demo
+	if len(collections) == 0 {
+		collections = []string{"users", "products", "orders"}
+		log.Printf("No existing collections found, will create default collections: %v", collections)
+	}
+	
+	return collections, nil
+}
+
+// getBaseCollectionName extracts the base collection name from a potentially prefixed name
+func (s *Service) getBaseCollectionName(collectionName string, branchDB *BranchDatabase) string {
+	// If this is a prefixed collection, extract the base name
+	if branchDB.prefix != "" && strings.HasPrefix(collectionName, branchDB.prefix+"_") {
+		return strings.TrimPrefix(collectionName, branchDB.prefix+"_")
+	}
+	return collectionName
+}
+
+// calculateTotalDocuments counts documents across all collections (for metadata)
+func calculateTotalDocuments(collections []string, branchDB *BranchDatabase, ctx context.Context) int64 {
+	total := int64(0)
+	for _, collectionName := range collections {
+		collection := branchDB.Collection(collectionName)
+		count, err := collection.CountDocuments(ctx, bson.M{})
+		if err == nil {
+			total += count
+		}
+	}
+	return total
 }
 
 func generateRevision() string {

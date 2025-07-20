@@ -12,6 +12,7 @@ import (
 	"argon/engine/internal/api"
 	"argon/engine/internal/branch"
 	"argon/engine/internal/config"
+	"argon/engine/internal/monitoring"
 	"argon/engine/internal/storage"
 	"argon/engine/internal/streams"
 	"argon/engine/internal/workers"
@@ -24,6 +25,14 @@ import (
 func main() {
 	// Load configuration
 	cfg := config.Load()
+
+	// Initialize metrics
+	if err := monitoring.InitMetrics(); err != nil {
+		log.Fatal("Failed to initialize metrics:", err)
+	}
+
+	// Start metrics server in goroutine
+	go monitoring.StartMetricsServer("9090")
 
 	// Setup MongoDB connection
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(cfg.MongoURI))
@@ -62,6 +71,12 @@ func main() {
 	if err := workerPool.Start(context.Background()); err != nil {
 		log.Fatal("Failed to start worker pool:", err)
 	}
+
+	// Initialize health checker
+	healthChecker := monitoring.NewHealthChecker(client, workerPool, "1.0.0")
+	
+	// Start health checks in background
+	go healthChecker.StartHealthChecks(context.Background())
 	
 	// Initialize streams service with worker pool
 	streamsService := streams.NewService(client, storageService, workerPool)
@@ -93,6 +108,11 @@ func main() {
 		}
 		c.Next()
 	})
+
+	// Add health check routes
+	router.GET("/health", gin.WrapF(healthChecker.HealthHandler()))
+	router.GET("/health/ready", gin.WrapF(healthChecker.ReadinessHandler()))
+	router.GET("/health/live", gin.WrapF(healthChecker.LivenessHandler()))
 
 	// Setup API routes
 	api.SetupRoutes(router, branchService, streamsService, workerPool)

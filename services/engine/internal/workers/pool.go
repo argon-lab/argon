@@ -271,3 +271,60 @@ func (p *WorkerPoolImpl) GetWorkerCount() int {
 	defer p.workersMu.RUnlock()
 	return len(p.workers)
 }
+
+// Health check methods required by monitoring.WorkerPoolHealth interface
+
+// IsHealthy returns true if the worker pool is healthy
+func (p *WorkerPoolImpl) IsHealthy() bool {
+	p.runningMu.RLock()
+	running := p.running
+	p.runningMu.RUnlock()
+	
+	if !running {
+		return false
+	}
+	
+	// Check if we have active workers
+	p.workersMu.RLock()
+	activeWorkers := len(p.workers)
+	p.workersMu.RUnlock()
+	
+	return activeWorkers > 0
+}
+
+// GetActiveWorkers returns the number of active workers
+func (p *WorkerPoolImpl) GetActiveWorkers() int {
+	p.workersMu.RLock()
+	defer p.workersMu.RUnlock()
+	
+	activeCount := 0
+	for _, worker := range p.workers {
+		if worker.IsRunning() {
+			activeCount++
+		}
+	}
+	
+	return activeCount
+}
+
+// GetQueueSize returns the current queue size
+func (p *WorkerPoolImpl) GetQueueSize() int {
+	ctx := context.Background()
+	stats, err := p.queue.GetStats(ctx)
+	if err != nil {
+		return -1 // Return -1 to indicate error
+	}
+	
+	return int(stats.PendingJobs)
+}
+
+// GetProcessedJobs returns the total number of processed jobs
+func (p *WorkerPoolImpl) GetProcessedJobs() int64 {
+	ctx := context.Background()
+	stats, err := p.queue.GetStats(ctx)
+	if err != nil {
+		return -1
+	}
+	
+	return stats.CompletedJobs
+}

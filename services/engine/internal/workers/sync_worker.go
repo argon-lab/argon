@@ -137,6 +137,13 @@ func (w *SyncWorker) CanProcess(jobType JobType) bool {
 	return jobType == JobTypeSync
 }
 
+// IsRunning returns true if the worker is currently running
+func (w *SyncWorker) IsRunning() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.isActive
+}
+
 // processNextJob tries to dequeue and process the next available job
 func (w *SyncWorker) processNextJob(ctx context.Context) error {
 	// Create a timeout context for processing

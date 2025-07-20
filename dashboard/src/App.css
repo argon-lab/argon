@@ -1,0 +1,172 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles for the Argon dashboard */
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Loading animations */
+.loading-spinner {
+  border: 4px solid #f3f4f6;
+  border-top: 4px solid #3b82f6;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Card hover effects */
+.card-hover {
+  transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+/* Button animations */
+.btn-primary {
+  @apply bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200;
+}
+
+.btn-secondary {
+  @apply bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium py-2 px-4 rounded-lg transition-colors duration-200;
+}
+
+.btn-danger {
+  @apply bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200;
+}
+
+/* Form styles */
+.form-input {
+  @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors duration-200;
+}
+
+.form-textarea {
+  @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors duration-200 resize-none;
+}
+
+.form-select {
+  @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors duration-200;
+}
+
+/* Status indicators */
+.status-active {
+  @apply bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full;
+}
+
+.status-inactive {
+  @apply bg-gray-100 text-gray-800 text-xs px-2 py-1 rounded-full;
+}
+
+.status-warning {
+  @apply bg-yellow-100 text-yellow-800 text-xs px-2 py-1 rounded-full;
+}
+
+.status-error {
+  @apply bg-red-100 text-red-800 text-xs px-2 py-1 rounded-full;
+}
+
+/* Modal styles */
+.modal-overlay {
+  @apply fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50;
+}
+
+.modal-content {
+  @apply bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4;
+}
+
+/* Navigation styles */
+.nav-link {
+  @apply flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors duration-200;
+}
+
+.nav-link.active {
+  @apply bg-blue-100 text-blue-700;
+}
+
+.nav-link:not(.active) {
+  @apply text-gray-600 hover:text-gray-900 hover:bg-gray-100;
+}
+
+/* Code block styles */
+.code-block {
+  @apply bg-gray-50 border border-gray-200 rounded-lg p-4 font-mono text-sm;
+}
+
+.code-inline {
+  @apply bg-gray-100 px-2 py-1 rounded font-mono text-sm;
+}
+
+/* Responsive utilities */
+@media (max-width: 768px) {
+  .mobile-hide {
+    display: none;
+  }
+  
+  .mobile-full {
+    width: 100%;
+  }
+}
+
+/* Dark mode support (optional) */
+@media (prefers-color-scheme: dark) {
+  .dark-mode {
+    @apply bg-gray-900 text-white;
+  }
+  
+  .dark-mode .bg-white {
+    @apply bg-gray-800;
+  }
+  
+  .dark-mode .text-gray-900 {
+    @apply text-white;
+  }
+  
+  .dark-mode .text-gray-600 {
+    @apply text-gray-300;
+  }
+  
+  .dark-mode .border-gray-200 {
+    @apply border-gray-700;
+  }
+}
+
+/* Print styles */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  
+  .print-break {
+    page-break-after: always;
+  }
+}

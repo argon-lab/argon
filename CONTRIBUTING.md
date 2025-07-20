@@ -1,135 +1,318 @@
 # Contributing to Argon
 
-Thank you for your interest in contributing to Argon! This document provides guidelines for contributors.
+Thank you for your interest in contributing to Argon! This document provides guidelines and instructions for contributing to the project.
 
-## 🤝 How to Contribute
+## Table of Contents
 
-### 1. Fork and Clone
+- [Code of Conduct](#code-of-conduct)
+- [Getting Started](#getting-started)
+- [Development Setup](#development-setup)
+- [How to Contribute](#how-to-contribute)
+- [Pull Request Process](#pull-request-process)
+- [Coding Standards](#coding-standards)
+- [Testing Guidelines](#testing-guidelines)
+- [Documentation](#documentation)
+- [Community](#community)
+
+## Code of Conduct
+
+Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to ensure a welcoming environment for all contributors.
+
+## Getting Started
+
+1. **Fork the repository** on GitHub
+2. **Clone your fork** locally:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/argon.git
+   cd argon
+   ```
+3. **Add the upstream repository**:
+   ```bash
+   git remote add upstream https://github.com/argonlabs/argon.git
+   ```
+4. **Create a new branch** for your feature or fix:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+
+## Development Setup
+
+### Prerequisites
+
+- Go 1.21+
+- Python 3.8+ (for Python SDK)
+- MongoDB 5.0+ (for testing)
+- Docker (optional, for containerized development)
+
+### Building from Source
+
 ```bash
-git clone https://github.com/your-username/argon.git
-cd argon
+# Install Go dependencies
+go mod download
+
+# Build the project
+make build
+
+# Run tests
+make test
+
+# Run benchmarks
+make bench
 ```
 
-### 2. Development Setup
-```bash
-# Start services
-docker compose up -d
+### Running Locally
 
-# Install dependencies
-cd cli && go mod tidy
-cd ../services/api && pip install -r requirements.txt
+```bash
+# Start MongoDB (if not already running)
+docker run -d -p 27017:27017 --name argon-mongo mongo:6.0
+
+# Run Argon server
+./argon server --config config.yaml
+
+# In another terminal, test with CLI
+./argon branch list
 ```
 
-### 3. Make Changes
-- **Go engine**: `services/engine/`
-- **Python API**: `services/api/`  
-- **CLI tool**: `cli/`
+## How to Contribute
 
-### 4. Test Your Changes
-```bash
-./test_complete_system.sh
-```
+### Reporting Bugs
 
-### 5. Submit Pull Request
-```bash
-git checkout -b feature/your-feature
-git commit -m "Clear description of changes"
-git push origin feature/your-feature
-```
+1. Check if the bug has already been reported in [Issues](https://github.com/argonlabs/argon/issues)
+2. If not, create a new issue using the bug report template
+3. Include:
+   - Clear description of the bug
+   - Steps to reproduce
+   - Expected vs actual behavior
+   - Environment details (OS, versions, etc.)
+   - Error logs or screenshots
 
-## 📋 Guidelines
+### Suggesting Features
 
-### Code Quality
-- Follow Go and Python style guides
-- Include tests for new features
-- Ensure all tests pass before submitting
-- Update documentation for changes
+1. Check existing [feature requests](https://github.com/argonlabs/argon/issues?q=is%3Aissue+label%3Aenhancement)
+2. Create a new issue using the feature request template
+3. Describe:
+   - The problem you're trying to solve
+   - Your proposed solution
+   - Alternative solutions considered
+   - Use cases and benefits
 
-### Commit Guidelines
-- Use clear, descriptive commit messages
-- Keep commits focused and atomic
-- Reference issue numbers when applicable
+### Code Contributions
 
-## 🚫 What NOT to Include
+1. **Find an issue to work on**:
+   - Look for issues labeled `good first issue` or `help wanted`
+   - Comment on the issue to claim it
+   - Wait for maintainer approval before starting major work
 
-### AI Assistant Content
-**Do not include AI assistant-related content in commits:**
-- No `CLAUDE.md`, `claude.md`, or AI conversation files
-- No AI-generated signatures in code comments
-- No references to AI assistants in commit messages or code
-- No `.claude/` directories or AI workspace files
+2. **Write your code**:
+   - Follow our coding standards
+   - Write tests for new functionality
+   - Update documentation as needed
+   - Keep commits atomic and well-described
 
-The `.gitignore` file excludes these automatically.
+3. **Submit a pull request**:
+   - Fill out the PR template completely
+   - Reference the issue being addressed
+   - Ensure all tests pass
+   - Request review from maintainers
 
-### Other Exclusions
-- No personal credentials or API keys
-- No IDE-specific configuration files
-- No compiled binaries or cache files
+## Pull Request Process
 
-## 🧪 Testing
+### Before Submitting
 
-### Run Tests
-```bash
-# Storage engine tests
-cd services/engine && go test ./...
+- [ ] Run `make lint` to check code style
+- [ ] Run `make test` to ensure all tests pass
+- [ ] Run `make bench` if you've made performance-related changes
+- [ ] Update documentation for API changes
+- [ ] Add tests for new functionality
+- [ ] Rebase on latest main branch
 
-# Full integration test
-./test_complete_system.sh
-```
+### PR Guidelines
 
-### Manual Testing
-```bash
-# Test CLI
-cd cli && go build -o argon . && ./argon --help
+1. **Title**: Use conventional commit format:
+   ```
+   feat: add branch comparison API
+   fix: resolve race condition in worker pool
+   docs: update deployment guide
+   test: add benchmarks for storage layer
+   ```
 
-# Test API
-curl http://localhost:3000/health
-```
+2. **Description**: Include:
+   - What changes were made and why
+   - Link to related issue(s)
+   - Testing performed
+   - Breaking changes (if any)
 
-## 🐛 Bug Reports
-
-Include:
-- Clear description of the issue
-- Steps to reproduce
-- Expected vs actual behavior
-- Environment details (OS, versions)
-- Relevant logs or errors
-
-## 💡 Feature Requests
-
-- Check existing issues first
-- Describe the use case clearly
-- Explain user benefits
-- Provide implementation ideas
-
-## 🔄 Development Workflow
-
-### Branch Naming
-- `feature/description` - New features
-- `fix/description` - Bug fixes
-- `docs/description` - Documentation
-- `refactor/description` - Refactoring
+3. **Size**: Keep PRs focused and reasonably sized:
+   - Separate refactoring from feature additions
+   - Break large features into smaller PRs when possible
+   - One logical change per PR
 
 ### Review Process
-1. Create clear pull request
-2. Ensure all tests pass
-3. Address review feedback
-4. Merge after approval
 
-## 📞 Support
+1. Automated checks must pass (CI, tests, linting)
+2. At least one maintainer approval required
+3. Address review feedback promptly
+4. Maintainers will merge when ready
 
-- **Issues**: Bug reports and technical questions
-- **Discussions**: General questions and ideas
-- **Documentation**: Check `docs/` folder
+## Coding Standards
 
-## 🏆 Recognition
+### Go Code
 
-Contributors are credited in README and release notes.
+- Follow [Effective Go](https://golang.org/doc/effective_go.html) guidelines
+- Use `gofmt` for formatting
+- Follow naming conventions:
+  ```go
+  // Exported types/functions
+  type BranchEngine struct {}
+  func NewBranchEngine() *BranchEngine {}
+  
+  // Unexported
+  type branchStats struct {}
+  func validateBranchName() error {}
+  ```
+- Error handling:
+  ```go
+  if err != nil {
+      return fmt.Errorf("failed to create branch: %w", err)
+  }
+  ```
+- Add comments for exported types and functions
 
-## 📄 License
+### Python Code
 
-By contributing, you agree your contributions will be licensed under the MIT License.
+- Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/)
+- Use type hints for Python 3.8+
+- Format with `black`
+- Docstrings for all public functions:
+  ```python
+  def create_branch(name: str, parent: str = "main") -> Branch:
+      """Create a new branch from parent.
+      
+      Args:
+          name: Branch name
+          parent: Parent branch (default: main)
+          
+      Returns:
+          Created Branch object
+          
+      Raises:
+          ValidationError: If branch name is invalid
+      """
+  ```
 
----
+## Testing Guidelines
 
-Thank you for helping make Argon better! 🚀
+### Unit Tests
+
+- Test files should be named `*_test.go` or `test_*.py`
+- Use table-driven tests in Go:
+  ```go
+  tests := []struct {
+      name     string
+      input    string
+      expected string
+      wantErr  bool
+  }{
+      {"valid branch", "feature-1", "feature-1", false},
+      {"invalid name", "feat/1", "", true},
+  }
+  ```
+- Mock external dependencies
+- Aim for >80% code coverage
+
+### Integration Tests
+
+- Place in `integration/` directory
+- Test real MongoDB interactions
+- Use test containers when possible
+- Clean up test data after runs
+
+### Benchmarks
+
+- Name benchmarks `Benchmark*` in Go
+- Include memory allocations (`b.ReportAllocs()`)
+- Test various input sizes
+- Document performance expectations
+
+## Documentation
+
+### Code Documentation
+
+- Document all exported functions, types, and packages
+- Include examples for complex functionality
+- Keep comments up-to-date with code changes
+
+### User Documentation
+
+- Update relevant docs in `docs/` directory
+- Follow existing structure and style
+- Include code examples
+- Test all examples to ensure they work
+
+### API Documentation
+
+- Update `docs/API_REFERENCE.md` for API changes
+- Include request/response examples
+- Document error codes and meanings
+
+## Community
+
+### Getting Help
+
+- **Discord**: [Join our community](https://discord.gg/argon)
+- **GitHub Discussions**: For questions and ideas
+- **Issue Tracker**: For bugs and feature requests
+
+### Communication Channels
+
+- **Development discussion**: GitHub Discussions
+- **Real-time chat**: Discord #development channel
+- **Security issues**: security@argonlabs.tech
+
+### Recognition
+
+We value all contributions! Contributors will be:
+- Listed in our [CONTRIBUTORS.md](CONTRIBUTORS.md) file
+- Mentioned in release notes for significant contributions
+- Invited to our contributor recognition program
+
+## Development Tips
+
+### Debugging
+
+```bash
+# Enable debug logging
+export ARGON_LOG_LEVEL=debug
+
+# Run with race detector
+go run -race ./cmd/argon
+
+# Profile CPU usage
+go run ./cmd/argon --cpuprofile=cpu.prof
+```
+
+### Common Issues
+
+1. **MongoDB connection fails**: Ensure MongoDB is running and accessible
+2. **Import errors**: Run `go mod tidy` to update dependencies
+3. **Test failures**: Check if MongoDB test instance is clean
+
+### Useful Commands
+
+```bash
+# Run specific tests
+go test -run TestBranchCreation ./engine
+
+# Update all dependencies
+go get -u ./...
+
+# Generate mocks
+go generate ./...
+
+# Check for security issues
+gosec ./...
+```
+
+## Thank You!
+
+Your contributions make Argon better for everyone. We appreciate your time and effort in improving the project!

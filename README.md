@@ -20,7 +20,9 @@ Argon is a MongoDB branching system that provides Git-like database operations o
 - **🧠 ML-Native**: Built-in integrations with MLflow, DVC, Weights & Biases
 - **🌐 Real-time**: Live change streams and WebSocket-based dashboard
 - **☁️ Multi-cloud**: AWS S3, Google Cloud Storage, Azure Blob support
-- **🔒 Enterprise**: Authentication, RBAC, audit logs, compliance features
+- **🔒 Enterprise**: Authentication, multi-tenancy, rate limiting, audit logs
+- **📊 Production-Ready**: Comprehensive testing, monitoring, and documentation
+- **🏗️ Developer Experience**: CLI, REST API, Python SDK, and web dashboard
 
 ## Architecture
 
@@ -52,6 +54,17 @@ Argon uses a hybrid architecture optimizing for both performance and developer p
 
 **Performance Tier (Go)**: Change streams, branching engine, CLI, storage
 **Productivity Tier (Python)**: Web APIs, ML integrations, admin features
+
+### Branching Architecture Evolution
+
+**Current (v1.0)**: Collection-prefix based branching with full data copying
+**Coming Soon (v2.0)**: WAL-based branching for 100x faster operations
+
+We're implementing a Write-Ahead Log (WAL) architecture similar to Neon/Postgres:
+- **Open-Source**: WAL-based branching (5-week implementation in progress)
+- **Cloud Console**: Keeping simple prefix-based approach for demos
+
+[Learn more about our WAL architecture →](docs/ARCHITECTURE_UPDATE.md)
 
 ## Quick Start
 
@@ -146,27 +159,33 @@ argon projects list
 ✅ **Core Architecture** - Hybrid Go+Python system ready  
 ✅ **Storage Engine** - S3 backend with 42% compression  
 ✅ **Local Development** - Full Docker environment  
+✅ **Authentication** - Google OAuth with NextAuth.js  
+✅ **Multi-tenancy** - Complete user data isolation  
+✅ **Rate Limiting** - Tiered limits (100/1000/10000 req/min)  
+✅ **Documentation** - Comprehensive guides and API docs  
+✅ **Testing** - Unit tests, benchmarks, and integration tests  
 
 ## Coming Soon
 
 ✅ **Homebrew** - `brew install argon-lab/tap/argonctl` (live now!)  
 ✅ **npm Package** - `npm install -g argonctl` (live now!)  
-🚧 **Hosted Service** - Cloud-hosted Argon for instant use  
+🚧 **Hosted Service** - Cloud-hosted Argon at console.argonlabs.tech  
 🚧 **Web Dashboard** - Visual branch management  
 🚧 **ML Integrations** - MLflow, DVC, Weights & Biases  
 
 ## Current Status
 
-The **CLI and core system are production-ready**. The package manager distributions and hosted service are being prepared for public launch.
+The **core system and cloud platform are production-ready** with authentication, multi-tenancy, and rate limiting. The web dashboard and ML integrations are in active development.
 
 ## Performance Targets
 
-| Metric | Target | Current Status |
-|--------|--------|----------------|
-| Branch Creation | <500ms | 🟢 Implemented |
-| Change Processing | 10,000+ ops/sec | 🟢 Implemented |
-| Storage Efficiency | 40%+ compression | 🟢 Achieved (42.40%) |
-| CLI Startup | <50ms | 🟢 Achieved |
+| Metric | Current (v1.0) | WAL-based (v2.0) | Status |
+|--------|----------------|------------------|--------|
+| Branch Creation | <500ms | <10ms | 🟡 In Progress |
+| Change Processing | 10,000+ ops/sec | 50,000+ ops/sec | 🟡 In Progress |
+| Storage Efficiency | 40%+ compression | 80%+ reduction | 🟡 In Progress |
+| Query Overhead | Direct MongoDB | +50-200ms | 🟡 In Progress |
+| CLI Startup | <50ms | <50ms | 🟢 Achieved |
 
 ## Use Cases
 

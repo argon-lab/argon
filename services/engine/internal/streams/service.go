@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"argon/engine/internal/branch"
+	"argon/engine/internal/monitoring"
 	"argon/engine/internal/storage"
 	"argon/engine/internal/workers"
 
@@ -145,6 +146,13 @@ func (s *Service) GetChanges(ctx context.Context, branchID primitive.ObjectID, l
 
 // processChange processes a single change event by adding it to the batch
 func (s *Service) processChange(ctx context.Context, change bson.M) error {
+	// Record change stream event
+	defer func() {
+		if operationType, ok := change["operationType"].(string); ok {
+			monitoring.RecordChangeStreamEvent(ctx, operationType)
+		}
+	}()
+	
 	// Extract change information
 	operationType, ok := change["operationType"].(string)
 	if !ok {
@@ -199,6 +207,9 @@ func (s *Service) flushChangeBatch(ctx context.Context) error {
 		return nil
 	}
 	
+	batchSize := len(s.changeBatch)
+	start := time.Now()
+	
 	// Determine which branch this batch belongs to
 	// For now, assume all changes in a batch belong to the main branch
 	// In a real implementation, this would be more sophisticated
@@ -231,6 +242,12 @@ func (s *Service) flushChangeBatch(ctx context.Context) error {
 	}
 	
 	log.Printf("Submitted sync job with %d changes for branch %s", len(s.changeBatch), branchID)
+	
+	// Record metrics
+	duration := time.Since(start)
+	opsPerSecond := float64(batchSize) / duration.Seconds()
+	monitoring.RecordDataOperation(ctx, "batch_process", int64(batchSize))
+	monitoring.UpdateThroughput(ctx, opsPerSecond)
 	
 	// Clear the batch
 	s.changeBatch = nil
