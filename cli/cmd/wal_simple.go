@@ -305,11 +305,6 @@ var walSimpleStorageCmd = &cobra.Command{
 	Use:   "storage",
 	Short: "Show WAL storage information",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		services, err := walcli.NewServices()
-		if err != nil {
-			return err
-		}
-
 		// This would use a storage info method if implemented
 		fmt.Println("WAL Storage Information:")
 		fmt.Println("  [Storage metrics would be displayed here]")

@@ -7,9 +7,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/argon-lab/argon/releases)
 
-**Argon is the first production-ready MongoDB branching system using Write-Ahead Log (WAL) architecture.** Create instant database branches, query any point in history, and safely experiment with your data at enterprise scale.
+**Argon provides production-ready MongoDB branching with two complete architectures:**
 
-**🎉 PRODUCTION READY** - Fully tested with 37,905+ ops/sec performance and complete SDK ecosystem.
+1. **Traditional Branching** (`argon branches`) - Stable enterprise system with worker queues
+2. **WAL Time Travel** (`argon wal-simple`) - Revolutionary time travel with instant branching
+
+**🎉 BOTH SYSTEMS PRODUCTION READY** - Choose the approach that fits your needs.
 
 ## ⚡ **Why Argon Changes Everything**
 
@@ -22,18 +25,14 @@ Traditional database workflows are fundamentally broken:
 **Argon revolutionizes this** with production-ready WAL architecture:
 
 ```bash
-# Create a branch in 1ms (not hours)
+# Traditional approach - stable and proven
+argon projects create my-project
+argon branches create --name feature-x
+
+# WAL approach - with time travel
 export ENABLE_WAL=true
 argon wal-simple project create ecommerce
-
-# Query your data from any point in time
 argon wal-simple tt-info --project ecommerce --branch main
-
-# Monitor performance in real-time
-argon wal-simple metrics
-argon wal-simple health
-
-# Safely experiment and rollback instantly  
 argon wal-simple restore-preview --project ecommerce --lsn 1500
 ```
 

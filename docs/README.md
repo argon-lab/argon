@@ -1,13 +1,20 @@
 # Argon Documentation
 
-Welcome to Argon - the first production-ready MongoDB branching system with time travel capabilities.
+Welcome to Argon - production-ready MongoDB branching with dual architecture options.
+
+## 🏗️ **Choose Your Architecture**
+
+Argon offers two complete, production-ready systems:
+
+1. **Traditional Branching** - Stable enterprise system with worker queues
+2. **WAL Time Travel** - Revolutionary instant branching with historical queries
 
 ## 📖 **Documentation Index**
 
 ### **🚀 Getting Started**
+- [**Current Project Status**](../CURRENT_PROJECT_STATUS.md) - Understanding what's available
+- [**Next Steps Guide**](../NEXT_STEPS.md) - Strategic roadmap and priorities
 - [**Quick Start Guide**](./QUICK_START.md) - Get up and running in 5 minutes
-- [**Installation**](./INSTALLATION.md) - Multiple installation methods
-- [**Basic Usage**](./BASIC_USAGE.md) - Essential commands and workflows
 
 ### **🛠️ Developer Guides**
 - [**Go SDK Reference**](./GO_SDK.md) - Production-ready Go integration
