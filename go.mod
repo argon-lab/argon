@@ -1,6 +1,6 @@
 module github.com/argon-lab/argon
 
-go 1.21
+go 1.24
 
 require (
 	github.com/stretchr/testify v1.9.0

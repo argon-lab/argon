@@ -22,17 +22,19 @@ const (
 
 // Entry represents a single WAL entry
 type Entry struct {
-	ID          primitive.ObjectID     `bson:"_id,omitempty" json:"id,omitempty"`
-	LSN         int64                  `bson:"lsn" json:"lsn"`
-	Timestamp   time.Time              `bson:"timestamp" json:"timestamp"`
-	ProjectID   string                 `bson:"project_id" json:"project_id"`
-	BranchID    string                 `bson:"branch_id" json:"branch_id"`
-	Operation   OperationType          `bson:"operation" json:"operation"`
-	Collection  string                 `bson:"collection,omitempty" json:"collection,omitempty"`
-	DocumentID  string                 `bson:"document_id,omitempty" json:"document_id,omitempty"`
-	Document    bson.Raw               `bson:"document,omitempty" json:"-"`
-	OldDocument bson.Raw               `bson:"old_document,omitempty" json:"-"`
-	Metadata    map[string]interface{} `bson:"metadata,omitempty" json:"metadata,omitempty"`
+	ID                  primitive.ObjectID     `bson:"_id,omitempty" json:"id,omitempty"`
+	LSN                 int64                  `bson:"lsn" json:"lsn"`
+	Timestamp           time.Time              `bson:"timestamp" json:"timestamp"`
+	ProjectID           string                 `bson:"project_id" json:"project_id"`
+	BranchID            string                 `bson:"branch_id" json:"branch_id"`
+	Operation           OperationType          `bson:"operation" json:"operation"`
+	Collection          string                 `bson:"collection,omitempty" json:"collection,omitempty"`
+	DocumentID          string                 `bson:"document_id,omitempty" json:"document_id,omitempty"`
+	Document            bson.Raw               `bson:"-" json:"-"`
+	OldDocument         bson.Raw               `bson:"-" json:"-"`
+	CompressedDocument  []byte                 `bson:"compressed_document,omitempty" json:"-"`
+	CompressedOldDocument []byte               `bson:"compressed_old_document,omitempty" json:"-"`
+	Metadata            map[string]interface{} `bson:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // Branch represents a WAL-based branch

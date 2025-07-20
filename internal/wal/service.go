@@ -17,14 +17,22 @@ type Service struct {
 	collection *mongo.Collection
 	lsnCounter atomic.Int64
 	metrics    *Metrics
+	compressor *Compressor
 }
 
 // NewService creates a new WAL service
 func NewService(db *mongo.Database) (*Service, error) {
+	// Initialize compressor with default config
+	compressor, err := NewCompressor(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create compressor: %w", err)
+	}
+
 	s := &Service{
 		db:         db,
 		collection: db.Collection("wal_log"),
 		metrics:    GlobalMetrics,
+		compressor: compressor,
 	}
 
 	// Create indexes
@@ -52,13 +60,13 @@ func NewService(db *mongo.Database) (*Service, error) {
 		},
 	}
 
-	_, err := s.collection.Indexes().CreateMany(ctx, indexes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create indexes: %w", err)
+	if _, err2 := s.collection.Indexes().CreateMany(ctx, indexes); err2 != nil {
+		return nil, fmt.Errorf("failed to create indexes: %w", err2)
 	}
 
 	// Initialize LSN counter
 	if err := s.initializeLSN(); err != nil {
+		compressor.Close()
 		return nil, fmt.Errorf("failed to initialize LSN: %w", err)
 	}
 
@@ -92,6 +100,13 @@ func (s *Service) Append(entry *Entry) (int64, error) {
 	entry.LSN = lsn
 	entry.Timestamp = time.Now()
 
+	// Compress entry before storing
+	if err := s.compressor.CompressEntry(entry); err != nil {
+		// Rollback LSN on error
+		s.lsnCounter.Add(-1)
+		return 0, fmt.Errorf("failed to compress WAL entry: %w", err)
+	}
+
 	ctx := context.Background()
 	_, err := s.collection.InsertOne(ctx, entry)
 	if err != nil {
@@ -103,6 +118,44 @@ func (s *Service) Append(entry *Entry) (int64, error) {
 	return lsn, nil
 }
 
+// AppendBatch adds multiple entries to the WAL in a single operation for optimal performance
+func (s *Service) AppendBatch(entries []*Entry) ([]int64, error) {
+	if len(entries) == 0 {
+		return []int64{}, nil
+	}
+
+	now := time.Now()
+	lsns := make([]int64, len(entries))
+	documents := make([]interface{}, len(entries))
+	
+	// Generate LSNs atomically for all entries and compress
+	for i, entry := range entries {
+		lsn := s.lsnCounter.Add(1)
+		entry.LSN = lsn
+		entry.Timestamp = now
+		lsns[i] = lsn
+		
+		// Compress entry before storing
+		if err := s.compressor.CompressEntry(entry); err != nil {
+			// Rollback all LSNs on error
+			s.lsnCounter.Add(-int64(i + 1))
+			return nil, fmt.Errorf("failed to compress WAL entry %d: %w", i, err)
+		}
+		
+		documents[i] = entry
+	}
+
+	ctx := context.Background()
+	_, err := s.collection.InsertMany(ctx, documents, options.InsertMany().SetOrdered(true))
+	if err != nil {
+		// Rollback all LSNs on error
+		s.lsnCounter.Add(-int64(len(entries)))
+		return nil, fmt.Errorf("failed to append WAL entries batch: %w", err)
+	}
+
+	return lsns, nil
+}
+
 // GetEntry retrieves a single WAL entry by LSN
 func (s *Service) GetEntry(lsn int64) (*Entry, error) {
 	ctx := context.Background()
@@ -111,6 +164,12 @@ func (s *Service) GetEntry(lsn int64) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	
+	// Decompress entry after retrieval
+	if err := s.compressor.DecompressEntry(&entry); err != nil {
+		return nil, fmt.Errorf("failed to decompress WAL entry: %w", err)
+	}
+	
 	return &entry, nil
 }
 
@@ -126,6 +185,13 @@ func (s *Service) GetEntries(filter bson.M, opts ...*options.FindOptions) ([]*En
 	var entries []*Entry
 	if err := cursor.All(ctx, &entries); err != nil {
 		return nil, err
+	}
+
+	// Decompress all entries
+	for _, entry := range entries {
+		if err := s.compressor.DecompressEntry(entry); err != nil {
+			return nil, fmt.Errorf("failed to decompress WAL entry LSN %d: %w", entry.LSN, err)
+		}
 	}
 
 	return entries, nil
@@ -207,4 +273,12 @@ func (s *Service) GetMetrics() MetricsSnapshot {
 // GetSuccessRates returns success rates for operations
 func (s *Service) GetSuccessRates() map[string]float64 {
 	return s.metrics.GetSuccessRate()
+}
+
+// Close cleans up resources used by the service
+func (s *Service) Close() error {
+	if s.compressor != nil {
+		return s.compressor.Close()
+	}
+	return nil
 }
