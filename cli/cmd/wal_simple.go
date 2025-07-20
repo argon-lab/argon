@@ -16,7 +16,7 @@ var walSimpleCmd = &cobra.Command{
 
 var walSimpleStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show WAL system status",
+	Short: "Show WAL system status and health",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		features := config.GetFeatures()
 
@@ -40,6 +40,21 @@ var walSimpleStatusCmd = &cobra.Command{
 
 		fmt.Printf("  Connection: OK\n")
 		fmt.Printf("  Current LSN: %d\n", services.WAL.GetCurrentLSN())
+		
+		// Get health and metrics
+		health := services.Monitor.GetHealthStatus()
+		fmt.Printf("  Health: %s\n", func() string {
+			if health["healthy"].(bool) {
+				return "HEALTHY"
+			}
+			return "UNHEALTHY"
+		}())
+		
+		if metrics, ok := health["metrics"].(map[string]interface{}); ok {
+			fmt.Printf("  Total Operations: %v\n", metrics["total_operations"])
+			fmt.Printf("  Active Branches: %v\n", metrics["active_branches"])
+			fmt.Printf("  Active Projects: %v\n", metrics["active_projects"])
+		}
 
 		return nil
 	},
@@ -213,6 +228,97 @@ var walSimpleRestorePreviewCmd = &cobra.Command{
 	},
 }
 
+var walSimpleMetricsCmd = &cobra.Command{
+	Use:   "metrics",
+	Short: "Show WAL performance metrics",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		snapshot := services.WAL.GetMetrics()
+		successRates := services.WAL.GetSuccessRates()
+		
+		fmt.Println("WAL Performance Metrics:")
+		fmt.Printf("  Operations:\n")
+		fmt.Printf("    Append: %d (%.1f%% success)\n", snapshot.AppendOps, successRates["append"]*100)
+		fmt.Printf("    Query: %d (%.1f%% success)\n", snapshot.QueryOps, successRates["query"]*100)
+		fmt.Printf("    Materialization: %d (%.1f%% success)\n", snapshot.MaterialOps, successRates["materialization"]*100)
+		fmt.Printf("    Branch: %d\n", snapshot.BranchOps)
+		fmt.Printf("    Restore: %d\n", snapshot.RestoreOps)
+		
+		fmt.Printf("  Latencies:\n")
+		fmt.Printf("    Average Append: %v\n", snapshot.AvgAppendLatency)
+		fmt.Printf("    Average Query: %v\n", snapshot.AvgQueryLatency)
+		fmt.Printf("    Average Materialization: %v\n", snapshot.AvgMaterialLatency)
+		
+		fmt.Printf("  System:\n")
+		fmt.Printf("    Current LSN: %d\n", snapshot.CurrentLSN)
+		fmt.Printf("    Active Branches: %d\n", snapshot.ActiveBranches)
+		fmt.Printf("    Active Projects: %d\n", snapshot.ActiveProjects)
+		fmt.Printf("    Last Operation: %v\n", snapshot.LastOperationTime.Format("2006-01-02 15:04:05"))
+
+		return nil
+	},
+}
+
+var walSimpleHealthCmd = &cobra.Command{
+	Use:   "health",
+	Short: "Show WAL system health and alerts",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		health := services.Monitor.GetHealthStatus()
+		alerts := services.Monitor.GetActiveAlerts()
+		
+		fmt.Println("WAL System Health:")
+		fmt.Printf("  Status: %s\n", func() string {
+			if health["healthy"].(bool) {
+				return "HEALTHY ✅"
+			}
+			return "UNHEALTHY ❌"
+		}())
+		
+		fmt.Printf("  Last Check: %v\n", health["last_check"])
+		fmt.Printf("  Consecutive Failures: %v\n", health["consecutive_fails"])
+		fmt.Printf("  Total Health Checks: %v\n", health["health_checks"])
+		
+		fmt.Printf("\nAlerts:\n")
+		if len(alerts) == 0 {
+			fmt.Println("  No active alerts ✅")
+		} else {
+			for _, alert := range alerts {
+				fmt.Printf("  [%s] %s: %s\n", alert.Level, alert.Title, alert.Message)
+				fmt.Printf("    Triggered: %v\n", alert.Timestamp.Format("2006-01-02 15:04:05"))
+			}
+		}
+
+		return nil
+	},
+}
+
+var walSimpleStorageCmd = &cobra.Command{
+	Use:   "storage",
+	Short: "Show WAL storage information",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		// This would use a storage info method if implemented
+		fmt.Println("WAL Storage Information:")
+		fmt.Println("  [Storage metrics would be displayed here]")
+		fmt.Println("  Note: Full storage metrics implementation pending")
+
+		return nil
+	},
+}
+
 func init() {
 	// Add flags
 	walSimpleTTInfoCmd.Flags().StringP("project", "p", "", "Project ID")
@@ -230,6 +336,9 @@ func init() {
 	walSimpleCmd.AddCommand(walSimpleProjectCmd)
 	walSimpleCmd.AddCommand(walSimpleTTInfoCmd)
 	walSimpleCmd.AddCommand(walSimpleRestorePreviewCmd)
+	walSimpleCmd.AddCommand(walSimpleMetricsCmd)
+	walSimpleCmd.AddCommand(walSimpleHealthCmd)
+	walSimpleCmd.AddCommand(walSimpleStorageCmd)
 
 	// Add to root command
 	rootCmd.AddCommand(walSimpleCmd)

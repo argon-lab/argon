@@ -27,13 +27,17 @@ export ENABLE_WAL=true
 argon wal-simple project create ecommerce
 
 # Query your data from any point in time
-argon wal-simple tt-info --project ecommerce --time "2h ago"
+argon wal-simple tt-info --project ecommerce --branch main
+
+# Monitor performance in real-time
+argon wal-simple metrics
+argon wal-simple health
 
 # Safely experiment and rollback instantly  
 argon wal-simple restore-preview --project ecommerce --lsn 1500
 ```
 
-## 🏆 **Revolutionary Performance**
+## 📊 **Performance Benchmarks**
 
 | Operation | Industry Standard | Argon WAL | Improvement |
 |-----------|------------------|-----------|-------------|
@@ -67,7 +71,7 @@ cd argon && ./scripts/build.sh
 ### 60-Second Demo
 
 ```bash
-# 1. Enable the revolutionary WAL mode
+# 1. Enable WAL mode
 export ENABLE_WAL=true
 
 # 2. Create your first WAL-enabled project
@@ -149,7 +153,7 @@ argon monitor --alerts
 # Monitors: DB connectivity, performance thresholds, error rates
 ```
 
-## 🏗️ **Revolutionary WAL Architecture**
+## 🏗️ **WAL Architecture**
 
 Argon implements a **Write-Ahead Log (WAL)** architecture inspired by [Neon](https://neon.tech) but designed specifically for MongoDB document databases:
 
@@ -330,11 +334,9 @@ Production benchmarks on AWS c5.4xlarge (16 vCPU, 32GB RAM):
 ## 🤝 **Community & Support**
 
 ### Getting Help
-- 📖 [Complete Documentation](https://docs.argon-lab.com)
-- 💬 [Discord Community](https://discord.gg/argon-lab) - Real-time help
+- 📖 [Documentation](./docs/) - Complete guides and API reference
 - 🐛 [Issue Tracker](https://github.com/argon-lab/argon/issues) - Bug reports & features
-- 📧 [Enterprise Support](mailto:enterprise@argon-lab.com) - SLA-backed assistance
-- 📺 [Video Tutorials](https://youtube.com/argon-lab) - Step-by-step guides
+- 📧 [Contact](https://www.argonlabs.tech/) - Project website and information
 
 ### Contributing to the Revolution
 We're building the future of database workflows! Join our community:
@@ -362,13 +364,13 @@ go test ./tests/wal/...  # Run the comprehensive test suite
 - [ ] **Q3 2025**: Managed cloud service, real-time collaboration
 - [ ] **Q4 2025**: Advanced analytics, ML/AI integrations
 
-## 🏆 **Recognition & Adoption**
+## 🚀 **Current Status**
 
-- 🥇 **MongoDB Innovation Award 2024** - Best Developer Tool Innovation
-- 🌟 **GitHub Trending** - #1 in Database Tools for 3 consecutive weeks
-- 📰 **Industry Coverage**: Featured in TechCrunch, Hacker News, MongoDB Blog
-- 🏢 **Enterprise Adoption**: 50+ companies in pilot programs
-- 👥 **Community**: 10K+ developers in Discord, 500+ GitHub contributors
+- ✅ **Production Ready**: Complete WAL implementation with time travel
+- 📊 **Performance**: 37,905+ ops/sec with < 1ms latency
+- 🔧 **Features**: Instant branching, historical queries, safe restore operations
+- 🖥️ **CLI Tools**: Full command-line interface with monitoring
+- 📋 **Open Source**: MIT licensed, community-driven development
 
 ## 📄 **License & Legal**
 
@@ -382,14 +384,11 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 **Built with ❤️ by MongoDB experts for the global developer community**
 
-[🌐 Website](https://argon-lab.com) • [📖 Documentation](https://docs.argon-lab.com) • [📰 Blog](https://blog.argon-lab.com) • [🐦 Twitter](https://twitter.com/argon_lab)
+[🌐 Website](https://www.argonlabs.tech) • [📖 Documentation](./docs/) • [🔧 Console](https://console.argonlabs.tech)
 
 ### ⭐ **Star us on GitHub** if Argon helps you build better applications!
 
-**Ready to revolutionize your MongoDB workflows?**  
-[Get Started →](docs/quick-start.md) | [See Live Demo →](https://demo.argon-lab.com) | [Join Discord →](https://discord.gg/argon-lab)
-
-*"Argon is what MongoDB should have been from day one. Game-changing technology."*  
-— Senior Engineering Manager, Fortune 500 Company
+**Ready to try MongoDB branching with time travel?**  
+[Get Started →](docs/) | [GitHub Repository →](https://github.com/argon-lab/argon)
 
 </div>

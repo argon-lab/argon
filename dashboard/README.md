@@ -185,7 +185,6 @@ This project is licensed under the MIT License - see the [LICENSE](../LICENSE) f
 
 - **Documentation**: [../docs/](../docs/)
 - **Issues**: [GitHub Issues](https://github.com/argon-lab/argon/issues)
-- **Discord**: [Join our community](https://discord.gg/argon)
 
 ## Roadmap
 

@@ -259,14 +259,14 @@ docker run -d -p 27017:27017 --name argon-mongo mongo:6.0
 
 ### Getting Help
 
-- **Discord**: [Join our community](https://discord.gg/argon)
+- **Documentation**: Check the [docs/](docs/) directory
 - **GitHub Discussions**: For questions and ideas
 - **Issue Tracker**: For bugs and feature requests
 
 ### Communication Channels
 
 - **Development discussion**: GitHub Discussions
-- **Real-time chat**: Discord #development channel
+- **Real-time discussion**: GitHub Discussions
 - **Security issues**: security@argonlabs.tech
 
 ### Recognition

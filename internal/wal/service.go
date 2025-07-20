@@ -16,6 +16,7 @@ type Service struct {
 	db         *mongo.Database
 	collection *mongo.Collection
 	lsnCounter atomic.Int64
+	metrics    *Metrics
 }
 
 // NewService creates a new WAL service
@@ -23,6 +24,7 @@ func NewService(db *mongo.Database) (*Service, error) {
 	s := &Service{
 		db:         db,
 		collection: db.Collection("wal_log"),
+		metrics:    GlobalMetrics,
 	}
 
 	// Create indexes
@@ -195,4 +197,14 @@ func (s *Service) GetProjectEntries(projectID, collection string, startLSN, endL
 
 	opts := options.Find().SetSort(bson.M{"lsn": 1})
 	return s.GetEntries(filter, opts)
+}
+
+// GetMetrics returns a snapshot of current metrics
+func (s *Service) GetMetrics() Metrics {
+	return s.metrics.GetSnapshot()
+}
+
+// GetSuccessRates returns success rates for operations
+func (s *Service) GetSuccessRates() map[string]float64 {
+	return s.metrics.GetSuccessRate()
 }
