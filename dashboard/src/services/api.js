@@ -99,6 +99,36 @@ export const system = {
   status: () => api.get('/status'),
 };
 
+export const wal = {
+  metrics: () => api.get('/wal/metrics'),
+  monitor: () => api.get('/wal/monitor'),
+  health: () => api.get('/wal/health'),
+  entries: (params = {}) => api.get('/wal/entries', { params }),
+  performance: () => api.get('/wal/performance'),
+  alerts: () => api.get('/wal/alerts'),
+};
+
+export const timetravel = {
+  info: (projectId, branchId) => api.get(`/projects/${projectId}/branches/${branchId}/timetravel/info`),
+  query: (projectId, branchId, lsn, collection) => 
+    api.get(`/projects/${projectId}/branches/${branchId}/timetravel/query`, { 
+      params: { lsn, collection } 
+    }),
+  history: (projectId, branchId, collection, documentId) => 
+    api.get(`/projects/${projectId}/branches/${branchId}/timetravel/history`, { 
+      params: { collection, documentId } 
+    }),
+};
+
+export const imports = {
+  preview: (mongoUri, databaseName) => 
+    api.post('/import/preview', { mongoUri, databaseName }),
+  database: (mongoUri, databaseName, projectName, options = {}) => 
+    api.post('/import/database', { mongoUri, databaseName, projectName, ...options }),
+  status: (projectName) => 
+    api.get(`/import/status`, { params: { project: projectName } }),
+};
+
 // Export the axios instance for direct use
 export { api };
 

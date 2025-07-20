@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, Home, Settings, User, GitBranch } from 'lucide-react';
+import { Database, Home, Settings, User, GitBranch, Activity, Clock, Upload } from 'lucide-react';
 
 export function Navigation() {
   const location = useLocation();
@@ -20,7 +20,7 @@ export function Navigation() {
           </Link>
 
           {/* Navigation Links */}
-          <div className="hidden md:flex items-center space-x-8">
+          <div className="hidden md:flex items-center space-x-6">
             <Link
               to="/"
               className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors ${
@@ -29,19 +29,45 @@ export function Navigation() {
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Home size={20} />
+              <Home size={18} />
               <span>Dashboard</span>
             </Link>
             
-            <button className="flex items-center space-x-2 px-3 py-2 rounded-lg text-gray-600 hover:text-gray-900">
-              <GitBranch size={20} />
-              <span>Branches</span>
-            </button>
+            <Link
+              to="/monitor"
+              className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors ${
+                isActive('/monitor') 
+                  ? 'bg-blue-100 text-blue-700' 
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Activity size={18} />
+              <span>WAL Monitor</span>
+            </Link>
             
-            <button className="flex items-center space-x-2 px-3 py-2 rounded-lg text-gray-600 hover:text-gray-900">
-              <Settings size={20} />
-              <span>Settings</span>
-            </button>
+            <Link
+              to="/timetravel"
+              className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors ${
+                isActive('/timetravel') 
+                  ? 'bg-blue-100 text-blue-700' 
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Clock size={18} />
+              <span>Time Travel</span>
+            </Link>
+            
+            <Link
+              to="/import"
+              className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors ${
+                isActive('/import') 
+                  ? 'bg-blue-100 text-blue-700' 
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Upload size={18} />
+              <span>Import</span>
+            </Link>
           </div>
 
           {/* User Menu */}

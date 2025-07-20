@@ -4,9 +4,12 @@ A modern web dashboard for managing MongoDB branches and projects with Argon.
 
 ## Features
 
-- **Project Management**: Create, view, and manage your MongoDB projects
-- **Branch Visualization**: Visual interface for branch operations
-- **Real-time Stats**: Live statistics and performance metrics
+- **Project Management**: Create, view, and manage your MongoDB projects with time travel
+- **Branch Visualization**: Visual interface for branch operations and instant branching
+- **WAL Monitoring**: Real-time Write-Ahead Log metrics, health monitoring, and performance analytics
+- **Time Travel Interface**: Query your database at any point in history with visual timeline
+- **MongoDB Import**: Import existing MongoDB databases with step-by-step wizard
+- **Real-time Stats**: Live statistics and performance metrics with auto-refresh
 - **Responsive Design**: Works on desktop, tablet, and mobile
 - **Modern UI**: Clean, intuitive interface built with React and Tailwind CSS
 
@@ -16,23 +19,27 @@ A modern web dashboard for managing MongoDB branches and projects with Argon.
 
 - Node.js 16+ 
 - npm or yarn
-- Argon backend service running
+- Argon CLI installed and configured
+- MongoDB instance running (for WAL functionality)
 
 ### Installation
 
 ```bash
 # Clone the repository
 git clone https://github.com/argon-lab/argon.git
-cd argon/dashboard
+cd argon
 
-# Install dependencies
+# Start the API server (in one terminal)
+cd api
+go run main.go
+
+# Start the dashboard (in another terminal)
+cd dashboard
 npm install
-
-# Start the development server
 npm start
 ```
 
-The dashboard will be available at `http://localhost:3000`.
+The dashboard will be available at `http://localhost:3000` and the API at `http://localhost:8080`.
 
 ### Configuration
 
@@ -186,14 +193,46 @@ This project is licensed under the MIT License - see the [LICENSE](../LICENSE) f
 - **Documentation**: [../docs/](../docs/)
 - **Issues**: [GitHub Issues](https://github.com/argon-lab/argon/issues)
 
+## Features Overview
+
+### 🔍 WAL Monitor
+- Real-time performance metrics (ops/sec, response times, success rates)
+- System health monitoring with alerts
+- Memory usage and connection tracking
+- Recent activity feed with operation details
+- Auto-refresh capabilities
+
+### ⏰ Time Travel
+- Query database state at any LSN (Log Sequence Number)
+- Historical data visualization
+- Collection-level and document-level queries
+- Time range selection with calendar picker
+- Export historical data
+
+### 📤 MongoDB Import
+- Step-by-step import wizard with preview
+- Batch processing with configurable sizes
+- Dry-run capabilities for safe testing
+- Progress tracking and status monitoring
+- Error handling and validation
+
+### 📊 Project & Branch Management
+- Visual project overview with statistics
+- Instant branch creation and management
+- Branch comparison and merging
+- Real-time collaboration features
+
 ## Roadmap
 
-- [ ] Real-time notifications
-- [ ] Advanced branch comparison
-- [ ] Data visualization charts
-- [ ] Team collaboration features
-- [ ] Dark mode support
+- [ ] Real-time notifications and websocket integration
+- [ ] Advanced branch comparison with diff views
+- [ ] Interactive data visualization charts
+- [ ] Team collaboration features with user management
+- [ ] Dark mode support and theme customization
 - [ ] Mobile app (React Native)
+- [ ] Advanced time travel with natural language queries
+- [ ] Automated backup and restore scheduling
+- [ ] Performance optimization suggestions
 
 ---
 
