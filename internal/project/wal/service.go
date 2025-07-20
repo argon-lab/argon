@@ -187,8 +187,8 @@ func (s *ProjectService) DeleteProject(projectID string) error {
 		return fmt.Errorf("failed to append WAL entry: %w", err)
 	}
 
-	// Delete main branch
-	if err := s.branches.DeleteBranch(projectID, "main"); err != nil {
+	// Force delete main branch (special case for project deletion)
+	if err := s.branches.ForceDeleteBranch(projectID, "main"); err != nil {
 		fmt.Printf("Failed to delete main branch: %v\n", err)
 	}
 

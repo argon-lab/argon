@@ -187,7 +187,7 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 		return err
 	}
 
-	// Validate it's not the main branch
+	// Validate it's not the main branch (unless force is specified)
 	if branch.Name == "main" {
 		return errors.New("cannot delete main branch")
 	}
@@ -258,4 +258,40 @@ func (s *BranchService) GetChildBranches(parentID string) ([]*wal.Branch, error)
 	}
 
 	return branches, nil
+}
+
+// ForceDeleteBranch deletes a branch without safety checks (for project deletion)
+func (s *BranchService) ForceDeleteBranch(projectID, name string) error {
+	ctx := context.Background()
+
+	// Get branch
+	branch, err := s.GetBranch(projectID, name)
+	if err != nil {
+		return err
+	}
+
+	// Create WAL entry for deletion
+	entry := &wal.Entry{
+		ProjectID: projectID,
+		BranchID:  name,
+		Operation: wal.OpDeleteBranch,
+		Metadata: map[string]interface{}{
+			"branch_id":   branch.ID,
+			"final_lsn":   branch.HeadLSN,
+			"forced":      true,
+		},
+	}
+
+	_, err = s.wal.Append(entry)
+	if err != nil {
+		return fmt.Errorf("failed to append WAL entry: %w", err)
+	}
+
+	// Mark as deleted
+	_, err = s.collection.UpdateOne(ctx, 
+		bson.M{"_id": branch.ID},
+		bson.M{"$set": bson.M{"is_deleted": true}},
+	)
+
+	return err
 }
