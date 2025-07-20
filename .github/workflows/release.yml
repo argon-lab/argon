@@ -39,9 +39,9 @@ jobs:
         fi
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: binaries
+        name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
         path: dist/
 
   release:
@@ -52,10 +52,11 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Download artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
-        name: binaries
+        pattern: binaries-*
         path: dist/
+        merge-multiple: true
 
     - name: Create release
       uses: softprops/action-gh-release@v1
