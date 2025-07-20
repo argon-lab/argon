@@ -7,12 +7,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/argon-lab/argon/releases)
 
-**Argon provides production-ready MongoDB branching with two complete architectures:**
+**Argon is the first MongoDB database with Git-like time travel capabilities.**
 
-1. **Traditional Branching** (`argon branches`) - Stable enterprise system with worker queues
-2. **WAL Time Travel** (`argon wal-simple`) - Revolutionary time travel with instant branching
+**⚡ WAL-Powered Architecture** - Experience instant branching (1ms) and query any point in history using our Write-Ahead Log implementation.
 
-**🎉 BOTH SYSTEMS PRODUCTION READY** - Choose the approach that fits your needs.
+**🎉 PRODUCTION READY** - Complete time travel system with 37,905+ ops/sec performance.
 
 ## ⚡ **Why Argon Changes Everything**
 
@@ -25,15 +24,21 @@ Traditional database workflows are fundamentally broken:
 **Argon revolutionizes this** with production-ready WAL architecture:
 
 ```bash
-# Traditional approach - stable and proven
-argon projects create my-project
-argon branches create --name feature-x
-
-# WAL approach - with time travel
+# Enable time travel capabilities
 export ENABLE_WAL=true
-argon wal-simple project create ecommerce
-argon wal-simple tt-info --project ecommerce --branch main
-argon wal-simple restore-preview --project ecommerce --lsn 1500
+
+# Create projects with instant branching
+argon wal project create ecommerce
+
+# Query your database from any point in time  
+argon wal tt-info --project ecommerce --branch main
+
+# Safely preview restore operations
+argon wal restore-preview --project ecommerce --lsn 1500
+
+# Real-time monitoring
+argon wal metrics
+argon wal health
 ```
 
 ## 📊 **Performance Benchmarks**

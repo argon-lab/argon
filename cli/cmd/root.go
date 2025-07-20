@@ -18,19 +18,20 @@ var (
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "argon",
-	Short: "Git-like MongoDB branching for ML/AI workflows",
-	Long: `Argon CLI - MongoDB branching system with ML-native features.
+	Short: "MongoDB branching with time travel - powered by WAL architecture",
+	Long: `Argon CLI - MongoDB branching system with time travel capabilities.
 
-Compatible with Neon CLI patterns for zero learning curve.
-Think "Neon for MongoDB" with first-class ML/AI workflow support.
+Experience instant branching (1ms) and query any point in history.
+Built with Write-Ahead Log (WAL) architecture for maximum performance.
 
 Examples:
-  argon auth                           # Authenticate with Argon
-  argon projects list                  # List all projects
-  argon branches create --name exp-1   # Create new branch
-  argon connection-string              # Get MongoDB connection string
+  export ENABLE_WAL=true               # Enable advanced WAL features
+  argon wal project create my-project  # Create project with time travel  
+  argon wal tt-info --project my-proj  # Show time travel information
+  argon wal metrics                    # Performance monitoring
+  argon wal health                     # System health check
 
-Built by MongoDB engineers for the ML/AI community.`,
+The first MongoDB database with Git-like time travel.`,
 	Version: "1.0.0",
 }
 

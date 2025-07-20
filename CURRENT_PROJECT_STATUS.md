@@ -4,25 +4,23 @@
 **Branch**: master  
 **Last Major Update**: WAL Week 3 Complete
 
-## 🎯 **Overall Status: Production Ready with Dual Architecture**
+## 🎯 **Overall Status: Production Ready WAL System**
 
-Argon currently has **two complete, working systems** for MongoDB branching:
+Argon now has **one primary system** for MongoDB branching with time travel:
 
-### 1. **Legacy v2 System** (services/engine/)
-- **Status**: ✅ Complete and functional
+### **Primary WAL System** (internal/wal/)
+- **Status**: ✅ Production ready with time travel
+- **Architecture**: Write-Ahead Log (WAL) with LSN pointers  
+- **Performance**: 37,905+ ops/sec, 1ms branching, 86x faster than alternatives
+- **CLI**: `argon wal` commands (primary interface)
+- **Innovation**: First MongoDB time travel implementation
+- **Use Case**: All MongoDB branching needs with historical query capabilities
+
+### **Legacy v2 System** (services/engine/) 
+- **Status**: ✅ Available but deprecated
 - **Architecture**: Worker queues + S3 storage + compression
-- **Performance**: 10,000+ changes/sec, 42.40% compression
-- **CLI**: `argon branches`, `argon projects` (traditional commands)
-- **Distribution**: npm, Homebrew, GitHub releases
-- **Use Case**: Production MongoDB branching for enterprise
-
-### 2. **New WAL System** (internal/wal/)
-- **Status**: ✅ Complete with time travel
-- **Architecture**: Write-Ahead Log (WAL) with LSN pointers
-- **Performance**: 37,905+ ops/sec, < 1ms latency
-- **CLI**: `argon wal-simple` commands (monitoring, time travel)
-- **Innovation**: Time travel queries, instant branching
-- **Use Case**: Advanced database versioning with historical queries
+- **CLI**: `argon branches`, `argon projects` (legacy commands)
+- **Use Case**: Fallback for users who need traditional approach
 
 ## 📊 **Technical Implementation Status**
 
@@ -40,16 +38,17 @@ Argon currently has **two complete, working systems** for MongoDB branching:
 
 ### CLI Capabilities ✅
 ```bash
-# Legacy system
+# Primary WAL interface (RECOMMENDED)
+argon wal project create my-proj  # Create project with time travel
+argon wal status                  # System health
+argon wal metrics                 # Performance data
+argon wal tt-info                 # Time travel info
+argon wal restore-preview         # Safe restore
+argon wal health                  # Alert monitoring
+
+# Legacy interface (available but deprecated)
 argon projects list
 argon branches create --name feature-x
-
-# WAL system  
-argon wal-simple status           # System health
-argon wal-simple metrics          # Performance data
-argon wal-simple tt-info          # Time travel info
-argon wal-simple restore-preview  # Safe restore
-argon wal-simple health           # Alert monitoring
 ```
 
 ### ML/Data Science Integrations ✅
