@@ -1,20 +1,21 @@
 # Argon Documentation
 
-Welcome to Argon - production-ready MongoDB branching with dual architecture options.
+Welcome to Argon - production-ready MongoDB branching with time travel capabilities.
 
-## 🏗️ **Choose Your Architecture**
+## 🚀 **Pure WAL Architecture**
 
-Argon offers two complete, production-ready systems:
+Argon provides a unified MongoDB branching system with revolutionary capabilities:
 
-1. **Traditional Branching** - Stable enterprise system with worker queues
-2. **WAL Time Travel** - Revolutionary instant branching with historical queries
+- **Instant Branching** - 1ms branch creation (86x faster than alternatives)
+- **Time Travel** - Query any historical database state  
+- **Production Ready** - 37,905+ ops/sec performance with comprehensive monitoring
 
 ## 📖 **Documentation Index**
 
 ### **🚀 Getting Started**
-- [**Current Project Status**](../CURRENT_PROJECT_STATUS.md) - Understanding what's available
-- [**Next Steps Guide**](../NEXT_STEPS.md) - Strategic roadmap and priorities
 - [**Quick Start Guide**](./QUICK_START.md) - Get up and running in 5 minutes
+- **Install CLI**: `brew install argon-lab/tap/argonctl` or `npm install -g argonctl`
+- **Install SDK**: `pip install argon-mongodb` or `go get github.com/argon-lab/argon`
 
 ### **🛠️ Developer Guides**
 - [**Go SDK Reference**](./GO_SDK.md) - Production-ready Go integration
@@ -54,8 +55,13 @@ Argon offers two complete, production-ready systems:
 - **GitHub**: https://github.com/argon-lab/argon
 - **Issues**: https://github.com/argon-lab/argon/issues
 
-## ⚡ **Quick Links**
-- [Install via Homebrew](./INSTALLATION.md#homebrew) 
-- [Python SDK Quick Start](./PYTHON_SDK.md#quick-start)
-- [Performance Benchmarks](./PERFORMANCE.md)
-- [Production Deployment](./PRODUCTION_DEPLOYMENT_GUIDE.md)
+## ⚡ **Quick Installation**
+```bash
+# CLI (choose one)
+brew install argon-lab/tap/argonctl    # macOS
+npm install -g argonctl                 # Cross-platform
+
+# SDKs
+pip install argon-mongodb               # Python
+go get github.com/argon-lab/argon      # Go
+```

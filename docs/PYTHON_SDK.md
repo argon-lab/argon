@@ -6,45 +6,51 @@ Complete guide to using Argon's Python SDK for ML and data science workflows.
 
 ### Installation
 ```bash
-# Clone the repository and install
-git clone https://github.com/argon-lab/argon.git
-cd argon
-pip install -e .
+# Install from PyPI
+pip install argon-mongodb
+
+# With ML integrations
+pip install argon-mongodb[ml]
 ```
 
 ### Basic Usage
 ```python
-from core.project import Project
-from integrations.jupyter import init_argon_notebook
+from argon import ArgonClient
+from argon.project import Project
+
+# Initialize client
+client = ArgonClient()
 
 # Create a project
-project = Project("ml-experiment")
-print(f"Created project: {project.name} (ID: {project.id})")
+project = client.create_project("ml-experiment")
+print(f"Created project: {project['name']} (ID: {project['id']})")
 
-# Create branches for experiments
-main_branch = project.get_branch("main")
-exp_branch = project.create_branch("experiment-v1")
+# Work with projects
+projects = client.list_projects()
 ```
 
 ## 📊 **Core API Reference**
 
-### **Project Class**
+### **ArgonClient Class**
 ```python
-from core.project import Project
+from argon import ArgonClient
 
-# Create or connect to existing project
-project = Project("my-ml-project")
-
-# Properties
-project.name        # Project name
-project.id          # Unique project ID
-project.project_id  # Alias for id
+# Initialize client
+client = ArgonClient(mongodb_uri="mongodb://localhost:27017")
 
 # Methods
-branch = project.get_branch("branch-name")           # Get existing branch
-branch = project.create_branch("new-branch")         # Create new branch
-branches = project.list_branches()                   # List all branches
-status = project.get_status()                        # Get project status
+project = client.create_project("name")              # Create project
+projects = client.list_projects()                    # List projects
+status = client.get_status()                         # System status
+tt_info = client.get_time_travel_info(               # Time travel info
+    project_id="...", 
+    branch_name="main"
+)
+preview = client.get_restore_preview(                # Restore preview
+    project_id="...",
+    branch_name="main",
+    target_lsn=1500
+)
 ```
 
 ### **Branch Class**

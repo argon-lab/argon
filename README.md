@@ -28,17 +28,17 @@ Traditional database workflows are fundamentally broken:
 export ENABLE_WAL=true
 
 # Create projects with instant branching
-argon wal project create ecommerce
+argon projects create ecommerce
 
 # Query your database from any point in time  
-argon wal tt-info --project ecommerce --branch main
+argon time-travel info --project ecommerce --branch main
 
 # Safely preview restore operations
-argon wal restore-preview --project ecommerce --lsn 1500
+argon restore preview --project ecommerce --lsn 1500
 
 # Real-time monitoring
-argon wal metrics
-argon wal health
+argon metrics
+argon status
 ```
 
 ## 📊 **Performance Benchmarks**
@@ -58,18 +58,18 @@ argon wal health
 ### Installation
 
 ```bash
-# macOS (Homebrew) - Coming Soon
-brew install argon-lab/tap/argon
+# macOS (Homebrew)
+brew install argon-lab/tap/argonctl
 
-# Linux/Windows (npm) - Coming Soon  
-npm install -g @argon-lab/argon
+# Cross-platform (npm)  
+npm install -g argonctl
 
-# Docker - Available Now
-docker run -it argon-lab/argon:latest
+# Python SDK
+pip install argon-mongodb
 
-# From Source - Available Now
+# From Source
 git clone https://github.com/argon-lab/argon
-cd argon && ./scripts/build.sh
+cd argon/cli && go build -o argon
 ```
 
 ### 60-Second Demo
@@ -78,16 +78,16 @@ cd argon && ./scripts/build.sh
 # 1. Enable WAL mode
 export ENABLE_WAL=true
 
-# 2. Create your first WAL-enabled project
-argon wal-simple project create ecommerce
-# ✅ Created WAL-enabled project 'ecommerce' in 1.16ms
+# 2. Create your first project with time travel
+argon projects create ecommerce
+# ✅ Created project 'ecommerce' with time travel in 1.16ms
 
 # 3. Use your app normally - all operations automatically logged
 # ... your MongoDB operations run as usual ...
 # Behind the scenes: Every operation stored in append-only WAL
 
 # 4. Time travel to see data at any point
-argon wal-simple tt-info --project ecommerce --time "1h ago"
+argon time-travel info --project ecommerce --time "1h ago"
 # ✅ LSN Range: 1000-2500, Total Entries: 1500, <50ms query time
 
 # 5. Create instant branches for safe experimentation
@@ -95,7 +95,7 @@ argon branches create experimental-features
 # ✅ Branch created in 1.16ms with zero data copying
 
 # 6. Preview restore operations before executing
-argon wal-simple restore-preview --project ecommerce --lsn 1500
+argon restore preview --project ecommerce --lsn 1500
 # ✅ Preview: 500 operations to discard, 3 collections affected
 
 # 7. Safely restore to any point in history
@@ -118,9 +118,9 @@ argon branches list                     # See all lightweight branches
 ### ⏰ **Complete Time Travel**
 ```bash
 # Query any point in history with millisecond precision
-argon wal-simple tt-info --time "2025-01-15 10:30:00"
-argon wal-simple tt-info --time "1h ago"
-argon wal-simple tt-info --lsn 1500
+argon time-travel info --time "2025-01-15 10:30:00"
+argon time-travel info --time "1h ago"
+argon time-travel info --lsn 1500
 
 # See exactly what changed between any two points
 argon time-travel diff --from 1000 --to 2000
@@ -130,7 +130,7 @@ argon time-travel history --collection users --document-id "12345"
 ### 🔄 **Safe Restore Operations**
 ```bash
 # Always preview before you restore (no surprises)
-argon wal-simple restore-preview --lsn 1500
+argon restore preview --lsn 1500
 # Shows: 500 ops to discard, collections affected, safety warnings
 
 # Reset branch to any point with full safety checks
@@ -145,7 +145,7 @@ argon restore create safe-branch --from main --time "1h ago"
 ### 📊 **Production Monitoring**
 ```bash
 # Real-time system health with detailed metrics
-argon wal-simple status
+argon status
 # Shows: WAL health, current LSN, performance metrics
 
 # Live performance monitoring
@@ -211,7 +211,7 @@ argon branches merge feature-user-auth main --if-safe
 ### 🚨 **Disaster Recovery**
 ```bash
 # "Someone just dropped the users table at 2:30 PM!"
-argon wal-simple restore-preview --time "2025-01-15 14:25:00"
+argon restore preview --time "2025-01-15 14:25:00"
 # ✅ Preview: Restore to 5 minutes before incident, 10K users recovered
 
 argon restore reset --branch main --time "5 minutes before incident"
@@ -262,28 +262,33 @@ state, _ := services.TimeTravel.MaterializeAtLSN(branch, "users", 1500)
 preview, _ := services.Restore.GetRestorePreview(branchID, targetLSN)
 ```
 
-### Python SDK (✅ Just Completed)
+### Python SDK (✅ Published)
 ```python
-from core.project import Project
-from integrations.jupyter import init_argon_notebook
+# Install with pip
+pip install argon-mongodb
 
-# Create projects and track ML experiments
-project = Project("ml-experiment")
-branch = project.create_branch("experiment-v1")
+# Basic usage
+from argon import ArgonClient
 
-# Jupyter integration for data science
-jupyter = init_argon_notebook("ml-project")
-jupyter.set_branch("experiment-1")
-jupyter.log_experiment_params({"learning_rate": 0.01})
-jupyter.log_experiment_metrics({"accuracy": 0.95})
+client = ArgonClient()
+project = client.create_project("ml-experiment")
+
+# ML integrations
+from argon.integrations import jupyter
+jupyter.init_argon_notebook("ml-project")
 jupyter.create_checkpoint("model_v1", "First working model")
 ```
 
-### JavaScript SDK (⚠️ Package Ready, Needs Publishing)
-```javascript
-// NPM package exists but not yet published
-// Currently available as binary distribution via:
-npm install -g argonctl  // (pending publication)
+### JavaScript/Node.js (✅ Published)
+```bash
+# Install CLI globally
+npm install -g argonctl
+
+# Use in your Node.js application
+const { exec } = require('child_process');
+exec('argon projects list', (err, stdout) => {
+  console.log('Projects:', stdout);
+});
 ```
 
 ### Zero-Friction Integration

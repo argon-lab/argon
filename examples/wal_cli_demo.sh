@@ -11,21 +11,24 @@ echo ""
 export ENABLE_WAL=true
 
 # Create a project
-echo "1. Creating a WAL-enabled project..."
-argon wal project create demo-project
+echo "1. Creating a project with time travel..."
+argon projects create demo-project
 
 # Get project ID (in real usage, you'd capture this from the create command)
 PROJECT_ID="demo-project"
 
 # List projects
 echo -e "\n2. Listing projects..."
-argon wal project list
+argon projects list
 
 # Create some data
 echo -e "\n3. Creating initial data..."
-argon wal query insert users -p $PROJECT_ID -b main --doc "name:Alice,role:admin,active:true"
-argon wal query insert users -p $PROJECT_ID -b main --doc "name:Bob,role:user,active:true"
-argon wal query insert products -p $PROJECT_ID -b main --doc "name:Laptop,price:1000,stock:10"
+# Note: In real usage, you'd use MongoDB driver to insert data
+# The WAL system transparently captures all operations
+echo "   Simulating data insertion via MongoDB driver..."
+echo "   - User: Alice (admin)"
+echo "   - User: Bob (user)"  
+echo "   - Product: Laptop ($1000)"
 
 # Query current state
 echo -e "\n4. Current state of users collection..."

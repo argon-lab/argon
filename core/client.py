@@ -79,12 +79,12 @@ class ArgonClient:
             raise RuntimeError(error_msg)
     
     def get_status(self) -> Dict[str, Any]:
-        """Get WAL system status"""
-        return self._run_command(["wal-simple", "status"])
+        """Get system status"""
+        return self._run_command(["status"])
     
     def list_projects(self) -> List[Dict[str, Any]]:
         """List all projects"""
-        result = self._run_command(["wal-simple", "project", "list"])
+        result = self._run_command(["projects", "list"])
         
         # Parse the output text into structured data
         output = result.get("output", "")
@@ -109,7 +109,7 @@ class ArgonClient:
     
     def create_project(self, name: str) -> Dict[str, Any]:
         """Create a new project"""
-        result = self._run_command(["wal-simple", "project", "create", name])
+        result = self._run_command(["projects", "create", name])
         
         # Parse the creation output
         output = result.get("output", "")
@@ -128,7 +128,7 @@ class ArgonClient:
     
     def get_time_travel_info(self, project_id: str, branch_name: str = "main") -> Dict[str, Any]:
         """Get time travel information for a branch"""
-        result = self._run_command(["wal-simple", "tt-info", "-p", project_id, "-b", branch_name])
+        result = self._run_command(["time-travel", "info", "-p", project_id, "-b", branch_name])
         
         # Parse the time travel info output
         output = result.get("output", "")
@@ -158,7 +158,7 @@ class ArgonClient:
     def get_restore_preview(self, project_id: str, branch_name: str, target_lsn: int) -> Dict[str, Any]:
         """Get preview of what a restore operation would do"""
         result = self._run_command([
-            "wal-simple", "restore-preview", 
+            "restore", "preview", 
             "-p", project_id, 
             "-b", branch_name, 
             "--lsn", str(target_lsn)

@@ -1,0 +1,42 @@
+{
+  "name": "argonctl",
+  "version": "1.0.0",
+  "description": "Git-like MongoDB branching with time travel - CLI tool",
+  "keywords": ["mongodb", "database", "branching", "time-travel", "ml", "ai", "cli"],
+  "homepage": "https://github.com/argon-lab/argon",
+  "bugs": {
+    "url": "https://github.com/argon-lab/argon/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/argon-lab/argon.git"
+  },
+  "license": "MIT",
+  "author": "Argon Lab",
+  "main": "index.js",
+  "bin": {
+    "argon": "./bin/argon",
+    "argonctl": "./bin/argon"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "preuninstall": "node scripts/uninstall.js"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}
