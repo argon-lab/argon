@@ -23,11 +23,11 @@ Argon provides a unified MongoDB branching system with revolutionary capabilitie
 - [**CLI Reference**](./CLI_REFERENCE.md) - Complete command documentation
 - [**API Reference**](./API_REFERENCE.md) - REST API endpoints
 
-### **🏗️ Architecture & Design**
-- [**WAL Architecture**](./WAL_ARCHITECTURE_DIAGRAM.md) - How the WAL system works
+### **🏗️ Architecture & Production**
+- [**Architecture Overview**](./ARCHITECTURE.md) - System architecture
 - [**Performance Benchmarks**](./PERFORMANCE.md) - Verified performance data
 - [**Production Deployment**](./PRODUCTION_DEPLOYMENT_GUIDE.md) - Enterprise deployment
-- [**Security Guide**](./SECURITY.md) - Security best practices
+- [**Features**](./FEATURES.md) - Complete feature list
 
 ### **💡 Use Cases & Examples**
 - [**ML/Data Science Workflows**](./ML_INTEGRATIONS.md) - Jupyter, MLflow, DVC integration

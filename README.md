@@ -2,10 +2,10 @@
 
 > **The first MongoDB branching system with time travel.** Git-like branching meets WAL architecture for enterprise MongoDB.
 
-[![Build Status](https://github.com/argon-lab/argon/workflows/CI/badge.svg)](https://github.com/argon-lab/argon/actions)
+[![Build Status](https://github.com/argon-lab/argon/actions/workflows/ci.yml/badge.svg)](https://github.com/argon-lab/argon/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/argon-lab/argon)](https://goreportcard.com/report/github.com/argon-lab/argon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/argon-lab/argon/releases)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/argon-lab/argon/releases)
 
 **Argon is the first MongoDB database with Git-like time travel capabilities.**
 
