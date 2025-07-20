@@ -32,43 +32,43 @@ func IsWALEnabled() bool {
 // ShouldUseWALForProject determines if a project should use WAL
 func ShouldUseWALForProject(isNew bool, explicitWAL bool) bool {
 	features := GetFeatures()
-	
+
 	if !features.EnableWAL {
 		return false
 	}
-	
+
 	if explicitWAL {
 		return true
 	}
-	
+
 	if isNew && features.WALForNewProjects {
 		return true
 	}
-	
+
 	return false
 }
 
 // ShouldUseWALForBranch determines if a branch should use WAL
 func ShouldUseWALForBranch(projectUseWAL bool, isNew bool, explicitWAL bool) bool {
 	features := GetFeatures()
-	
+
 	if !features.EnableWAL {
 		return false
 	}
-	
+
 	// If project uses WAL, all branches should use WAL
 	if projectUseWAL {
 		return true
 	}
-	
+
 	if explicitWAL {
 		return true
 	}
-	
+
 	if isNew && features.WALForNewBranches {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -78,11 +78,11 @@ func getBoolEnv(key string, defaultValue bool) bool {
 	if value == "" {
 		return defaultValue
 	}
-	
+
 	boolValue, err := strconv.ParseBool(value)
 	if err != nil {
 		return defaultValue
 	}
-	
+
 	return boolValue
 }

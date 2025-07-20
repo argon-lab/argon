@@ -27,7 +27,7 @@ var statusCmd = &cobra.Command{
 
 		fmt.Printf("   Database: ✅ Connected\n")
 		fmt.Printf("   Current LSN: %d\n", services.WAL.GetCurrentLSN())
-		
+
 		// Get health and metrics
 		health := services.Monitor.GetHealthStatus()
 		fmt.Printf("   Health: %s\n", func() string {
@@ -36,7 +36,7 @@ var statusCmd = &cobra.Command{
 			}
 			return "❌ UNHEALTHY"
 		}())
-		
+
 		if metrics, ok := health["metrics"].(map[string]interface{}); ok {
 			fmt.Printf("   Total Operations: %v\n", metrics["total_operations"])
 			fmt.Printf("   Active Branches: %v\n", metrics["active_branches"])
@@ -51,6 +51,6 @@ var statusCmd = &cobra.Command{
 }
 
 func init() {
-	// Add to root command  
+	// Add to root command
 	rootCmd.AddCommand(statusCmd)
 }

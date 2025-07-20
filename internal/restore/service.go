@@ -60,7 +60,7 @@ func (s *Service) ResetBranchToLSN(branchID string, targetLSN int64) (*wal.Branc
 	if len(entriesAfterTarget) > 0 {
 		// In production, you might want to create a backup branch or require confirmation
 		// For now, we'll proceed but log a warning
-		fmt.Printf("WARNING: Resetting branch %s to LSN %d will discard %d operations\n", 
+		fmt.Printf("WARNING: Resetting branch %s to LSN %d will discard %d operations\n",
 			branch.Name, targetLSN, len(entriesAfterTarget))
 	}
 
@@ -103,7 +103,7 @@ func (s *Service) CreateBranchAtLSN(projectID, sourceBranchID, newBranchName str
 
 	// Validate target LSN
 	if targetLSN < sourceBranch.BaseLSN || targetLSN > sourceBranch.HeadLSN {
-		return nil, fmt.Errorf("target LSN %d is outside source branch range [%d, %d]", 
+		return nil, fmt.Errorf("target LSN %d is outside source branch range [%d, %d]",
 			targetLSN, sourceBranch.BaseLSN, sourceBranch.HeadLSN)
 	}
 
@@ -153,7 +153,7 @@ func (s *Service) GetRestorePreview(branchID string, targetLSN int64) (*RestoreP
 
 	// Validate target LSN
 	if targetLSN < branch.BaseLSN || targetLSN > branch.HeadLSN {
-		return nil, fmt.Errorf("invalid target LSN %d for branch range [%d, %d]", 
+		return nil, fmt.Errorf("invalid target LSN %d for branch range [%d, %d]",
 			targetLSN, branch.BaseLSN, branch.HeadLSN)
 	}
 
@@ -215,12 +215,12 @@ func (s *Service) ValidateRestore(branchID string, targetLSN int64) error {
 
 	// Check LSN range
 	if targetLSN < branch.BaseLSN {
-		return fmt.Errorf("cannot restore to LSN %d before branch creation (base LSN: %d)", 
+		return fmt.Errorf("cannot restore to LSN %d before branch creation (base LSN: %d)",
 			targetLSN, branch.BaseLSN)
 	}
 
 	if targetLSN > branch.HeadLSN {
-		return fmt.Errorf("cannot restore to future LSN %d (current HEAD: %d)", 
+		return fmt.Errorf("cannot restore to future LSN %d (current HEAD: %d)",
 			targetLSN, branch.HeadLSN)
 	}
 

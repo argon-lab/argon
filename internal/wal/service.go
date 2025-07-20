@@ -168,8 +168,8 @@ func (s *Service) GetCurrentLSN() int64 {
 // GetDocumentHistory retrieves WAL entries for a specific document
 func (s *Service) GetDocumentHistory(branchID, collection, documentID string, startLSN, endLSN int64) ([]*Entry, error) {
 	filter := bson.M{
-		"branch_id": branchID,
-		"collection": collection,
+		"branch_id":   branchID,
+		"collection":  collection,
 		"document_id": documentID,
 		"lsn": bson.M{
 			"$gte": startLSN,

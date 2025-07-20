@@ -11,13 +11,13 @@ import (
 type OperationType string
 
 const (
-	OpInsert         OperationType = "insert"
-	OpUpdate         OperationType = "update"
-	OpDelete         OperationType = "delete"
-	OpCreateBranch   OperationType = "create_branch"
-	OpDeleteBranch   OperationType = "delete_branch"
-	OpCreateProject  OperationType = "create_project"
-	OpDeleteProject  OperationType = "delete_project"
+	OpInsert        OperationType = "insert"
+	OpUpdate        OperationType = "update"
+	OpDelete        OperationType = "delete"
+	OpCreateBranch  OperationType = "create_branch"
+	OpDeleteBranch  OperationType = "delete_branch"
+	OpCreateProject OperationType = "create_project"
+	OpDeleteProject OperationType = "delete_project"
 )
 
 // Entry represents a single WAL entry

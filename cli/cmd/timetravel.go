@@ -43,16 +43,16 @@ var timeTravelInfoCmd = &cobra.Command{
 		fmt.Printf("🕰️  Time Travel Info for '%s/%s':\n\n", projectName, branchName)
 		fmt.Printf("   LSN Range: %d → %d\n", info.EarliestLSN, info.LatestLSN)
 		fmt.Printf("   Total History: %d operations\n", info.EntryCount)
-		
+
 		if !info.EarliestTime.IsZero() {
-			fmt.Printf("   Time Range: %s → %s\n", 
+			fmt.Printf("   Time Range: %s → %s\n",
 				info.EarliestTime.Format("2006-01-02 15:04:05"),
 				info.LatestTime.Format("2006-01-02 15:04:05"))
 		}
-		
+
 		fmt.Println()
 		fmt.Println("💡 Query any point in history:")
-		fmt.Printf("   argon time-travel query --project %s --branch %s --lsn %d\n", 
+		fmt.Printf("   argon time-travel query --project %s --branch %s --lsn %d\n",
 			projectName, branchName, info.EarliestLSN+10)
 
 		return nil
@@ -123,7 +123,7 @@ func init() {
 	timeTravelInfoCmd.Flags().StringP("branch", "b", "", "Branch name (required)")
 	timeTravelInfoCmd.MarkFlagRequired("project")
 	timeTravelInfoCmd.MarkFlagRequired("branch")
-	
+
 	timeTravelQueryCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	timeTravelQueryCmd.Flags().StringP("branch", "b", "", "Branch name (required)")
 	timeTravelQueryCmd.Flags().String("lsn", "", "LSN to query (required)")

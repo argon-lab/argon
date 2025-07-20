@@ -29,14 +29,14 @@ func (s *Service) MaterializeAtLSN(branch *wal.Branch, collection string, target
 	if targetLSN < 0 {
 		return nil, fmt.Errorf("invalid LSN: %d", targetLSN)
 	}
-	
+
 	if targetLSN > branch.HeadLSN {
 		return nil, fmt.Errorf("target LSN %d is beyond branch HEAD %d", targetLSN, branch.HeadLSN)
 	}
-	
+
 	// For branches created from a historical point, include base entries
 	entries := []*wal.Entry{}
-	
+
 	if branch.BaseLSN > 0 {
 		// Get entries up to the base LSN from the global WAL
 		maxLSN := branch.BaseLSN
@@ -49,7 +49,7 @@ func (s *Service) MaterializeAtLSN(branch *wal.Branch, collection string, target
 		}
 		entries = append(entries, baseEntries...)
 	}
-	
+
 	// Get entries specific to this branch up to target LSN
 	if targetLSN > branch.BaseLSN {
 		branchEntries, err := s.wal.GetBranchEntries(branch.ID, collection, branch.BaseLSN+1, targetLSN)
@@ -58,7 +58,7 @@ func (s *Service) MaterializeAtLSN(branch *wal.Branch, collection string, target
 		}
 		entries = append(entries, branchEntries...)
 	}
-	
+
 	// Build state by replaying entries
 	state := make(map[string]bson.M)
 	for _, entry := range entries {
@@ -66,7 +66,7 @@ func (s *Service) MaterializeAtLSN(branch *wal.Branch, collection string, target
 			return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
 		}
 	}
-	
+
 	return state, nil
 }
 
@@ -77,7 +77,7 @@ func (s *Service) MaterializeAtTime(branch *wal.Branch, collection string, times
 	if err != nil {
 		return nil, fmt.Errorf("failed to find LSN at time: %w", err)
 	}
-	
+
 	// Materialize at that LSN
 	return s.MaterializeAtLSN(branch, collection, targetLSN)
 }
@@ -88,13 +88,13 @@ func (s *Service) FindLSNAtTime(branch *wal.Branch, timestamp time.Time) (int64,
 	if timestamp.After(time.Now()) {
 		return 0, fmt.Errorf("cannot find LSN for future timestamp %v", timestamp)
 	}
-	
+
 	// Get entries for the branch up to the timestamp
 	entries, err := s.wal.GetEntriesByTimestamp(branch.ProjectID, timestamp)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get entries by timestamp: %w", err)
 	}
-	
+
 	// Filter for this branch and find the latest LSN
 	var latestLSN int64 = 0
 	for _, entry := range entries {
@@ -102,11 +102,11 @@ func (s *Service) FindLSNAtTime(branch *wal.Branch, timestamp time.Time) (int64,
 			latestLSN = entry.LSN
 		}
 	}
-	
+
 	if latestLSN == 0 {
 		return 0, fmt.Errorf("no entries found before timestamp %v", timestamp)
 	}
-	
+
 	return latestLSN, nil
 }
 
@@ -116,10 +116,10 @@ func (s *Service) GetBranchStateAtLSN(branch *wal.Branch, targetLSN int64) (map[
 	if targetLSN < 0 || targetLSN > branch.HeadLSN {
 		return nil, fmt.Errorf("invalid target LSN %d (branch HEAD: %d)", targetLSN, branch.HeadLSN)
 	}
-	
+
 	// For branches created from a historical point, include base entries
 	entries := []*wal.Entry{}
-	
+
 	if branch.BaseLSN > 0 {
 		// Get entries up to the base LSN from the global WAL
 		maxLSN := branch.BaseLSN
@@ -132,7 +132,7 @@ func (s *Service) GetBranchStateAtLSN(branch *wal.Branch, targetLSN int64) (map[
 		}
 		entries = append(entries, baseEntries...)
 	}
-	
+
 	// Get entries specific to this branch up to target LSN
 	if targetLSN > branch.BaseLSN {
 		branchEntries, err := s.wal.GetBranchEntries(branch.ID, "", branch.BaseLSN+1, targetLSN)
@@ -141,25 +141,25 @@ func (s *Service) GetBranchStateAtLSN(branch *wal.Branch, targetLSN int64) (map[
 		}
 		entries = append(entries, branchEntries...)
 	}
-	
+
 	// Build state by collection
 	state := make(map[string]map[string]bson.M)
-	
+
 	for _, entry := range entries {
 		if entry.Collection == "" {
 			continue // Skip non-collection operations
 		}
-		
+
 		// Initialize collection state if needed
 		if _, exists := state[entry.Collection]; !exists {
 			state[entry.Collection] = make(map[string]bson.M)
 		}
-		
+
 		if err := s.materializer.ApplyEntry(state[entry.Collection], entry); err != nil {
 			return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
 		}
 	}
-	
+
 	return state, nil
 }
 
@@ -169,7 +169,7 @@ func (s *Service) GetDocumentHistoryAtLSN(branch *wal.Branch, collection, docume
 	if targetLSN < 0 || targetLSN > branch.HeadLSN {
 		return nil, fmt.Errorf("invalid target LSN %d (branch HEAD: %d)", targetLSN, branch.HeadLSN)
 	}
-	
+
 	// Get document history up to target LSN
 	return s.wal.GetDocumentHistory(branch.ID, collection, documentID, 0, targetLSN)
 }
@@ -181,7 +181,7 @@ func (s *Service) FindModifiedCollections(branch *wal.Branch, fromLSN, toLSN int
 	if err != nil {
 		return nil, fmt.Errorf("failed to get WAL entries: %w", err)
 	}
-	
+
 	// Track unique collections
 	collections := make(map[string]bool)
 	for _, entry := range entries {
@@ -189,13 +189,13 @@ func (s *Service) FindModifiedCollections(branch *wal.Branch, fromLSN, toLSN int
 			collections[entry.Collection] = true
 		}
 	}
-	
+
 	// Convert to slice
 	result := make([]string, 0, len(collections))
 	for col := range collections {
 		result = append(result, col)
 	}
-	
+
 	return result, nil
 }
 
@@ -206,25 +206,25 @@ func (s *Service) GetTimeTravelInfo(branch *wal.Branch) (*TimeTravelInfo, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get WAL entries: %w", err)
 	}
-	
+
 	if len(entries) == 0 {
 		return &TimeTravelInfo{
-			BranchID:      branch.ID,
-			BranchName:    branch.Name,
-			EarliestLSN:   branch.BaseLSN,
-			LatestLSN:     branch.HeadLSN,
-			EntryCount:    0,
+			BranchID:    branch.ID,
+			BranchName:  branch.Name,
+			EarliestLSN: branch.BaseLSN,
+			LatestLSN:   branch.HeadLSN,
+			EntryCount:  0,
 		}, nil
 	}
-	
+
 	return &TimeTravelInfo{
-		BranchID:       branch.ID,
-		BranchName:     branch.Name,
-		EarliestLSN:    entries[0].LSN,
-		LatestLSN:      entries[len(entries)-1].LSN,
-		EarliestTime:   entries[0].Timestamp,
-		LatestTime:     entries[len(entries)-1].Timestamp,
-		EntryCount:     len(entries),
+		BranchID:     branch.ID,
+		BranchName:   branch.Name,
+		EarliestLSN:  entries[0].LSN,
+		LatestLSN:    entries[len(entries)-1].LSN,
+		EarliestTime: entries[0].Timestamp,
+		LatestTime:   entries[len(entries)-1].Timestamp,
+		EntryCount:   len(entries),
 	}, nil
 }
 
@@ -238,4 +238,3 @@ type TimeTravelInfo struct {
 	LatestTime   time.Time
 	EntryCount   int
 }
-

@@ -9,29 +9,29 @@ import (
 // Metrics holds WAL operation metrics
 type Metrics struct {
 	// Operation counters
-	AppendOps     int64 `json:"append_ops"`
-	QueryOps      int64 `json:"query_ops"`
-	MaterialOps   int64 `json:"material_ops"`
-	BranchOps     int64 `json:"branch_ops"`
-	RestoreOps    int64 `json:"restore_ops"`
-	
+	AppendOps   int64 `json:"append_ops"`
+	QueryOps    int64 `json:"query_ops"`
+	MaterialOps int64 `json:"material_ops"`
+	BranchOps   int64 `json:"branch_ops"`
+	RestoreOps  int64 `json:"restore_ops"`
+
 	// Error counters
-	AppendErrors  int64 `json:"append_errors"`
-	QueryErrors   int64 `json:"query_errors"`
-	MaterialErrors int64 `json:"material_errors"`
+	AppendErrors     int64 `json:"append_errors"`
+	QueryErrors      int64 `json:"query_errors"`
+	MaterialErrors   int64 `json:"material_errors"`
 	ConnectionErrors int64 `json:"connection_errors"`
-	
+
 	// Performance metrics
 	AvgAppendLatency   time.Duration `json:"avg_append_latency"`
 	AvgQueryLatency    time.Duration `json:"avg_query_latency"`
 	AvgMaterialLatency time.Duration `json:"avg_material_latency"`
-	
+
 	// Current state
-	CurrentLSN       int64     `json:"current_lsn"`
-	ActiveBranches   int       `json:"active_branches"`
-	ActiveProjects   int       `json:"active_projects"`
+	CurrentLSN        int64     `json:"current_lsn"`
+	ActiveBranches    int       `json:"active_branches"`
+	ActiveProjects    int       `json:"active_projects"`
 	LastOperationTime time.Time `json:"last_operation_time"`
-	
+
 	// Internal tracking
 	latencyTracker *LatencyTracker
 	mu             sync.RWMutex
@@ -64,7 +64,7 @@ func (m *Metrics) RecordAppend(latency time.Duration, success bool) {
 	if !success {
 		atomic.AddInt64(&m.AppendErrors, 1)
 	}
-	
+
 	m.latencyTracker.recordAppend(latency)
 	m.updateAverageLatencies()
 	m.updateLastOperationTime()
@@ -76,7 +76,7 @@ func (m *Metrics) RecordQuery(latency time.Duration, success bool) {
 	if !success {
 		atomic.AddInt64(&m.QueryErrors, 1)
 	}
-	
+
 	m.latencyTracker.recordQuery(latency)
 	m.updateAverageLatencies()
 	m.updateLastOperationTime()
@@ -88,7 +88,7 @@ func (m *Metrics) RecordMaterialization(latency time.Duration, success bool) {
 	if !success {
 		atomic.AddInt64(&m.MaterialErrors, 1)
 	}
-	
+
 	m.latencyTracker.recordMaterial(latency)
 	m.updateAverageLatencies()
 	m.updateLastOperationTime()
@@ -138,18 +138,18 @@ type MetricsSnapshot struct {
 	MaterialOps int64 `json:"material_ops"`
 	BranchOps   int64 `json:"branch_ops"`
 	RestoreOps  int64 `json:"restore_ops"`
-	
+
 	// Error counters
 	AppendErrors     int64 `json:"append_errors"`
 	QueryErrors      int64 `json:"query_errors"`
 	MaterialErrors   int64 `json:"material_errors"`
 	ConnectionErrors int64 `json:"connection_errors"`
-	
+
 	// Performance metrics
 	AvgAppendLatency   time.Duration `json:"avg_append_latency"`
 	AvgQueryLatency    time.Duration `json:"avg_query_latency"`
 	AvgMaterialLatency time.Duration `json:"avg_material_latency"`
-	
+
 	// Current state
 	CurrentLSN        int64     `json:"current_lsn"`
 	ActiveBranches    int       `json:"active_branches"`
@@ -161,7 +161,7 @@ type MetricsSnapshot struct {
 func (m *Metrics) GetSnapshot() MetricsSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	snapshot := MetricsSnapshot{
 		AppendOps:          atomic.LoadInt64(&m.AppendOps),
 		QueryOps:           atomic.LoadInt64(&m.QueryOps),
@@ -180,7 +180,7 @@ func (m *Metrics) GetSnapshot() MetricsSnapshot {
 		ActiveProjects:     m.ActiveProjects,
 		LastOperationTime:  m.LastOperationTime,
 	}
-	
+
 	return snapshot
 }
 
@@ -189,13 +189,13 @@ func (m *Metrics) GetSuccessRate() map[string]float64 {
 	appendOps := atomic.LoadInt64(&m.AppendOps)
 	queryOps := atomic.LoadInt64(&m.QueryOps)
 	materialOps := atomic.LoadInt64(&m.MaterialOps)
-	
+
 	appendErrors := atomic.LoadInt64(&m.AppendErrors)
 	queryErrors := atomic.LoadInt64(&m.QueryErrors)
 	materialErrors := atomic.LoadInt64(&m.MaterialErrors)
-	
+
 	rates := make(map[string]float64)
-	
+
 	if appendOps > 0 {
 		rates["append"] = float64(appendOps-appendErrors) / float64(appendOps)
 	}
@@ -205,7 +205,7 @@ func (m *Metrics) GetSuccessRate() map[string]float64 {
 	if materialOps > 0 {
 		rates["materialization"] = float64(materialOps-materialErrors) / float64(materialOps)
 	}
-	
+
 	return rates
 }
 
@@ -221,7 +221,7 @@ func (m *Metrics) Reset() {
 	atomic.StoreInt64(&m.MaterialErrors, 0)
 	atomic.StoreInt64(&m.ConnectionErrors, 0)
 	atomic.StoreInt64(&m.CurrentLSN, 0)
-	
+
 	m.mu.Lock()
 	m.ActiveBranches = 0
 	m.ActiveProjects = 0
@@ -237,7 +237,7 @@ func (m *Metrics) Reset() {
 func (lt *LatencyTracker) recordAppend(latency time.Duration) {
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
-	
+
 	lt.appendSamples = append(lt.appendSamples, latency)
 	if len(lt.appendSamples) > lt.maxSamples {
 		lt.appendSamples = lt.appendSamples[1:]
@@ -247,7 +247,7 @@ func (lt *LatencyTracker) recordAppend(latency time.Duration) {
 func (lt *LatencyTracker) recordQuery(latency time.Duration) {
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
-	
+
 	lt.querySamples = append(lt.querySamples, latency)
 	if len(lt.querySamples) > lt.maxSamples {
 		lt.querySamples = lt.querySamples[1:]
@@ -257,7 +257,7 @@ func (lt *LatencyTracker) recordQuery(latency time.Duration) {
 func (lt *LatencyTracker) recordMaterial(latency time.Duration) {
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
-	
+
 	lt.materialSamples = append(lt.materialSamples, latency)
 	if len(lt.materialSamples) > lt.maxSamples {
 		lt.materialSamples = lt.materialSamples[1:]
@@ -267,11 +267,11 @@ func (lt *LatencyTracker) recordMaterial(latency time.Duration) {
 func (lt *LatencyTracker) getAverages() (time.Duration, time.Duration, time.Duration) {
 	lt.mu.RLock()
 	defer lt.mu.RUnlock()
-	
+
 	appendAvg := lt.calculateAverage(lt.appendSamples)
 	queryAvg := lt.calculateAverage(lt.querySamples)
 	materialAvg := lt.calculateAverage(lt.materialSamples)
-	
+
 	return appendAvg, queryAvg, materialAvg
 }
 
@@ -279,12 +279,12 @@ func (lt *LatencyTracker) calculateAverage(samples []time.Duration) time.Duratio
 	if len(samples) == 0 {
 		return 0
 	}
-	
+
 	total := time.Duration(0)
 	for _, sample := range samples {
 		total += sample
 	}
-	
+
 	return total / time.Duration(len(samples))
 }
 
@@ -297,7 +297,7 @@ func (lt *LatencyTracker) reset() {
 // Helper methods
 func (m *Metrics) updateAverageLatencies() {
 	appendAvg, queryAvg, materialAvg := m.latencyTracker.getAverages()
-	
+
 	m.mu.Lock()
 	m.AvgAppendLatency = appendAvg
 	m.AvgQueryLatency = queryAvg

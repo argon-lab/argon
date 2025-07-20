@@ -47,13 +47,13 @@ type DeleteResult struct {
 func (i *Interceptor) InsertOne(ctx context.Context, collection string, document interface{}) (*InsertResult, error) {
 	// Generate or extract document ID
 	docID, doc := i.ensureDocumentID(document)
-	
+
 	// Marshal document to BSON
 	docBytes, err := bson.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal document: %w", err)
 	}
-	
+
 	// Convert ID to string for storage
 	docIDStr := ""
 	switch id := docID.(type) {
@@ -64,7 +64,7 @@ func (i *Interceptor) InsertOne(ctx context.Context, collection string, document
 	default:
 		docIDStr = fmt.Sprintf("%v", id)
 	}
-	
+
 	// Create WAL entry
 	entry := &wal.Entry{
 		ProjectID:  i.branch.ProjectID,
@@ -74,18 +74,18 @@ func (i *Interceptor) InsertOne(ctx context.Context, collection string, document
 		DocumentID: docIDStr,
 		Document:   docBytes,
 	}
-	
+
 	// Append to WAL
 	lsn, err := i.wal.Append(entry)
 	if err != nil {
 		return nil, fmt.Errorf("failed to append to WAL: %w", err)
 	}
-	
+
 	// Update branch HEAD
 	if err := i.branches.UpdateBranchHead(i.branch.ID, lsn); err != nil {
 		return nil, fmt.Errorf("failed to update branch head: %w", err)
 	}
-	
+
 	return &InsertResult{InsertedID: docID}, nil
 }
 
@@ -94,17 +94,17 @@ func (i *Interceptor) UpdateOne(ctx context.Context, collection string, filter, 
 	// For WAL, we need to know what document we're updating
 	// In a real implementation, we'd materialize and find the document first
 	// For MVP, we'll store the filter and update operation
-	
+
 	filterBytes, err := bson.Marshal(filter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal filter: %w", err)
 	}
-	
+
 	updateBytes, err := bson.Marshal(update)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal update: %w", err)
 	}
-	
+
 	// Try to extract document ID from filter if it's a simple _id filter
 	var documentID string
 	if filterMap, ok := filter.(bson.M); ok {
@@ -112,18 +112,18 @@ func (i *Interceptor) UpdateOne(ctx context.Context, collection string, filter, 
 			documentID = convertIDToString(id)
 		}
 	}
-	
+
 	// Create a combined document with filter and update
 	updateDoc := bson.M{
 		"filter": bson.Raw(filterBytes),
 		"update": bson.Raw(updateBytes),
 	}
-	
+
 	docBytes, err := bson.Marshal(updateDoc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal update document: %w", err)
 	}
-	
+
 	// Create WAL entry
 	entry := &wal.Entry{
 		ProjectID:  i.branch.ProjectID,
@@ -137,18 +137,18 @@ func (i *Interceptor) UpdateOne(ctx context.Context, collection string, filter, 
 			"update_bytes": len(updateBytes),
 		},
 	}
-	
+
 	// Append to WAL
 	lsn, err := i.wal.Append(entry)
 	if err != nil {
 		return nil, fmt.Errorf("failed to append to WAL: %w", err)
 	}
-	
+
 	// Update branch HEAD
 	if err := i.branches.UpdateBranchHead(i.branch.ID, lsn); err != nil {
 		return nil, fmt.Errorf("failed to update branch head: %w", err)
 	}
-	
+
 	// For MVP, assume one document matched and modified
 	return &UpdateResult{
 		MatchedCount:  1,
@@ -163,7 +163,7 @@ func (i *Interceptor) DeleteOne(ctx context.Context, collection string, filter i
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal filter: %w", err)
 	}
-	
+
 	// Try to extract document ID from filter if it's a simple _id filter
 	var documentID string
 	if filterMap, ok := filter.(bson.M); ok {
@@ -171,7 +171,7 @@ func (i *Interceptor) DeleteOne(ctx context.Context, collection string, filter i
 			documentID = convertIDToString(id)
 		}
 	}
-	
+
 	// Create WAL entry
 	entry := &wal.Entry{
 		ProjectID:  i.branch.ProjectID,
@@ -184,18 +184,18 @@ func (i *Interceptor) DeleteOne(ctx context.Context, collection string, filter i
 			"is_filter": true,
 		},
 	}
-	
+
 	// Append to WAL
 	lsn, err := i.wal.Append(entry)
 	if err != nil {
 		return nil, fmt.Errorf("failed to append to WAL: %w", err)
 	}
-	
+
 	// Update branch HEAD
 	if err := i.branches.UpdateBranchHead(i.branch.ID, lsn); err != nil {
 		return nil, fmt.Errorf("failed to update branch head: %w", err)
 	}
-	
+
 	// For MVP, assume one document deleted
 	return &DeleteResult{DeletedCount: 1}, nil
 }
@@ -203,7 +203,7 @@ func (i *Interceptor) DeleteOne(ctx context.Context, collection string, filter i
 // InsertMany intercepts a bulk insert operation
 func (i *Interceptor) InsertMany(ctx context.Context, collection string, documents []interface{}) ([]interface{}, error) {
 	insertedIDs := make([]interface{}, 0, len(documents))
-	
+
 	for _, doc := range documents {
 		result, err := i.InsertOne(ctx, collection, doc)
 		if err != nil {
@@ -211,7 +211,7 @@ func (i *Interceptor) InsertMany(ctx context.Context, collection string, documen
 		}
 		insertedIDs = append(insertedIDs, result.InsertedID)
 	}
-	
+
 	return insertedIDs, nil
 }
 
@@ -219,7 +219,7 @@ func (i *Interceptor) InsertMany(ctx context.Context, collection string, documen
 func (i *Interceptor) ensureDocumentID(document interface{}) (interface{}, interface{}) {
 	// Convert to bson.M for manipulation
 	var doc bson.M
-	
+
 	switch d := document.(type) {
 	case bson.M:
 		doc = d
@@ -230,20 +230,20 @@ func (i *Interceptor) ensureDocumentID(document interface{}) (interface{}, inter
 		bytes, _ := bson.Marshal(document)
 		_ = bson.Unmarshal(bytes, &doc)
 	}
-	
+
 	// Check if _id exists
 	if id, exists := doc["_id"]; exists && id != nil {
 		return id, doc
 	}
-	
+
 	// Generate new ObjectID
 	id := primitive.NewObjectID()
 	doc["_id"] = id
-	
+
 	return id, doc
 }
 
-// convertIDToString converts various ID types to string  
+// convertIDToString converts various ID types to string
 func convertIDToString(id interface{}) string {
 	switch v := id.(type) {
 	case primitive.ObjectID:

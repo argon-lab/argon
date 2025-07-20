@@ -64,7 +64,7 @@ func NewServices() (*Services, error) {
 	materializerService := materializer.NewService(walService)
 	timeTravelService := timetravel.NewService(walService, materializerService)
 	restoreService := restore.NewService(walService, branchService, materializerService, timeTravelService)
-	
+
 	// Create monitor with production-ready configuration
 	monitorConfig := wal.MonitorConfig{
 		HealthCheckInterval:   30 * time.Second,
@@ -72,10 +72,10 @@ func NewServices() (*Services, error) {
 		EnableLogging:         true,
 		EnableMetricsExport:   true,
 		AlertThresholds: wal.AlertThresholds{
-			MaxErrorRate:           0.05,  // 5% error rate
-			MaxLatency:            1 * time.Second,
+			MaxErrorRate:           0.05, // 5% error rate
+			MaxLatency:             1 * time.Second,
 			MaxConsecutiveFailures: 3,
-			MinSuccessRate:        0.95, // 95% success rate
+			MinSuccessRate:         0.95, // 95% success rate
 		},
 	}
 	monitor := wal.NewMonitor(wal.GlobalMetrics, monitorConfig)

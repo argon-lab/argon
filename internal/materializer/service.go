@@ -27,7 +27,7 @@ func (s *Service) MaterializeCollection(branch *wal.Branch, collection string) (
 	// entries from before the branch was created up to the BaseLSN
 	entries := []*wal.Entry{}
 	var err error
-	
+
 	if branch.BaseLSN > 0 {
 		// This is a branch created from a historical point
 		// Get entries up to the base LSN from the global WAL
@@ -37,7 +37,7 @@ func (s *Service) MaterializeCollection(branch *wal.Branch, collection string) (
 		}
 		entries = append(entries, baseEntries...)
 	}
-	
+
 	// Get entries specific to this branch (after it was created)
 	branchEntries, err := s.wal.GetBranchEntries(branch.ID, collection, branch.BaseLSN+1, branch.HeadLSN)
 	if err != nil {
@@ -47,7 +47,7 @@ func (s *Service) MaterializeCollection(branch *wal.Branch, collection string) (
 
 	// Build state by replaying entries
 	state := make(map[string]bson.M)
-	
+
 	for _, entry := range entries {
 		if err := s.ApplyEntry(state, entry); err != nil {
 			return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
@@ -62,7 +62,7 @@ func (s *Service) MaterializeBranch(branch *wal.Branch) (map[string]map[string]b
 	// For branches created from a historical point, include base entries
 	entries := []*wal.Entry{}
 	var err error
-	
+
 	if branch.BaseLSN > 0 {
 		// Get entries up to the base LSN from the global WAL
 		baseEntries, err := s.wal.GetProjectEntries(branch.ProjectID, "", 0, branch.BaseLSN)
@@ -71,7 +71,7 @@ func (s *Service) MaterializeBranch(branch *wal.Branch) (map[string]map[string]b
 		}
 		entries = append(entries, baseEntries...)
 	}
-	
+
 	// Get entries specific to this branch
 	branchEntries, err := s.wal.GetBranchEntries(branch.ID, "", branch.BaseLSN+1, branch.HeadLSN)
 	if err != nil {
@@ -81,17 +81,17 @@ func (s *Service) MaterializeBranch(branch *wal.Branch) (map[string]map[string]b
 
 	// Build state by collection
 	state := make(map[string]map[string]bson.M)
-	
+
 	for _, entry := range entries {
 		if entry.Collection == "" {
 			continue // Skip non-collection operations
 		}
-		
+
 		// Initialize collection state if needed
 		if _, exists := state[entry.Collection]; !exists {
 			state[entry.Collection] = make(map[string]bson.M)
 		}
-		
+
 		if err := s.ApplyEntry(state[entry.Collection], entry); err != nil {
 			return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
 		}
@@ -110,7 +110,7 @@ func (s *Service) MaterializeDocument(branch *wal.Branch, collection, documentID
 
 	// Build document state by replaying entries
 	state := make(map[string]bson.M)
-	
+
 	for _, entry := range entries {
 		if err := s.ApplyEntry(state, entry); err != nil {
 			return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
@@ -178,7 +178,7 @@ func (s *Service) applyUpdate(state map[string]bson.M, entry *wal.Entry) error {
 
 	// Extract filter and update - they can be either bson.M or bson.Raw
 	var filter, update bson.M
-	
+
 	// Handle filter
 	switch f := updateDoc["filter"].(type) {
 	case bson.M:
@@ -192,7 +192,7 @@ func (s *Service) applyUpdate(state map[string]bson.M, entry *wal.Entry) error {
 	default:
 		return fmt.Errorf("invalid filter format: %T", f)
 	}
-	
+
 	// Handle update
 	switch u := updateDoc["update"].(type) {
 	case bson.M:
@@ -386,7 +386,7 @@ func setField(doc bson.M, field string, value interface{}) {
 		doc[field] = value
 		return
 	}
-	
+
 	// Navigate to the nested field
 	current := doc
 	for i := 0; i < len(parts)-1; i++ {
@@ -407,7 +407,7 @@ func setField(doc bson.M, field string, value interface{}) {
 			current = newMap
 		}
 	}
-	
+
 	// Set the final field
 	current[parts[len(parts)-1]] = value
 }
@@ -419,7 +419,7 @@ func unsetField(doc bson.M, field string) {
 		delete(doc, field)
 		return
 	}
-	
+
 	// Navigate to the parent of the field to delete
 	current := doc
 	for i := 0; i < len(parts)-1; i++ {
@@ -434,7 +434,7 @@ func unsetField(doc bson.M, field string) {
 			return // Path doesn't exist
 		}
 	}
-	
+
 	// Delete the final field
 	delete(current, parts[len(parts)-1])
 }
@@ -450,7 +450,7 @@ func incField(doc bson.M, field string, inc interface{}) {
 		}
 		return
 	}
-	
+
 	// Navigate to the field
 	current := doc
 	for i := 0; i < len(parts)-1; i++ {
@@ -471,7 +471,7 @@ func incField(doc bson.M, field string, inc interface{}) {
 			current = newMap
 		}
 	}
-	
+
 	// Increment the final field
 	finalField := parts[len(parts)-1]
 	if existing, exists := current[finalField]; exists {
@@ -531,7 +531,7 @@ func compareValues(a, b interface{}) int {
 	// Simple numeric comparison for MVP
 	aFloat := toFloat64(a)
 	bFloat := toFloat64(b)
-	
+
 	if aFloat > bFloat {
 		return 1
 	} else if aFloat < bFloat {

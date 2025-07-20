@@ -12,25 +12,25 @@ var (
 	ErrLSNOutOfRange    = errors.New("LSN out of range")
 	ErrInvalidOperation = errors.New("invalid operation")
 	ErrInvalidEntry     = errors.New("invalid WAL entry")
-	
+
 	// Connection and database errors
-	ErrDatabaseConnection = errors.New("database connection failed")
-	ErrDatabaseTimeout    = errors.New("database operation timeout")
+	ErrDatabaseConnection  = errors.New("database connection failed")
+	ErrDatabaseTimeout     = errors.New("database operation timeout")
 	ErrDatabaseUnavailable = errors.New("database temporarily unavailable")
-	
+
 	// Branch and project errors
 	ErrBranchNotFound     = errors.New("branch not found")
 	ErrProjectNotFound    = errors.New("project not found")
 	ErrBranchExists       = errors.New("branch already exists")
 	ErrProjectExists      = errors.New("project already exists")
 	ErrInvalidBranchState = errors.New("invalid branch state")
-	
+
 	// Time travel errors
-	ErrTimeTravelFailed    = errors.New("time travel operation failed")
-	ErrInvalidTimestamp    = errors.New("invalid timestamp")
-	ErrNoEntriesFound      = errors.New("no entries found for specified criteria")
+	ErrTimeTravelFailed      = errors.New("time travel operation failed")
+	ErrInvalidTimestamp      = errors.New("invalid timestamp")
+	ErrNoEntriesFound        = errors.New("no entries found for specified criteria")
 	ErrMaterializationFailed = errors.New("state materialization failed")
-	
+
 	// Restore operation errors
 	ErrRestoreFailed       = errors.New("restore operation failed")
 	ErrUnsafeRestore       = errors.New("restore would cause data loss")
@@ -40,11 +40,11 @@ var (
 
 // WALError provides structured error information
 type WALError struct {
-	Type      string            `json:"type"`
-	Message   string            `json:"message"`
+	Type      string                 `json:"type"`
+	Message   string                 `json:"message"`
 	Details   map[string]interface{} `json:"details,omitempty"`
-	Cause     error             `json:"-"`
-	Retryable bool              `json:"retryable"`
+	Cause     error                  `json:"-"`
+	Retryable bool                   `json:"retryable"`
 }
 
 func (e *WALError) Error() string {
@@ -98,14 +98,14 @@ func IsType(err error, errorType string) bool {
 
 // Common error types
 const (
-	ErrorTypeValidation   = "validation"
-	ErrorTypeDatabase     = "database"
-	ErrorTypeTimeout      = "timeout"
-	ErrorTypeNotFound     = "not_found"
-	ErrorTypeConflict     = "conflict"
-	ErrorTypeInternal     = "internal"
-	ErrorTypePermission   = "permission"
-	ErrorTypeRateLimit    = "rate_limit"
+	ErrorTypeValidation = "validation"
+	ErrorTypeDatabase   = "database"
+	ErrorTypeTimeout    = "timeout"
+	ErrorTypeNotFound   = "not_found"
+	ErrorTypeConflict   = "conflict"
+	ErrorTypeInternal   = "internal"
+	ErrorTypePermission = "permission"
+	ErrorTypeRateLimit  = "rate_limit"
 )
 
 // Validation errors
@@ -153,10 +153,10 @@ func ShouldRetry(err error, attempt int, maxAttempts int) bool {
 
 // Error context for debugging
 type ErrorContext struct {
-	Operation string            `json:"operation"`
-	LSN       int64             `json:"lsn,omitempty"`
-	ProjectID string            `json:"project_id,omitempty"`
-	BranchID  string            `json:"branch_id,omitempty"`
+	Operation string                 `json:"operation"`
+	LSN       int64                  `json:"lsn,omitempty"`
+	ProjectID string                 `json:"project_id,omitempty"`
+	BranchID  string                 `json:"branch_id,omitempty"`
 	Details   map[string]interface{} `json:"details,omitempty"`
 }
 

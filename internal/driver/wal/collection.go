@@ -38,7 +38,7 @@ func NewCollection(
 	underlying *mongo.Collection,
 ) *Collection {
 	interceptor := NewInterceptor(walService, branch, branchService)
-	
+
 	return &Collection{
 		name:         name,
 		branch:       branch,
@@ -54,7 +54,7 @@ func (c *Collection) InsertOne(ctx context.Context, document interface{}, opts .
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &mongo.InsertOneResult{
 		InsertedID: result.InsertedID,
 	}, nil
@@ -66,7 +66,7 @@ func (c *Collection) InsertMany(ctx context.Context, documents []interface{}, op
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &mongo.InsertManyResult{
 		InsertedIDs: insertedIDs,
 	}, nil
@@ -78,7 +78,7 @@ func (c *Collection) UpdateOne(ctx context.Context, filter, update interface{}, 
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &mongo.UpdateResult{
 		MatchedCount:  result.MatchedCount,
 		ModifiedCount: result.ModifiedCount,
@@ -93,7 +93,7 @@ func (c *Collection) DeleteOne(ctx context.Context, filter interface{}, opts ...
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &mongo.DeleteResult{
 		DeletedCount: result.DeletedCount,
 	}, nil
@@ -103,7 +103,7 @@ func (c *Collection) DeleteOne(ctx context.Context, filter interface{}, opts ...
 func (c *Collection) Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error) {
 	// For MVP, we'll materialize and filter in memory
 	// Future: implement proper cursor support
-	
+
 	// Convert filter to bson.M
 	var filterDoc bson.M
 	if filter == nil {
@@ -119,13 +119,13 @@ func (c *Collection) Find(ctx context.Context, filter interface{}, opts ...*opti
 			_ = bson.Unmarshal(bytes, &filterDoc)
 		}
 	}
-	
+
 	// Materialize collection state
 	state, err := c.materializer.MaterializeCollection(c.branch, c.name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to materialize collection: %w", err)
 	}
-	
+
 	// Apply filter
 	var results []interface{}
 	for _, doc := range state {
@@ -133,7 +133,7 @@ func (c *Collection) Find(ctx context.Context, filter interface{}, opts ...*opti
 			results = append(results, doc)
 		}
 	}
-	
+
 	// Create a mock cursor with results
 	// In a real implementation, we'd return a proper cursor
 	return createMockCursor(results), nil
@@ -156,20 +156,20 @@ func (c *Collection) FindOne(ctx context.Context, filter interface{}, opts ...*o
 			_ = bson.Unmarshal(bytes, &filterDoc)
 		}
 	}
-	
+
 	// Materialize collection state
 	state, err := c.materializer.MaterializeCollection(c.branch, c.name)
 	if err != nil {
 		return mongo.NewSingleResultFromDocument(nil, err, nil)
 	}
-	
+
 	// Find first matching document
 	for _, doc := range state {
 		if matchesFilter(doc, filterDoc) {
 			return mongo.NewSingleResultFromDocument(doc, nil, nil)
 		}
 	}
-	
+
 	// No match found
 	return mongo.NewSingleResultFromDocument(nil, mongo.ErrNoDocuments, nil)
 }
@@ -191,13 +191,13 @@ func (c *Collection) CountDocuments(ctx context.Context, filter interface{}, opt
 			_ = bson.Unmarshal(bytes, &filterDoc)
 		}
 	}
-	
+
 	// Materialize collection state
 	state, err := c.materializer.MaterializeCollection(c.branch, c.name)
 	if err != nil {
 		return 0, fmt.Errorf("failed to materialize collection: %w", err)
 	}
-	
+
 	// Count matching documents
 	var count int64
 	for _, doc := range state {
@@ -205,7 +205,7 @@ func (c *Collection) CountDocuments(ctx context.Context, filter interface{}, opt
 			count++
 		}
 	}
-	
+
 	return count, nil
 }
 
@@ -220,14 +220,14 @@ func matchesFilter(doc, filter bson.M) bool {
 	if len(filter) == 0 {
 		return true
 	}
-	
+
 	// Check each filter field
 	for key, expected := range filter {
 		actual, exists := doc[key]
 		if !exists {
 			return false
 		}
-		
+
 		// Handle different operator types
 		switch exp := expected.(type) {
 		case bson.M:
@@ -247,7 +247,7 @@ func matchesFilter(doc, filter bson.M) bool {
 			}
 		}
 	}
-	
+
 	return true
 }
 
@@ -299,11 +299,11 @@ func isEqual(a, b interface{}) bool {
 	// Handle BSON type conversions
 	aBytes, _ := bson.Marshal(bson.M{"v": a})
 	bBytes, _ := bson.Marshal(bson.M{"v": b})
-	
+
 	var aDoc, bDoc bson.M
 	_ = bson.Unmarshal(aBytes, &aDoc)
 	_ = bson.Unmarshal(bBytes, &bDoc)
-	
+
 	return fmt.Sprintf("%v", aDoc["v"]) == fmt.Sprintf("%v", bDoc["v"])
 }
 
@@ -361,7 +361,7 @@ func compareValues(a, b interface{}) int {
 	// Simple numeric comparison for MVP
 	aFloat := toFloat64(a)
 	bFloat := toFloat64(b)
-	
+
 	if aFloat > bFloat {
 		return 1
 	} else if aFloat < bFloat {

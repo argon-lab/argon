@@ -51,11 +51,11 @@ func setupTestDB(t *testing.T) *mongo.Database {
 
 func TestWALService_Basic(t *testing.T) {
 	db := setupTestDB(t)
-	
+
 	// Create WAL service
 	walService, err := wal.NewService(db)
 	require.NoError(t, err)
-	
+
 	// Test appending entries
 	entry1 := &wal.Entry{
 		ProjectID:  "test-project",
@@ -65,11 +65,11 @@ func TestWALService_Basic(t *testing.T) {
 		DocumentID: "user-1",
 		Document:   mustMarshalBSON(bson.M{"name": "Alice"}),
 	}
-	
+
 	lsn1, err := walService.Append(entry1)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1), lsn1)
-	
+
 	// Append another entry
 	entry2 := &wal.Entry{
 		ProjectID:  "test-project",
@@ -79,14 +79,14 @@ func TestWALService_Basic(t *testing.T) {
 		DocumentID: "user-2",
 		Document:   mustMarshalBSON(bson.M{"name": "Bob"}),
 	}
-	
+
 	lsn2, err := walService.Append(entry2)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), lsn2)
-	
+
 	// Verify current LSN
 	assert.Equal(t, int64(2), walService.GetCurrentLSN())
-	
+
 	// Retrieve entries
 	entries, err := walService.GetBranchEntries("main", "users", 0, 10)
 	assert.NoError(t, err)
@@ -95,14 +95,14 @@ func TestWALService_Basic(t *testing.T) {
 
 func TestBranchService_CreateBranch(t *testing.T) {
 	db := setupTestDB(t)
-	
+
 	// Create services
 	walService, err := wal.NewService(db)
 	require.NoError(t, err)
-	
+
 	branchService, err := branchwal.NewBranchService(db, walService)
 	require.NoError(t, err)
-	
+
 	// Create main branch
 	mainBranch, err := branchService.CreateBranch("project-1", "main", "")
 	assert.NoError(t, err)
@@ -110,14 +110,14 @@ func TestBranchService_CreateBranch(t *testing.T) {
 	assert.Equal(t, int64(1), mainBranch.CreatedLSN)
 	assert.Equal(t, int64(1), mainBranch.HeadLSN)
 	assert.Equal(t, int64(0), mainBranch.BaseLSN)
-	
+
 	// Create feature branch from main
 	featureBranch, err := branchService.CreateBranch("project-1", "feature-x", mainBranch.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, "feature-x", featureBranch.Name)
 	assert.Equal(t, mainBranch.HeadLSN, featureBranch.HeadLSN) // Inherits parent's HEAD
 	assert.Equal(t, mainBranch.HeadLSN, featureBranch.BaseLSN) // Fork point
-	
+
 	// List branches
 	branches, err := branchService.ListBranches("project-1")
 	assert.NoError(t, err)
@@ -126,47 +126,47 @@ func TestBranchService_CreateBranch(t *testing.T) {
 
 func TestBranchService_DeleteBranch(t *testing.T) {
 	db := setupTestDB(t)
-	
+
 	// Create services
 	walService, err := wal.NewService(db)
 	require.NoError(t, err)
-	
+
 	branchService, err := branchwal.NewBranchService(db, walService)
 	require.NoError(t, err)
-	
+
 	// Create branches
 	mainBranch, err := branchService.CreateBranch("project-1", "main", "")
 	require.NoError(t, err)
-	
+
 	featureBranch, err := branchService.CreateBranch("project-1", "feature-x", mainBranch.ID)
 	require.NoError(t, err)
-	
+
 	// Try to delete main branch (should fail)
 	err = branchService.DeleteBranch("project-1", "main")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot delete main branch")
-	
-	// Create child branch to test parent protection  
+
+	// Create child branch to test parent protection
 	_, err = branchService.CreateBranch("project-1", "child-branch", featureBranch.ID)
 	require.NoError(t, err)
-	
+
 	// Try to delete parent branch with child (should fail)
 	err = branchService.DeleteBranch("project-1", "feature-x")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot delete branch with active children")
-	
+
 	// Delete child branch first
 	err = branchService.DeleteBranch("project-1", "child-branch")
 	assert.NoError(t, err)
-	
+
 	// Now delete feature branch (should succeed)
 	err = branchService.DeleteBranch("project-1", "feature-x")
 	assert.NoError(t, err)
-	
+
 	// Verify branch is deleted
 	_, err = branchService.GetBranch("project-1", "feature-x")
 	assert.Error(t, err)
-	
+
 	// Verify WAL entries still exist
 	currentLSN := walService.GetCurrentLSN()
 	assert.Greater(t, currentLSN, int64(0))
@@ -174,30 +174,30 @@ func TestBranchService_DeleteBranch(t *testing.T) {
 
 func TestProjectService_CreateProject(t *testing.T) {
 	db := setupTestDB(t)
-	
+
 	// Create services
 	walService, err := wal.NewService(db)
 	require.NoError(t, err)
-	
+
 	branchService, err := branchwal.NewBranchService(db, walService)
 	require.NoError(t, err)
-	
+
 	projectService, err := projectwal.NewProjectService(db, walService, branchService)
 	require.NoError(t, err)
-	
+
 	// Create project
 	project, err := projectService.CreateProject("ml-experiments")
 	assert.NoError(t, err)
 	assert.Equal(t, "ml-experiments", project.Name)
 	assert.True(t, project.UseWAL)
 	assert.NotEmpty(t, project.MainBranchID)
-	
+
 	// Verify main branch was created
 	branches, err := branchService.ListBranches(project.ID)
 	assert.NoError(t, err)
 	assert.Len(t, branches, 1)
 	assert.Equal(t, "main", branches[0].Name)
-	
+
 	// List projects
 	projects, err := projectService.ListProjects()
 	assert.NoError(t, err)

@@ -16,12 +16,12 @@ func main() {
 	_ = os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
 
 	fmt.Println("=== WAL CLI Integration Demo ===")
-	
+
 	// Test 1: Configuration check
 	fmt.Println("\n1. Checking WAL configuration...")
 	features := config.GetFeatures()
 	fmt.Printf("   WAL Enabled: %v\n", features.EnableWAL)
-	
+
 	if !features.EnableWAL {
 		fmt.Println("   ERROR: WAL not enabled. Set ENABLE_WAL=true")
 		return
@@ -55,12 +55,12 @@ func main() {
 		log.Printf("   ERROR: Failed to list branches: %v", err)
 		return
 	}
-	
+
 	if len(branches) == 0 {
 		fmt.Println("   No branches found")
 		return
 	}
-	
+
 	mainBranch := branches[0]
 	fmt.Printf("   Default branch: %s\n", mainBranch.Name)
 	fmt.Printf("   Base LSN: %d, Head LSN: %d\n", mainBranch.BaseLSN, mainBranch.HeadLSN)
@@ -72,13 +72,13 @@ func main() {
 		log.Printf("   ERROR: Failed to get time travel info: %v", err)
 		return
 	}
-	
+
 	fmt.Printf("   Branch: %s\n", info.BranchName)
 	fmt.Printf("   LSN Range: %d - %d\n", info.EarliestLSN, info.LatestLSN)
 	fmt.Printf("   Entry Count: %d\n", info.EntryCount)
-	
+
 	if !info.EarliestTime.IsZero() {
-		fmt.Printf("   Time Range: %s to %s\n", 
+		fmt.Printf("   Time Range: %s to %s\n",
 			info.EarliestTime.Format("15:04:05"),
 			info.LatestTime.Format("15:04:05"))
 	}
@@ -86,7 +86,7 @@ func main() {
 	// Test 6: Restore preview (if there are operations)
 	if info.EntryCount > 0 {
 		fmt.Println("\n6. Testing restore preview...")
-		
+
 		// Preview restoring to base LSN
 		preview, err := services.Restore.GetRestorePreview(mainBranch.ID, mainBranch.BaseLSN)
 		if err != nil {
@@ -94,7 +94,7 @@ func main() {
 		} else {
 			fmt.Printf("   Preview restore to LSN %d:\n", preview.TargetLSN)
 			fmt.Printf("   Operations to discard: %d\n", preview.OperationsToDiscard)
-			
+
 			if len(preview.AffectedCollections) > 0 {
 				fmt.Println("   Affected collections:")
 				for coll, count := range preview.AffectedCollections {
@@ -113,11 +113,11 @@ func main() {
 		log.Printf("   ERROR: Failed to list projects: %v", err)
 		return
 	}
-	
+
 	fmt.Printf("   Total WAL projects: %d\n", len(projects))
 	for i, p := range projects {
 		fmt.Printf("   %d. %s (ID: %s)\n", i+1, p.Name, p.ID)
-		
+
 		// Show branch count for each project
 		projectBranches, _ := services.Branches.ListBranches(p.ID)
 		fmt.Printf("      Branches: %d\n", len(projectBranches))

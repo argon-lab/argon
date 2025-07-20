@@ -211,8 +211,8 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 		BranchID:  name,
 		Operation: wal.OpDeleteBranch,
 		Metadata: map[string]interface{}{
-			"branch_id":   branch.ID,
-			"final_lsn":   branch.HeadLSN,
+			"branch_id": branch.ID,
+			"final_lsn": branch.HeadLSN,
 		},
 	}
 
@@ -222,7 +222,7 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 	}
 
 	// Simple deletion - just mark as deleted
-	_, err = s.collection.UpdateOne(ctx, 
+	_, err = s.collection.UpdateOne(ctx,
 		bson.M{"_id": branch.ID},
 		bson.M{"$set": bson.M{"is_deleted": true}},
 	)
@@ -276,9 +276,9 @@ func (s *BranchService) ForceDeleteBranch(projectID, name string) error {
 		BranchID:  name,
 		Operation: wal.OpDeleteBranch,
 		Metadata: map[string]interface{}{
-			"branch_id":   branch.ID,
-			"final_lsn":   branch.HeadLSN,
-			"forced":      true,
+			"branch_id": branch.ID,
+			"final_lsn": branch.HeadLSN,
+			"forced":    true,
 		},
 	}
 
@@ -288,7 +288,7 @@ func (s *BranchService) ForceDeleteBranch(projectID, name string) error {
 	}
 
 	// Mark as deleted
-	_, err = s.collection.UpdateOne(ctx, 
+	_, err = s.collection.UpdateOne(ctx,
 		bson.M{"_id": branch.ID},
 		bson.M{"$set": bson.M{"is_deleted": true}},
 	)

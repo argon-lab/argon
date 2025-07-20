@@ -10,30 +10,30 @@ import (
 
 // Monitor provides health monitoring and alerting for WAL operations
 type Monitor struct {
-	metrics        *Metrics
-	healthChecks   []HealthCheck
-	alerts         []Alert
-	config         MonitorConfig
-	
+	metrics      *Metrics
+	healthChecks []HealthCheck
+	alerts       []Alert
+	config       MonitorConfig
+
 	// State tracking
-	isHealthy      bool
-	lastCheck      time.Time
+	isHealthy        bool
+	lastCheck        time.Time
 	consecutiveFails int
-	
+
 	// Control
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	mu             sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	mu     sync.RWMutex
 }
 
 // MonitorConfig configures monitoring behavior
 type MonitorConfig struct {
-	HealthCheckInterval    time.Duration
-	MetricsReportInterval  time.Duration
-	AlertThresholds        AlertThresholds
-	EnableLogging          bool
-	EnableMetricsExport    bool
+	HealthCheckInterval   time.Duration
+	MetricsReportInterval time.Duration
+	AlertThresholds       AlertThresholds
+	EnableLogging         bool
+	EnableMetricsExport   bool
 }
 
 // AlertThresholds defines when to trigger alerts
@@ -56,13 +56,13 @@ type HealthCheck struct {
 
 // Alert represents a system alert
 type Alert struct {
-	Level       AlertLevel
-	Title       string
-	Message     string
-	Timestamp   time.Time
-	Data        map[string]interface{}
-	Resolved    bool
-	ResolvedAt  time.Time
+	Level      AlertLevel
+	Title      string
+	Message    string
+	Timestamp  time.Time
+	Data       map[string]interface{}
+	Resolved   bool
+	ResolvedAt time.Time
 }
 
 // AlertLevel defines alert severity
@@ -78,14 +78,14 @@ const (
 // NewMonitor creates a new WAL monitor
 func NewMonitor(metrics *Metrics, config MonitorConfig) *Monitor {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	if config.HealthCheckInterval == 0 {
 		config.HealthCheckInterval = 30 * time.Second
 	}
 	if config.MetricsReportInterval == 0 {
 		config.MetricsReportInterval = 60 * time.Second
 	}
-	
+
 	// Set default alert thresholds
 	if config.AlertThresholds.MaxErrorRate == 0 {
 		config.AlertThresholds.MaxErrorRate = 0.05 // 5% error rate
@@ -99,7 +99,7 @@ func NewMonitor(metrics *Metrics, config MonitorConfig) *Monitor {
 	if config.AlertThresholds.MinSuccessRate == 0 {
 		config.AlertThresholds.MinSuccessRate = 0.95 // 95% success rate
 	}
-	
+
 	monitor := &Monitor{
 		metrics:      metrics,
 		healthChecks: make([]HealthCheck, 0),
@@ -109,20 +109,20 @@ func NewMonitor(metrics *Metrics, config MonitorConfig) *Monitor {
 		ctx:          ctx,
 		cancel:       cancel,
 	}
-	
+
 	// Add default health checks
 	monitor.addDefaultHealthChecks()
-	
+
 	return monitor
 }
 
 // Start begins monitoring
 func (m *Monitor) Start() {
 	m.wg.Add(2)
-	
+
 	go m.healthCheckLoop()
 	go m.metricsReportLoop()
-	
+
 	if m.config.EnableLogging {
 		log.Println("WAL Monitor: Started health monitoring")
 	}
@@ -132,7 +132,7 @@ func (m *Monitor) Start() {
 func (m *Monitor) Stop() {
 	m.cancel()
 	m.wg.Wait()
-	
+
 	if m.config.EnableLogging {
 		log.Println("WAL Monitor: Stopped health monitoring")
 	}
@@ -149,20 +149,20 @@ func (m *Monitor) IsHealthy() bool {
 func (m *Monitor) GetHealthStatus() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	status := map[string]interface{}{
-		"healthy":            m.isHealthy,
-		"last_check":         m.lastCheck,
-		"consecutive_fails":  m.consecutiveFails,
-		"active_alerts":      len(m.getActiveAlerts()),
-		"total_alerts":       len(m.alerts),
-		"health_checks":      len(m.healthChecks),
+		"healthy":           m.isHealthy,
+		"last_check":        m.lastCheck,
+		"consecutive_fails": m.consecutiveFails,
+		"active_alerts":     len(m.getActiveAlerts()),
+		"total_alerts":      len(m.alerts),
+		"health_checks":     len(m.healthChecks),
 	}
-	
+
 	// Add metrics summary
 	snapshot := m.metrics.GetSnapshot()
 	successRates := m.metrics.GetSuccessRate()
-	
+
 	status["metrics"] = map[string]interface{}{
 		"total_operations": snapshot.AppendOps + snapshot.QueryOps + snapshot.MaterialOps,
 		"success_rates":    successRates,
@@ -171,7 +171,7 @@ func (m *Monitor) GetHealthStatus() map[string]interface{} {
 		"active_projects":  snapshot.ActiveProjects,
 		"last_operation":   snapshot.LastOperationTime,
 	}
-	
+
 	return status
 }
 
@@ -186,7 +186,7 @@ func (m *Monitor) GetActiveAlerts() []Alert {
 func (m *Monitor) AddHealthCheck(check HealthCheck) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.healthChecks = append(m.healthChecks, check)
 }
 
@@ -194,7 +194,7 @@ func (m *Monitor) AddHealthCheck(check HealthCheck) {
 func (m *Monitor) TriggerAlert(level AlertLevel, title, message string, data map[string]interface{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	alert := Alert{
 		Level:     level,
 		Title:     title,
@@ -203,9 +203,9 @@ func (m *Monitor) TriggerAlert(level AlertLevel, title, message string, data map
 		Data:      data,
 		Resolved:  false,
 	}
-	
+
 	m.alerts = append(m.alerts, alert)
-	
+
 	if m.config.EnableLogging {
 		log.Printf("WAL Monitor Alert [%s]: %s - %s", level, title, message)
 	}
@@ -215,12 +215,12 @@ func (m *Monitor) TriggerAlert(level AlertLevel, title, message string, data map
 func (m *Monitor) ResolveAlert(title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	for i := range m.alerts {
 		if m.alerts[i].Title == title && !m.alerts[i].Resolved {
 			m.alerts[i].Resolved = true
 			m.alerts[i].ResolvedAt = time.Now()
-			
+
 			if m.config.EnableLogging {
 				log.Printf("WAL Monitor: Resolved alert '%s'", title)
 			}
@@ -240,7 +240,7 @@ func (m *Monitor) addDefaultHealthChecks() {
 		Timeout:     5 * time.Second,
 		Critical:    true,
 	})
-	
+
 	// Performance check
 	m.healthChecks = append(m.healthChecks, HealthCheck{
 		Name:        "performance_metrics",
@@ -250,7 +250,7 @@ func (m *Monitor) addDefaultHealthChecks() {
 		Timeout:     1 * time.Second,
 		Critical:    false,
 	})
-	
+
 	// Memory usage check
 	m.healthChecks = append(m.healthChecks, HealthCheck{
 		Name:        "memory_usage",
@@ -264,10 +264,10 @@ func (m *Monitor) addDefaultHealthChecks() {
 
 func (m *Monitor) healthCheckLoop() {
 	defer m.wg.Done()
-	
+
 	ticker := time.NewTicker(m.config.HealthCheckInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -280,10 +280,10 @@ func (m *Monitor) healthCheckLoop() {
 
 func (m *Monitor) metricsReportLoop() {
 	defer m.wg.Done()
-	
+
 	ticker := time.NewTicker(m.config.MetricsReportInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -299,17 +299,17 @@ func (m *Monitor) metricsReportLoop() {
 func (m *Monitor) runHealthChecks() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.lastCheck = time.Now()
 	allHealthy := true
-	
+
 	for _, check := range m.healthChecks {
 		err := m.runSingleHealthCheck(check)
 		if err != nil {
 			if check.Critical {
 				allHealthy = false
 			}
-			
+
 			// Trigger alert for failed check
 			m.triggerHealthCheckAlert(check, err)
 		} else {
@@ -317,7 +317,7 @@ func (m *Monitor) runHealthChecks() {
 			m.ResolveAlert(fmt.Sprintf("health_check_%s", check.Name))
 		}
 	}
-	
+
 	if allHealthy {
 		m.consecutiveFails = 0
 		if !m.isHealthy {
@@ -328,11 +328,11 @@ func (m *Monitor) runHealthChecks() {
 		m.consecutiveFails++
 		if m.consecutiveFails >= m.config.AlertThresholds.MaxConsecutiveFailures {
 			m.isHealthy = false
-			m.TriggerAlert(AlertLevelCritical, "system_unhealthy", 
+			m.TriggerAlert(AlertLevelCritical, "system_unhealthy",
 				fmt.Sprintf("System unhealthy after %d consecutive failures", m.consecutiveFails),
 				map[string]interface{}{
 					"consecutive_failures": m.consecutiveFails,
-					"last_check": m.lastCheck,
+					"last_check":           m.lastCheck,
 				})
 		}
 	}
@@ -340,11 +340,11 @@ func (m *Monitor) runHealthChecks() {
 
 func (m *Monitor) runSingleHealthCheck(check HealthCheck) error {
 	done := make(chan error, 1)
-	
+
 	go func() {
 		done <- check.Check()
 	}()
-	
+
 	select {
 	case err := <-done:
 		return err
@@ -358,17 +358,17 @@ func (m *Monitor) triggerHealthCheckAlert(check HealthCheck, err error) {
 	if check.Critical {
 		level = AlertLevelError
 	}
-	
+
 	title := fmt.Sprintf("health_check_%s", check.Name)
 	message := fmt.Sprintf("Health check '%s' failed: %v", check.Name, err)
-	
+
 	data := map[string]interface{}{
 		"check_name":        check.Name,
 		"check_description": check.Description,
 		"error":             err.Error(),
 		"critical":          check.Critical,
 	}
-	
+
 	alert := Alert{
 		Level:     level,
 		Title:     title,
@@ -377,7 +377,7 @@ func (m *Monitor) triggerHealthCheckAlert(check HealthCheck, err error) {
 		Data:      data,
 		Resolved:  false,
 	}
-	
+
 	m.alerts = append(m.alerts, alert)
 }
 
@@ -394,7 +394,7 @@ func (m *Monitor) getActiveAlerts() []Alert {
 func (m *Monitor) exportMetrics() {
 	snapshot := m.metrics.GetSnapshot()
 	successRates := m.metrics.GetSuccessRate()
-	
+
 	if m.config.EnableLogging {
 		log.Printf("WAL Metrics: Ops=%d/%d/%d, Errors=%d/%d/%d, LSN=%d, Success=%.2f/%.2f/%.2f",
 			snapshot.AppendOps, snapshot.QueryOps, snapshot.MaterialOps,
@@ -414,26 +414,26 @@ func (m *Monitor) checkDatabaseConnectivity() error {
 func (m *Monitor) checkPerformanceMetrics() error {
 	snapshot := m.metrics.GetSnapshot()
 	successRates := m.metrics.GetSuccessRate()
-	
+
 	// Check latency thresholds
 	if snapshot.AvgAppendLatency > m.config.AlertThresholds.MaxLatency {
-		return fmt.Errorf("append latency %v exceeds threshold %v", 
+		return fmt.Errorf("append latency %v exceeds threshold %v",
 			snapshot.AvgAppendLatency, m.config.AlertThresholds.MaxLatency)
 	}
-	
+
 	if snapshot.AvgQueryLatency > m.config.AlertThresholds.MaxLatency {
-		return fmt.Errorf("query latency %v exceeds threshold %v", 
+		return fmt.Errorf("query latency %v exceeds threshold %v",
 			snapshot.AvgQueryLatency, m.config.AlertThresholds.MaxLatency)
 	}
-	
+
 	// Check success rates
 	for operation, rate := range successRates {
 		if rate < m.config.AlertThresholds.MinSuccessRate {
-			return fmt.Errorf("%s success rate %.2f below threshold %.2f", 
+			return fmt.Errorf("%s success rate %.2f below threshold %.2f",
 				operation, rate, m.config.AlertThresholds.MinSuccessRate)
 		}
 	}
-	
+
 	return nil
 }
 

@@ -20,7 +20,7 @@ var branchesCreateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		fromBranch, _ := cmd.Flags().GetString("from")
-		
+
 		if projectName == "" {
 			return fmt.Errorf("--project is required")
 		}
@@ -31,7 +31,7 @@ var branchesCreateCmd = &cobra.Command{
 		}
 
 		branchName := args[0]
-		
+
 		// Default to main branch if not specified
 		if fromBranch == "" {
 			fromBranch = "main"
@@ -59,7 +59,7 @@ var branchesListCmd = &cobra.Command{
 	Short: "List all branches in a project",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
-		
+
 		if projectName == "" {
 			return fmt.Errorf("--project is required")
 		}
@@ -101,13 +101,13 @@ var branchesDeleteCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
-		
+
 		if projectName == "" {
 			return fmt.Errorf("--project is required")
 		}
 
 		branchName := args[0]
-		
+
 		if branchName == "main" {
 			return fmt.Errorf("cannot delete main branch")
 		}
@@ -133,10 +133,10 @@ func init() {
 	branchesCreateCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	branchesCreateCmd.Flags().String("from", "main", "Source branch to branch from")
 	branchesCreateCmd.MarkFlagRequired("project")
-	
+
 	branchesListCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	branchesListCmd.MarkFlagRequired("project")
-	
+
 	branchesDeleteCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	branchesDeleteCmd.MarkFlagRequired("project")
 

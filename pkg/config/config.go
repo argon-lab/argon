@@ -9,19 +9,19 @@ func IsWALEnabled() bool {
 
 // Features represents available features
 type Features struct {
-	EnableWAL             bool
-	WALForNewProjects     bool
-	WALForNewBranches     bool
-	WALMigrationEnabled   bool
+	EnableWAL           bool
+	WALForNewProjects   bool
+	WALForNewBranches   bool
+	WALMigrationEnabled bool
 }
 
 // GetFeatures returns the current feature configuration
 func GetFeatures() Features {
 	enabled := IsWALEnabled()
 	return Features{
-		EnableWAL:             enabled,
-		WALForNewProjects:     enabled,
-		WALForNewBranches:     enabled,
-		WALMigrationEnabled:   enabled,
+		EnableWAL:           enabled,
+		WALForNewProjects:   enabled,
+		WALForNewBranches:   enabled,
+		WALMigrationEnabled: enabled,
 	}
 }
