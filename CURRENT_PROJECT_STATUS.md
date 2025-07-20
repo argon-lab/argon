@@ -45,6 +45,7 @@ argon branches create feature-x -p p  # Instant 1ms branching
 argon status                          # System health  
 argon metrics                         # Performance data
 argon time-travel info -p p -b main   # Time travel queries
+argon import database --uri "mongodb://localhost:27017" --database myapp --project imported-myapp  # Import existing data
 ```
 
 **Note**: All legacy commands and systems have been completely removed. WAL is now the only architecture.
@@ -90,6 +91,7 @@ argon time-travel info -p p -b main   # Time travel queries
 3. **ML-Native**: Built-in Jupyter, MLflow, DVC integrations
 4. **Production Ready**: Real performance metrics and monitoring
 5. **Pure WAL Architecture**: Single, unified system with clean interface
+6. **Seamless Migration**: Import existing MongoDB databases with full time travel capabilities
 
 ### Real Technical Achievements
 - Revolutionary WAL architecture for MongoDB
@@ -106,6 +108,7 @@ argon time-travel info -p p -b main   # Time travel queries
 - **Testing**: Comprehensive test coverage (119+ assertions)
 - **Clean Interface**: Simple CLI commands without confusing prefixes
 - **Complete SDKs**: Both Python and Go SDKs updated and working
+- **MongoDB Import**: Import existing MongoDB databases with full time travel capabilities
 
 ### What's Ready for Next Phase ⚡
 - **Community Adoption**: Technology is production-ready for users

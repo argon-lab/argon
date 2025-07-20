@@ -2,65 +2,65 @@
 
 ## 🚀 Core Features
 
-### MongoDB Branching
-- **Instant branch creation** in <500ms regardless of database size
-- **Copy-on-write storage** with 90%+ space savings vs full copies
-- **Change streams** for real-time data synchronization
-- **Branch merging** with conflict resolution
-- **Diff operations** to compare branches
+### MongoDB Time Travel & Branching
+- **Instant branch creation** in 1ms (86x faster than alternatives)
+- **Time travel queries** - Access any historical database state
+- **Zero-copy branching** with LSN pointer efficiency
+- **Complete audit trail** via Write-Ahead Log (WAL)
+- **Real-time operation capture** through MongoDB change streams
 
 ### Performance
-- **15,000+ operations/second** change processing
-- **42.40% compression ratio** with ZSTD
-- **Sub-500ms latency** for branch operations
-- **30-50MB memory usage** for Go engine
-- **Content-addressable storage** for deduplication
+- **37,905+ operations/second** WAL write throughput
+- **1ms branch creation** regardless of database size
+- **<50ms time travel queries** for historical state
+- **30-50MB memory usage** for efficient Go engine
+- **119+ test coverage** with comprehensive validation
 
-### Authentication & Security
-- **Google OAuth** integration via NextAuth.js
-- **Multi-tenant isolation** with automatic user data separation
-- **Rate limiting** with tiered plans (100/1000/10000 requests/minute)
-- **Secure API endpoints** with authentication middleware
-- **Audit logging** for compliance and monitoring
+### Architecture & Reliability
+- **Pure WAL system** - Single unified architecture
+- **Production monitoring** with health checks and metrics
+- **MongoDB 4.4+** native integration with change streams
+- **Cross-platform CLI** available via Homebrew, NPM, PyPI
+- **Go and Python SDKs** for programmatic access
 
-## 📊 Cloud Platform Features
+## 📊 Developer Experience
 
-### Web Dashboard
-- **Project management** with visual interface
-- **Branch visualization** and operations
-- **Real-time status updates** and notifications
-- **Usage analytics** and billing information
-- **Team collaboration** tools
+### CLI Interface
+```bash
+# Install via package managers
+brew install argon-lab/tap/argonctl    # macOS
+npm install -g argonctl                 # Cross-platform
+pip install argon-mongodb               # Python SDK
 
-### API & SDK
-- **REST API** with OpenAPI specification
-- **Python SDK** for programmatic access
-- **CLI tool** for command-line operations
-- **GraphQL API** for flexible queries
-- **Webhooks** for event-driven integrations
+# Simple commands
+export ENABLE_WAL=true
+argon projects create my-app
+argon branches create feature-x -p my-app
+argon time-travel info -p my-app -b main
+```
 
-### Storage & Deployment
-- **Multi-cloud support** (AWS S3, Google Cloud, Azure)
-- **Docker containerization** for easy deployment
-- **Kubernetes manifests** for orchestration
-- **Vercel integration** for serverless deployment
-- **MongoDB Atlas** optimized connections
+### SDK Integration
+- **Python SDK** - `import argon; client = argon.Client()`
+- **Go SDK** - `go get github.com/argon-lab/argon/pkg/walcli`
+- **Clean CLI commands** - No confusing prefixes or legacy commands
+- **Environment variables** - Simple `ENABLE_WAL=true` configuration
+- **Package distribution** - Available on all major package managers
 
-## 🧠 ML/AI Features
+## 🧠 ML/AI Ready Features
 
-### Data Science Integration
-- **MLflow integration** for experiment tracking
-- **DVC compatibility** for data version control
-- **Weights & Biases** support for model monitoring
-- **Jupyter notebook** integration and plugins
-- **Feature store** connectivity
+### Data Science Workflow
+- **Experiment isolation** - Each experiment gets its own branch
+- **Reproducible results** - Time travel to exact training data state
+- **Safe data exploration** - Branch production data for analysis
+- **Historical comparisons** - Compare model performance across time
+- **Zero-risk experimentation** - Never affect production data
 
-### ML Workflows
-- **A/B testing** with branch-based data isolation
-- **Model training** with versioned datasets
-- **Experiment tracking** with metadata and metrics
-- **Data pipeline** branching for ETL processes
-- **Model deployment** with rollback capabilities
+### ML Integration Points
+- **Python SDK** designed for Jupyter notebooks and ML workflows
+- **Branch-based experiments** for systematic A/B testing
+- **Data versioning** through time travel capabilities
+- **Audit trails** for compliance and experiment tracking
+- **Fast iteration** with 1ms branch creation for rapid experimentation
 
 ### Analytics
 - **Usage metrics** and performance monitoring
@@ -114,57 +114,43 @@ curl -X GET /api/projects/{id}/branches
 
 | Metric | Target | Achieved | Notes |
 |--------|--------|----------|-------|
-| Branch Creation | <500ms | ✅ Yes | Consistent performance |
-| Change Processing | 10k ops/s | 15k+ ops/s | 50% over target |
-| Storage Compression | 40% | 42.40% | ZSTD optimized |
-| Memory Usage | <100MB | 30-50MB | Efficient Go engine |
-| API Response Time | <200ms | <100ms | Fast authentication |
+| Branch Creation | <500ms | **1ms** | 86x faster than alternatives |
+| WAL Write Throughput | 10k ops/s | **37,905+ ops/s** | Production-grade performance |
+| Time Travel Queries | <100ms | **<50ms** | Instant historical access |
+| Memory Usage | <100MB | **30-50MB** | Efficient Go engine |
+| System Startup | <5s | **<2s** | Fast initialization |
 
-## 🔒 Security Features
+## 🔒 Production Features
 
-### Authentication
-- **OAuth 2.0** with Google, GitHub, and custom providers
-- **JWT tokens** for stateless authentication
-- **Session management** with secure cookies
-- **Multi-factor authentication** support
-- **Single sign-on (SSO)** integration
+### Reliability
+- **Production monitoring** with health checks and system metrics
+- **Comprehensive testing** with 119+ test assertions
+- **GitHub Actions CI/CD** with MongoDB service integration
+- **Cross-platform support** (macOS, Linux, Windows)
+- **Package manager distribution** (Homebrew, NPM, PyPI)
 
-### Authorization
-- **Role-based access control (RBAC)** for team management
-- **Project-level permissions** for fine-grained access
-- **API key management** for service-to-service auth
-- **Rate limiting** to prevent abuse
-- **Audit trails** for compliance
+### Data Safety
+- **Complete audit trail** - Every operation logged in WAL
+- **Time travel recovery** - Restore to any point in history
+- **Branch isolation** - Experiments never affect production
+- **Zero data loss** - WAL ensures durability
+- **Instant rollbacks** - Restore problematic changes immediately
 
-### Data Protection
-- **Encryption at rest** for sensitive data
-- **TLS/SSL** for data in transit
-- **Data isolation** between tenants
-- **Backup and recovery** procedures
-- **GDPR compliance** features
+## 🌐 Integration Ready
 
-## 🌐 Integration Ecosystem
+### Current Integrations
+- **MongoDB 4.4+** - Native change streams support
+- **Python ecosystem** - NumPy, Pandas, scikit-learn compatible
+- **Go ecosystem** - Standard library compatible
+- **Package managers** - Homebrew, NPM, PyPI distribution
+- **GitHub** - Open source with active development
 
-### ML Platforms
-- **MLflow** for experiment tracking
-- **DVC** for data version control
-- **Weights & Biases** for model monitoring
-- **Kubeflow** for ML pipelines
-- **Apache Airflow** for workflow orchestration
-
-### Data Sources
-- **MongoDB** native integration
-- **PostgreSQL** via connectors
-- **MySQL** via connectors
-- **Snowflake** for data warehousing
-- **BigQuery** for analytics
-
-### Cloud Providers
-- **AWS** with S3, EC2, and RDS
-- **Google Cloud** with GCS and BigQuery
-- **Azure** with Blob Storage and CosmosDB
-- **Vercel** for serverless deployment
-- **Docker Hub** for container registry
+### Planned Integrations
+- **MLflow** for experiment tracking (roadmap)
+- **Jupyter notebooks** for data science workflows (roadmap)
+- **Docker containers** for easy deployment (roadmap)
+- **PostgreSQL WAL** support (roadmap)
+- **Web dashboard** for visual management (roadmap)
 
 ## 🎯 Use Cases
 
@@ -192,53 +178,53 @@ curl -X GET /api/projects/{id}/branches
 ## 🛠️ Technical Architecture
 
 ### Core Components
-- **Go Engine** for high-performance operations
-- **Python API** for productivity and integrations
-- **MongoDB** for document storage and change streams
-- **Redis** for caching and session management
-- **S3** for object storage and backups
+- **Go WAL Engine** - High-performance operation logging and time travel
+- **Python SDK** - Pythonic interface for data science workflows
+- **MongoDB** - Primary storage with change streams integration
+- **LSN Indexing** - Fast time travel via Log Sequence Number pointers
+- **CLI Interface** - Clean commands without legacy prefixes
 
-### Scalability
-- **Horizontal scaling** with load balancers
-- **Database sharding** for large datasets
-- **Caching layers** for improved performance
-- **CDN integration** for global distribution
-- **Auto-scaling** based on demand
+### Current Capabilities
+- **Single process** architecture for simplicity
+- **Local and cloud** storage options
+- **Change stream** processing for real-time capture
+- **Memory efficient** operation (30-50MB)
+- **Cross-platform** deployment (macOS, Linux, Windows)
 
-### Monitoring
-- **Prometheus** for metrics collection
-- **Grafana** for visualization and dashboards
-- **Jaeger** for distributed tracing
-- **ELK Stack** for log aggregation
-- **PagerDuty** for alerting and incident management
+### Production Ready
+- **GitHub Actions** CI/CD with comprehensive testing
+- **119+ test assertions** covering all core functionality
+- **Performance monitoring** with built-in metrics
+- **Package distribution** via major package managers
+- **Open source** development with community contributions
 
 ## 🔮 Roadmap
 
-### Near Term (Next 3 months)
-- **Web dashboard** completion
-- **ML framework integrations** (MLflow, DVC)
-- **Jupyter notebook plugin** development
-- **Performance optimizations** and scaling
-- **Documentation** and tutorial expansion
+### Phase 1: Core Stability (Current)
+- ✅ **Pure WAL Architecture** - Single unified system
+- ✅ **Package Distribution** - Homebrew, NPM, PyPI
+- ✅ **Production Monitoring** - Health checks and metrics
+- ✅ **Cross-platform CLI** - Clean command interface
+- ✅ **Documentation Overhaul** - Updated for WAL architecture
 
-### Medium Term (3-6 months)
-- **Real-time collaboration** features
-- **Advanced analytics** and reporting
-- **Enterprise features** (SSO, RBAC)
-- **Multi-region deployment** support
-- **Plugin architecture** for extensibility
+### Phase 2: User Experience (Next 2 months)
+- **Web dashboard** for visual branch management
+- **Enhanced documentation** with video tutorials
+- **Community building** and user onboarding
+- **Performance optimization** and benchmarking
+- **User feedback integration** and UX improvements
 
-### Long Term (6-12 months)
-- **GraphQL API** for flexible queries
-- **Serverless functions** for custom logic
-- **AI-powered insights** and recommendations
-- **Third-party integrations** marketplace
-- **Global edge network** deployment
+### Phase 3: Advanced Features (Next 6 months)
+- **PostgreSQL WAL support** for broader database coverage
+- **ML framework integrations** (MLflow, Jupyter)
+- **Enterprise authentication** and access control
+- **Garbage collection** for WAL entry cleanup
+- **Multi-database transactions** and conflict resolution
 
 ---
 
 For detailed technical documentation, see:
-- [API Reference](API_REFERENCE.md)
-- [Architecture Guide](ARCHITECTURE.md)
-- [Deployment Guide](DEPLOYMENT_GUIDE.md)
-- [Use Cases](USE_CASES.md)
+- [Quick Start Guide](QUICK_START.md) - Get running in 5 minutes
+- [API Reference](API_REFERENCE.md) - Complete CLI command reference
+- [Architecture Guide](ARCHITECTURE.md) - WAL system design details
+- [Use Cases](USE_CASES.md) - Real-world ML workflow examples

@@ -22,8 +22,9 @@ brew install argon-lab/tap/argonctl
 # Using npm
 npm install -g argonctl
 
-# Using Go
-go install github.com/your-org/argon/cmd/argonctl@latest
+# Using Go (from source)
+git clone https://github.com/argon-lab/argon
+cd argon/cli && go build -o argon
 ```
 
 ### Global Options
@@ -38,71 +39,102 @@ All commands support these global options:
 
 ### Commands
 
-#### `argonctl init`
+#### `argon status`
 
-Initialize Argon in your MongoDB database.
+Show system status and WAL configuration.
 
 ```bash
-argonctl init --mongodb-uri "mongodb://localhost:27017/mydb"
+export ENABLE_WAL=true
+argon status
+```
+
+Output:
+```
+🚀 Argon System Status:
+   Time Travel: ✅ Enabled
+   Instant Branching: ✅ Enabled
+   Performance Mode: ✅ WAL Architecture
+```
+
+#### `argon projects create`
+
+Create a new project with time travel enabled.
+
+```bash
+argon projects create my-app
+```
+
+Output:
+```
+✅ Created project 'my-app' with time travel enabled
+   Project ID: 6a7c9e12c395913d7800d91f
+   Default branch: main
+```
+
+#### `argon branches create`
+
+Create a new branch within a project.
+
+```bash
+argon branches create feature-x -p my-app
 ```
 
 Options:
-- `--mongodb-uri` (required) - MongoDB connection string
-- `--storage-type` - Storage backend type
-- `--storage-path` - Storage location
+- `-p, --project` - Project ID or name
+- `--from` - Source branch (default: main)
 
-#### `argonctl branch create`
+#### `argon projects list`
 
-Create a new branch from an existing branch or the main database.
-
-```bash
-# Create from main
-argonctl branch create feature-branch
-
-# Create from another branch
-argonctl branch create feature-branch --from develop
-```
-
-Options:
-- `--from` - Source branch name (default: `main`)
-- `--description` - Branch description
-
-#### `argonctl branch list`
-
-List all branches in the current database.
+List all projects with time travel enabled.
 
 ```bash
-argonctl branch list
+argon projects list
 ```
 
-Output format:
+Output:
 ```
-NAME          STATUS    CREATED            LAST_ACTIVITY      SIZE
-main          active    2025-07-18 10:00   2025-07-18 14:30   1.2GB
-feature-1     active    2025-07-18 11:00   2025-07-18 13:00   1.3GB
-develop       archived  2025-07-17 09:00   2025-07-17 18:00   1.1GB
+📁 Projects with Time Travel:
+  - my-app (ID: 6a7c9e12c395913d7800d91f)
+    Branches: 1
 ```
 
-#### `argonctl branch switch`
+#### `argon branches list`
 
-Switch to a different branch (updates connection string).
+List branches in a project.
 
 ```bash
-argonctl branch switch feature-branch
+argon branches list -p my-app
 ```
 
-#### `argonctl branch merge`
+#### `argon time-travel info`
 
-Merge changes from one branch into another.
+Show time travel information for a branch.
 
 ```bash
-# Merge feature-branch into main
-argonctl branch merge feature-branch --into main
+argon time-travel info -p 6a7c9e12c395913d7800d91f -b main
 ```
 
-Options:
-- `--into` (required) - Target branch name
-- `--strategy` - Merge strategy: `ours`, `theirs`, `manual` (default: `manual`)
+Output:
+```
+⏰ Time Travel Info for branch 'main':
+   Branch ID: 6a7c9e12c395913d7800d91f
+   LSN Range: 0 - 4
+   Total Entries: 0
+```
+
+#### `argon metrics`
+
+Show performance metrics and system statistics.
+
+```bash
+argon metrics
+```
+
+Output includes:
+- WAL write throughput
+- Branch creation performance
+- Storage efficiency
+- System health
 
 #### `argonctl branch delete`
 

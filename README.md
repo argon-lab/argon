@@ -91,8 +91,16 @@ argon branches create staging --from production
 ### 📊 **Data Analysis**
 ```bash
 # Compare data across time
-argon time-travel diff --from "last week" --to "today"
-# See exactly what changed
+argon time-travel info --project myapp --branch main
+# See exactly what changed over time
+```
+
+### 🔄 **Import Existing Data**
+```bash
+# Bring your existing MongoDB into Argon
+argon import preview --uri "mongodb://localhost:27017" --database myapp
+argon import database --uri "mongodb://localhost:27017" --database myapp --project imported-myapp
+# Now your existing data has time travel!
 ```
 
 ## How It Works
