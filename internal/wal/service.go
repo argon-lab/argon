@@ -162,3 +162,37 @@ func (s *Service) GetEntriesByTimestamp(projectID string, timestamp time.Time) (
 func (s *Service) GetCurrentLSN() int64 {
 	return s.lsnCounter.Load()
 }
+
+// GetDocumentHistory retrieves WAL entries for a specific document
+func (s *Service) GetDocumentHistory(branchID, collection, documentID string, startLSN, endLSN int64) ([]*Entry, error) {
+	filter := bson.M{
+		"branch_id": branchID,
+		"collection": collection,
+		"document_id": documentID,
+		"lsn": bson.M{
+			"$gte": startLSN,
+			"$lte": endLSN,
+		},
+	}
+
+	opts := options.Find().SetSort(bson.M{"lsn": 1})
+	return s.GetEntries(filter, opts)
+}
+
+// GetProjectEntries retrieves all entries for a project within an LSN range
+func (s *Service) GetProjectEntries(projectID, collection string, startLSN, endLSN int64) ([]*Entry, error) {
+	filter := bson.M{
+		"project_id": projectID,
+		"lsn": bson.M{
+			"$gte": startLSN,
+			"$lte": endLSN,
+		},
+	}
+
+	if collection != "" {
+		filter["collection"] = collection
+	}
+
+	opts := options.Find().SetSort(bson.M{"lsn": 1})
+	return s.GetEntries(filter, opts)
+}

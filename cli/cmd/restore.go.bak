@@ -1,0 +1,243 @@
+package cmd
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/pkg/walcli"
+	"github.com/spf13/cobra"
+)
+
+var restoreCmd = &cobra.Command{
+	Use:   "restore",
+	Short: "Restore branches to historical states",
+	Long:  `Restore allows you to reset branches to previous states or create new branches from historical points.`,
+}
+
+var restoreResetCmd = &cobra.Command{
+	Use:   "reset",
+	Short: "Reset a branch to a historical state",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		branchName, _ := cmd.Flags().GetString("branch")
+		lsnStr, _ := cmd.Flags().GetString("lsn")
+		timeStr, _ := cmd.Flags().GetString("time")
+		force, _ := cmd.Flags().GetBool("force")
+
+		if projectID == "" || branchName == "" {
+			return fmt.Errorf("project and branch are required")
+		}
+
+		if lsnStr == "" && timeStr == "" {
+			return fmt.Errorf("either --lsn or --time must be specified")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		// Get branch
+		branch, err := services.Branches.GetBranch(projectID, branchName)
+		if err != nil {
+			return fmt.Errorf("branch not found: %w", err)
+		}
+
+		var targetLSN int64
+		
+		if lsnStr != "" {
+			// Reset by LSN
+			targetLSN, err = strconv.ParseInt(lsnStr, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid LSN: %w", err)
+			}
+		} else {
+			// Reset by time
+			timestamp, err := parseTimeString(timeStr)
+			if err != nil {
+				return fmt.Errorf("invalid time format: %w", err)
+			}
+			
+			// Find LSN at time
+			targetLSN, err = services.TimeTravel.FindLSNAtTime(branch, timestamp)
+			if err != nil {
+				return fmt.Errorf("failed to find LSN at time: %w", err)
+			}
+			
+			fmt.Printf("Found LSN %d at %s\n", targetLSN, timestamp.Format("2006-01-02 15:04:05"))
+		}
+
+		// Get preview
+		preview, err := services.Restore.GetRestorePreview(branch.ID, targetLSN)
+		if err != nil {
+			return fmt.Errorf("failed to get restore preview: %w", err)
+		}
+
+		// Show preview
+		fmt.Printf("\nRestore Preview for branch '%s':\n", preview.BranchName)
+		fmt.Printf("  Current LSN: %d\n", preview.CurrentLSN)
+		fmt.Printf("  Target LSN: %d\n", preview.TargetLSN)
+		fmt.Printf("  Operations to discard: %d\n", preview.OperationsToDiscard)
+		
+		if len(preview.AffectedCollections) > 0 {
+			fmt.Println("  Affected collections:")
+			for coll, count := range preview.AffectedCollections {
+				fmt.Printf("    - %s: %d operations\n", coll, count)
+			}
+		}
+
+		if preview.OperationsToDiscard > 0 && !force {
+			fmt.Printf("\nWARNING: This will discard %d operations. Are you sure? (y/N): ", preview.OperationsToDiscard)
+			
+			reader := bufio.NewReader(os.Stdin)
+			response, _ := reader.ReadString('\n')
+			response = strings.TrimSpace(strings.ToLower(response))
+			
+			if response != "y" && response != "yes" {
+				fmt.Println("Restore cancelled.")
+				return nil
+			}
+		}
+
+		// Perform restore
+		restored, err := services.Restore.ResetBranchToLSN(branch.ID, targetLSN)
+		if err != nil {
+			return fmt.Errorf("failed to restore branch: %w", err)
+		}
+
+		fmt.Printf("\nSuccessfully reset branch '%s' to LSN %d\n", restored.Name, restored.HeadLSN)
+		return nil
+	},
+}
+
+var restoreCreateCmd = &cobra.Command{
+	Use:   "create [new-branch-name]",
+	Short: "Create a new branch from a historical state",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		sourceBranch, _ := cmd.Flags().GetString("from")
+		lsnStr, _ := cmd.Flags().GetString("lsn")
+		timeStr, _ := cmd.Flags().GetString("time")
+
+		if projectID == "" || sourceBranch == "" {
+			return fmt.Errorf("project and source branch (--from) are required")
+		}
+
+		if lsnStr == "" && timeStr == "" {
+			return fmt.Errorf("either --lsn or --time must be specified")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		// Get source branch
+		branch, err := services.Branches.GetBranch(projectID, sourceBranch)
+		if err != nil {
+			return fmt.Errorf("source branch not found: %w", err)
+		}
+
+		var newBranch *wal.Branch
+		
+		if lsnStr != "" {
+			// Create by LSN
+			targetLSN, err := strconv.ParseInt(lsnStr, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid LSN: %w", err)
+			}
+			
+			newBranch, err = services.Restore.CreateBranchAtLSN(projectID, branch.ID, args[0], targetLSN)
+			if err != nil {
+				return fmt.Errorf("failed to create branch: %w", err)
+			}
+			
+			fmt.Printf("Created branch '%s' from '%s' at LSN %d\n", args[0], sourceBranch, targetLSN)
+		} else {
+			// Create by time
+			timestamp, err := parseTimeString(timeStr)
+			if err != nil {
+				return fmt.Errorf("invalid time format: %w", err)
+			}
+			
+			newBranch, err = services.Restore.CreateBranchAtTime(projectID, branch.ID, args[0], timestamp)
+			if err != nil {
+				return fmt.Errorf("failed to create branch: %w", err)
+			}
+			
+			fmt.Printf("Created branch '%s' from '%s' at %s\n", args[0], sourceBranch, timestamp.Format("2006-01-02 15:04:05"))
+		}
+
+		fmt.Printf("  Branch ID: %s\n", newBranch.ID)
+		fmt.Printf("  Base LSN: %d\n", newBranch.BaseLSN)
+		fmt.Printf("  Head LSN: %d\n", newBranch.HeadLSN)
+		
+		return nil
+	},
+}
+
+var restoreBackupCmd = &cobra.Command{
+	Use:   "backup [branch-name]",
+	Short: "Create a backup branch at the current state",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		sourceBranch, _ := cmd.Flags().GetString("from")
+
+		if projectID == "" || sourceBranch == "" {
+			return fmt.Errorf("project and source branch (--from) are required")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		// Get source branch
+		branch, err := services.Branches.GetBranch(projectID, sourceBranch)
+		if err != nil {
+			return fmt.Errorf("source branch not found: %w", err)
+		}
+
+		// Create backup at current HEAD
+		backup, err := services.Restore.CreateBranchAtLSN(projectID, branch.ID, args[0], branch.HeadLSN)
+		if err != nil {
+			return fmt.Errorf("failed to create backup: %w", err)
+		}
+
+		fmt.Printf("Created backup branch '%s' from '%s' at LSN %d\n", backup.Name, sourceBranch, backup.HeadLSN)
+		fmt.Printf("  Branch ID: %s\n", backup.ID)
+		fmt.Println("\nBackup created successfully. Original branch can now be modified safely.")
+		
+		return nil
+	},
+}
+
+func init() {
+	// Add flags
+	restoreCmd.PersistentFlags().StringP("project", "p", "", "Project ID")
+	
+	restoreResetCmd.Flags().StringP("branch", "b", "", "Branch to reset")
+	restoreResetCmd.Flags().String("lsn", "", "Reset to specific LSN")
+	restoreResetCmd.Flags().String("time", "", "Reset to specific time (e.g., '1h ago', '2023-01-01')")
+	restoreResetCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
+	
+	restoreCreateCmd.Flags().String("from", "", "Source branch")
+	restoreCreateCmd.Flags().String("lsn", "", "Create from specific LSN")
+	restoreCreateCmd.Flags().String("time", "", "Create from specific time (e.g., '1h ago', '2023-01-01')")
+	
+	restoreBackupCmd.Flags().String("from", "", "Source branch to backup")
+	
+	// Add subcommands
+	restoreCmd.AddCommand(restoreResetCmd)
+	restoreCmd.AddCommand(restoreCreateCmd)
+	restoreCmd.AddCommand(restoreBackupCmd)
+	
+	// Add to WAL command
+	walCmd.AddCommand(restoreCmd)
+}

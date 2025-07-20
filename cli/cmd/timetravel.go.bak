@@ -1,0 +1,301 @@
+package cmd
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/argon-lab/argon/pkg/walcli"
+	"github.com/spf13/cobra"
+	"go.mongodb.org/mongo-driver/bson"
+)
+
+var timeTravelCmd = &cobra.Command{
+	Use:   "time-travel",
+	Short: "Query historical database states",
+	Long:  `Time travel allows you to query your database at any point in history using LSN or timestamp.`,
+}
+
+var ttQueryCmd = &cobra.Command{
+	Use:   "query [collection]",
+	Short: "Query a collection at a specific point in time",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		branchName, _ := cmd.Flags().GetString("branch")
+		lsnStr, _ := cmd.Flags().GetString("lsn")
+		timeStr, _ := cmd.Flags().GetString("time")
+		limit, _ := cmd.Flags().GetInt("limit")
+
+		if projectID == "" || branchName == "" {
+			return fmt.Errorf("project and branch are required")
+		}
+
+		if lsnStr == "" && timeStr == "" {
+			return fmt.Errorf("either --lsn or --time must be specified")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		// Get branch
+		branch, err := services.Branches.GetBranch(projectID, branchName)
+		if err != nil {
+			return fmt.Errorf("branch not found: %w", err)
+		}
+
+		var state map[string]bson.M
+		
+		if lsnStr != "" {
+			// Query by LSN
+			lsn, err := strconv.ParseInt(lsnStr, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid LSN: %w", err)
+			}
+			
+			state, err = services.TimeTravel.MaterializeAtLSN(branch, args[0], lsn)
+			if err != nil {
+				return fmt.Errorf("failed to query at LSN %d: %w", lsn, err)
+			}
+			
+			fmt.Printf("Collection '%s' at LSN %d:\n", args[0], lsn)
+		} else {
+			// Query by time
+			timestamp, err := parseTimeString(timeStr)
+			if err != nil {
+				return fmt.Errorf("invalid time format: %w", err)
+			}
+			
+			state, err = services.TimeTravel.MaterializeAtTime(branch, args[0], timestamp)
+			if err != nil {
+				return fmt.Errorf("failed to query at time %v: %w", timestamp, err)
+			}
+			
+			fmt.Printf("Collection '%s' at %s:\n", args[0], timestamp.Format(time.RFC3339))
+		}
+
+		// Display results
+		if len(state) == 0 {
+			fmt.Println("  (empty)")
+			return nil
+		}
+
+		count := 0
+		for id, doc := range state {
+			if limit > 0 && count >= limit {
+				fmt.Printf("  ... (%d more documents)\n", len(state)-count)
+				break
+			}
+			
+			// Pretty print document
+			fmt.Printf("  Document ID: %s\n", id)
+			printDocument(doc, "    ")
+			fmt.Println()
+			count++
+		}
+
+		fmt.Printf("Total documents: %d\n", len(state))
+		return nil
+	},
+}
+
+var ttInfoCmd = &cobra.Command{
+	Use:   "info",
+	Short: "Show time travel information for a branch",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		branchName, _ := cmd.Flags().GetString("branch")
+
+		if projectID == "" || branchName == "" {
+			return fmt.Errorf("project and branch are required")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		branch, err := services.Branches.GetBranch(projectID, branchName)
+		if err != nil {
+			return fmt.Errorf("branch not found: %w", err)
+		}
+
+		info, err := services.TimeTravel.GetTimeTravelInfo(branch)
+		if err != nil {
+			return fmt.Errorf("failed to get time travel info: %w", err)
+		}
+
+		fmt.Printf("Time Travel Info for branch '%s':\n", info.BranchName)
+		fmt.Printf("  Branch ID: %s\n", info.BranchID)
+		fmt.Printf("  Earliest LSN: %d\n", info.EarliestLSN)
+		fmt.Printf("  Latest LSN: %d\n", info.LatestLSN)
+		
+		if !info.EarliestTime.IsZero() {
+			fmt.Printf("  Earliest Time: %s\n", info.EarliestTime.Format(time.RFC3339))
+			fmt.Printf("  Latest Time: %s\n", info.LatestTime.Format(time.RFC3339))
+			fmt.Printf("  Time Range: %s\n", info.LatestTime.Sub(info.EarliestTime))
+		}
+		
+		fmt.Printf("  Total Entries: %d\n", info.EntryCount)
+		
+		return nil
+	},
+}
+
+var ttModifiedCmd = &cobra.Command{
+	Use:   "modified",
+	Short: "Find collections modified between two points",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		branchName, _ := cmd.Flags().GetString("branch")
+		fromLSN, _ := cmd.Flags().GetInt64("from-lsn")
+		toLSN, _ := cmd.Flags().GetInt64("to-lsn")
+
+		if projectID == "" || branchName == "" {
+			return fmt.Errorf("project and branch are required")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		branch, err := services.Branches.GetBranch(projectID, branchName)
+		if err != nil {
+			return fmt.Errorf("branch not found: %w", err)
+		}
+
+		// Default to full range if not specified
+		if toLSN == 0 {
+			toLSN = branch.HeadLSN
+		}
+
+		collections, err := services.TimeTravel.FindModifiedCollections(branch, fromLSN, toLSN)
+		if err != nil {
+			return fmt.Errorf("failed to find modified collections: %w", err)
+		}
+
+		fmt.Printf("Collections modified between LSN %d and %d:\n", fromLSN, toLSN)
+		if len(collections) == 0 {
+			fmt.Println("  (none)")
+		} else {
+			for _, coll := range collections {
+				fmt.Printf("  - %s\n", coll)
+			}
+		}
+
+		return nil
+	},
+}
+
+// Helper function to parse time strings
+func parseTimeString(timeStr string) (time.Time, error) {
+	// Handle relative times like "1h ago", "2d ago"
+	if strings.HasSuffix(timeStr, " ago") {
+		parts := strings.Split(timeStr, " ")
+		if len(parts) != 2 {
+			return time.Time{}, fmt.Errorf("invalid relative time format")
+		}
+		
+		duration, err := parseDuration(parts[0])
+		if err != nil {
+			return time.Time{}, err
+		}
+		
+		return time.Now().Add(-duration), nil
+	}
+	
+	// Try various time formats
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	
+	for _, format := range formats {
+		if t, err := time.Parse(format, timeStr); err == nil {
+			return t, nil
+		}
+	}
+	
+	return time.Time{}, fmt.Errorf("unrecognized time format")
+}
+
+// Helper function to parse duration strings like "1h", "2d"
+func parseDuration(s string) (time.Duration, error) {
+	if len(s) < 2 {
+		return 0, fmt.Errorf("invalid duration")
+	}
+	
+	value := s[:len(s)-1]
+	unit := s[len(s)-1:]
+	
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	
+	switch unit {
+	case "s":
+		return time.Duration(n) * time.Second, nil
+	case "m":
+		return time.Duration(n) * time.Minute, nil
+	case "h":
+		return time.Duration(n) * time.Hour, nil
+	case "d":
+		return time.Duration(n) * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("unknown time unit: %s", unit)
+	}
+}
+
+// Helper function to pretty print documents
+func printDocument(doc bson.M, indent string) {
+	for key, value := range doc {
+		switch v := value.(type) {
+		case bson.M:
+			fmt.Printf("%s%s:\n", indent, key)
+			printDocument(v, indent+"  ")
+		case []interface{}:
+			fmt.Printf("%s%s: [", indent, key)
+			if len(v) > 0 {
+				fmt.Printf("%v", v[0])
+				for i := 1; i < len(v) && i < 3; i++ {
+					fmt.Printf(", %v", v[i])
+				}
+				if len(v) > 3 {
+					fmt.Printf(", ... (%d more)", len(v)-3)
+				}
+			}
+			fmt.Println("]")
+		default:
+			fmt.Printf("%s%s: %v\n", indent, key, value)
+		}
+	}
+}
+
+func init() {
+	// Add flags
+	timeTravelCmd.PersistentFlags().StringP("project", "p", "", "Project ID")
+	timeTravelCmd.PersistentFlags().StringP("branch", "b", "", "Branch name")
+	
+	ttQueryCmd.Flags().String("lsn", "", "Query at specific LSN")
+	ttQueryCmd.Flags().String("time", "", "Query at specific time (e.g., '1h ago', '2023-01-01')")
+	ttQueryCmd.Flags().Int("limit", 10, "Maximum documents to display")
+	
+	ttModifiedCmd.Flags().Int64("from-lsn", 0, "Starting LSN")
+	ttModifiedCmd.Flags().Int64("to-lsn", 0, "Ending LSN (default: current HEAD)")
+	
+	// Add subcommands
+	timeTravelCmd.AddCommand(ttQueryCmd)
+	timeTravelCmd.AddCommand(ttInfoCmd)
+	timeTravelCmd.AddCommand(ttModifiedCmd)
+	
+	// Add to WAL command
+	walCmd.AddCommand(timeTravelCmd)
+}
+

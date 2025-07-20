@@ -1,13 +1,13 @@
 """
-Setup script for Argon Jupyter integration
+Setup script for Argon Python SDK
 """
 
 from setuptools import setup, find_packages
 
 setup(
-    name="argon-jupyter",
+    name="argon-python",
     version="1.0.0",
-    description="Jupyter integration for Argon - MongoDB branching for data science",
+    description="Python SDK for Argon - MongoDB branching for ML and data science",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Argon Team",

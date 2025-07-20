@@ -13,10 +13,18 @@ try:
     from ..core.branch import Branch
     from ..core.project import Project
 except ImportError:
-    # Fallback for testing
-    from typing import Any
-    Branch = Any
-    Project = Any
+    try:
+        # Try direct import when used as standalone package
+        import sys
+        import os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+        from core.branch import Branch
+        from core.project import Project
+    except ImportError:
+        # Final fallback for testing
+        from typing import Any
+        Branch = Any
+        Project = Any
 
 logger = logging.getLogger(__name__)
 

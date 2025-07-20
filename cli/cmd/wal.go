@@ -1,17 +1,11 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
-	"os"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/config"
-	projectwal "github.com/argon-lab/argon/internal/project/wal"
-	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/pkg/config"
+	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var walCmd = &cobra.Command{
@@ -39,12 +33,12 @@ var walCreateProjectCmd = &cobra.Command{
 			return fmt.Errorf("WAL is not enabled. Set ENABLE_WAL=true to use WAL features")
 		}
 
-		services, err := getWALServices()
+		services, err := walcli.NewServices()
 		if err != nil {
 			return err
 		}
 
-		project, err := services.projects.CreateProject(args[0])
+		project, err := services.Projects.CreateProject(args[0])
 		if err != nil {
 			return fmt.Errorf("failed to create project: %w", err)
 		}
@@ -62,12 +56,12 @@ var walListProjectsCmd = &cobra.Command{
 			return fmt.Errorf("WAL is not enabled. Set ENABLE_WAL=true to use WAL features")
 		}
 
-		services, err := getWALServices()
+		services, err := walcli.NewServices()
 		if err != nil {
 			return err
 		}
 
-		projects, err := services.projects.ListProjects()
+		projects, err := services.Projects.ListProjects()
 		if err != nil {
 			return fmt.Errorf("failed to list projects: %w", err)
 		}
@@ -102,7 +96,7 @@ var walCreateBranchCmd = &cobra.Command{
 			return fmt.Errorf("project ID is required")
 		}
 
-		services, err := getWALServices()
+		services, err := walcli.NewServices()
 		if err != nil {
 			return err
 		}
@@ -110,14 +104,14 @@ var walCreateBranchCmd = &cobra.Command{
 		// Get parent branch ID if specified
 		parentID := ""
 		if parentBranch != "" {
-			parent, err := services.branches.GetBranch(projectID, parentBranch)
+			parent, err := services.Branches.GetBranch(projectID, parentBranch)
 			if err != nil {
 				return fmt.Errorf("parent branch not found: %w", err)
 			}
 			parentID = parent.ID
 		}
 
-		branch, err := services.branches.CreateBranch(projectID, args[0], parentID)
+		branch, err := services.Branches.CreateBranch(projectID, args[0], parentID)
 		if err != nil {
 			return fmt.Errorf("failed to create branch: %w", err)
 		}
@@ -141,12 +135,12 @@ var walListBranchesCmd = &cobra.Command{
 			return fmt.Errorf("project ID is required")
 		}
 
-		services, err := getWALServices()
+		services, err := walcli.NewServices()
 		if err != nil {
 			return err
 		}
 
-		branches, err := services.branches.ListBranches(projectID)
+		branches, err := services.Branches.ListBranches(projectID)
 		if err != nil {
 			return fmt.Errorf("failed to list branches: %w", err)
 		}
@@ -186,53 +180,6 @@ var walStatusCmd = &cobra.Command{
 	},
 }
 
-// walServices holds all WAL-related services
-type walServices struct {
-	wal      *wal.Service
-	branches *branchwal.BranchService
-	projects *projectwal.ProjectService
-}
-
-// getWALServices creates and returns all WAL services
-func getWALServices() (*walServices, error) {
-	// Get MongoDB URI from environment or use default
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		mongoURI = "mongodb://localhost:27017"
-	}
-
-	// Connect to MongoDB
-	ctx := context.Background()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
-	}
-
-	// Use argon_wal database for WAL data
-	db := client.Database("argon_wal")
-
-	// Create services
-	walService, err := wal.NewService(db)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create WAL service: %w", err)
-	}
-
-	branchService, err := branchwal.NewBranchService(db, walService)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create branch service: %w", err)
-	}
-
-	projectService, err := projectwal.NewProjectService(db, walService, branchService)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create project service: %w", err)
-	}
-
-	return &walServices{
-		wal:      walService,
-		branches: branchService,
-		projects: projectService,
-	}, nil
-}
 
 func init() {
 	// Add subcommands

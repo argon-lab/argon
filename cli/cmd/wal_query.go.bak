@@ -1,0 +1,256 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+
+	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/pkg/walcli"
+	"github.com/spf13/cobra"
+	"go.mongodb.org/mongo-driver/bson"
+)
+
+var walQueryCmd = &cobra.Command{
+	Use:   "query",
+	Short: "Query WAL-enabled collections",
+	Long:  `Execute queries on WAL-enabled collections with full MongoDB compatibility.`,
+}
+
+var walFindCmd = &cobra.Command{
+	Use:   "find [collection]",
+	Short: "Find documents in a collection",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		branchName, _ := cmd.Flags().GetString("branch")
+		filterStr, _ := cmd.Flags().GetString("filter")
+		limit, _ := cmd.Flags().GetInt("limit")
+
+		if projectID == "" || branchName == "" {
+			return fmt.Errorf("project and branch are required")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		// Get branch
+		branch, err := services.Branches.GetBranch(projectID, branchName)
+		if err != nil {
+			return fmt.Errorf("branch not found: %w", err)
+		}
+
+		// Create interceptor and collection
+		interceptor := driverwal.NewInterceptor(services.WAL, branch, services.Branches)
+		collection := driverwal.NewCollection(args[0], interceptor, services.Materializer, branch)
+
+		// Parse filter
+		filter := bson.M{}
+		if filterStr != "" {
+			// Simple JSON-like parsing (in production, use proper JSON parser)
+			if err := parseSimpleFilter(filterStr, filter); err != nil {
+				return fmt.Errorf("invalid filter: %w", err)
+			}
+		}
+
+		// Execute find
+		ctx := context.Background()
+		cursor, err := collection.Find(ctx, filter)
+		if err != nil {
+			return fmt.Errorf("find failed: %w", err)
+		}
+		defer cursor.Close(ctx)
+
+		// Display results
+		fmt.Printf("Documents in '%s' (branch: %s):\n", args[0], branchName)
+		
+		count := 0
+		for cursor.Next(ctx) {
+			if limit > 0 && count >= limit {
+				remaining := cursor.RemainingBatchLength()
+				if remaining > 0 {
+					fmt.Printf("\n... (%d more documents)\n", remaining)
+				}
+				break
+			}
+
+			var doc bson.M
+			if err := cursor.Decode(&doc); err != nil {
+				return fmt.Errorf("failed to decode document: %w", err)
+			}
+
+			fmt.Printf("\n--- Document %d ---\n", count+1)
+			printDocument(doc, "")
+			count++
+		}
+
+		if count == 0 {
+			fmt.Println("  (no documents found)")
+		} else {
+			fmt.Printf("\nTotal documents shown: %d\n", count)
+		}
+
+		return nil
+	},
+}
+
+var walCountCmd = &cobra.Command{
+	Use:   "count [collection]",
+	Short: "Count documents in a collection",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		branchName, _ := cmd.Flags().GetString("branch")
+		filterStr, _ := cmd.Flags().GetString("filter")
+
+		if projectID == "" || branchName == "" {
+			return fmt.Errorf("project and branch are required")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		// Get branch
+		branch, err := services.Branches.GetBranch(projectID, branchName)
+		if err != nil {
+			return fmt.Errorf("branch not found: %w", err)
+		}
+
+		// Create interceptor and collection
+		interceptor := driverwal.NewInterceptor(services.WAL, branch, services.Branches)
+		collection := driverwal.NewCollection(args[0], interceptor, services.Materializer, branch)
+
+		// Parse filter
+		filter := bson.M{}
+		if filterStr != "" {
+			if err := parseSimpleFilter(filterStr, filter); err != nil {
+				return fmt.Errorf("invalid filter: %w", err)
+			}
+		}
+
+		// Execute count
+		ctx := context.Background()
+		count, err := collection.CountDocuments(ctx, filter)
+		if err != nil {
+			return fmt.Errorf("count failed: %w", err)
+		}
+
+		fmt.Printf("Documents in '%s' matching filter: %d\n", args[0], count)
+		return nil
+	},
+}
+
+var walInsertCmd = &cobra.Command{
+	Use:   "insert [collection]",
+	Short: "Insert a document into a collection",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectID, _ := cmd.Flags().GetString("project")
+		branchName, _ := cmd.Flags().GetString("branch")
+		docStr, _ := cmd.Flags().GetString("doc")
+
+		if projectID == "" || branchName == "" {
+			return fmt.Errorf("project and branch are required")
+		}
+
+		if docStr == "" {
+			return fmt.Errorf("document is required (use --doc)")
+		}
+
+		services, err := walcli.NewServices()
+		if err != nil {
+			return err
+		}
+
+		// Get branch
+		branch, err := services.Branches.GetBranch(projectID, branchName)
+		if err != nil {
+			return fmt.Errorf("branch not found: %w", err)
+		}
+
+		// Parse document
+		doc := bson.M{}
+		if err := parseSimpleFilter(docStr, doc); err != nil {
+			return fmt.Errorf("invalid document: %w", err)
+		}
+
+		// Create interceptor
+		interceptor := driverwal.NewInterceptor(services.WAL, branch, services.Branches)
+
+		// Execute insert
+		ctx := context.Background()
+		result, err := interceptor.InsertOne(ctx, args[0], doc)
+		if err != nil {
+			return fmt.Errorf("insert failed: %w", err)
+		}
+
+		// Update branch for display
+		branch, _ = services.Branches.GetBranchByID(branch.ID)
+
+		fmt.Printf("Document inserted successfully\n")
+		fmt.Printf("  Document ID: %v\n", result.InsertedID)
+		fmt.Printf("  New HEAD LSN: %d\n", branch.HeadLSN)
+
+		return nil
+	},
+}
+
+// parseSimpleFilter parses a simple key:value filter string
+// Example: "name:John,age:30" -> {"name": "John", "age": 30}
+func parseSimpleFilter(filterStr string, result bson.M) error {
+	if filterStr == "" {
+		return nil
+	}
+
+	pairs := strings.Split(filterStr, ",")
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid filter format: %s", pair)
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		// Try to parse as number
+		if num, err := strconv.Atoi(value); err == nil {
+			result[key] = num
+		} else if value == "true" {
+			result[key] = true
+		} else if value == "false" {
+			result[key] = false
+		} else {
+			// String value - remove quotes if present
+			value = strings.Trim(value, "\"'")
+			result[key] = value
+		}
+	}
+
+	return nil
+}
+
+func init() {
+	// Add flags
+	walQueryCmd.PersistentFlags().StringP("project", "p", "", "Project ID")
+	walQueryCmd.PersistentFlags().StringP("branch", "b", "", "Branch name")
+
+	walFindCmd.Flags().StringP("filter", "f", "", "Filter documents (e.g., 'name:John,age:30')")
+	walFindCmd.Flags().IntP("limit", "l", 10, "Maximum documents to display")
+
+	walCountCmd.Flags().StringP("filter", "f", "", "Filter documents (e.g., 'status:active')")
+
+	walInsertCmd.Flags().StringP("doc", "d", "", "Document to insert (e.g., 'name:John,age:30')")
+
+	// Add subcommands
+	walQueryCmd.AddCommand(walFindCmd)
+	walQueryCmd.AddCommand(walCountCmd)
+	walQueryCmd.AddCommand(walInsertCmd)
+
+	// Add to WAL command
+	walCmd.AddCommand(walQueryCmd)
+}

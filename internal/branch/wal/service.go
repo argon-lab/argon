@@ -295,3 +295,45 @@ func (s *BranchService) ForceDeleteBranch(projectID, name string) error {
 
 	return err
 }
+
+// CreateBranchWithData creates a branch with specific metadata
+func (s *BranchService) CreateBranchWithData(branch *wal.Branch) error {
+	ctx := context.Background()
+
+	// Check if branch already exists
+	existing, _ := s.GetBranch(branch.ProjectID, branch.Name)
+	if existing != nil {
+		return errors.New("branch already exists")
+	}
+
+	// Create WAL entry for branch creation
+	entry := &wal.Entry{
+		ProjectID: branch.ProjectID,
+		BranchID:  branch.Name,
+		Operation: wal.OpCreateBranch,
+		Metadata: map[string]interface{}{
+			"branch_name": branch.Name,
+			"base_lsn":    branch.BaseLSN,
+			"head_lsn":    branch.HeadLSN,
+		},
+	}
+
+	_, err := s.wal.Append(entry)
+	if err != nil {
+		return fmt.Errorf("failed to append WAL entry: %w", err)
+	}
+
+	// Set default values
+	branch.IsDeleted = false
+	if branch.CreatedAt.IsZero() {
+		branch.CreatedAt = time.Now()
+	}
+
+	// Insert branch record
+	_, err = s.collection.InsertOne(ctx, branch)
+	if err != nil {
+		return fmt.Errorf("failed to create branch: %w", err)
+	}
+
+	return nil
+}
