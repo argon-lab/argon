@@ -309,6 +309,56 @@ func (s *Service) GetProjectEntries(projectID, collection string, startLSN, endL
 	return s.GetEntries(filter, opts)
 }
 
+// LatestLSNBefore returns the highest LSN of the branch's entries whose
+// timestamp is at or before the given time, or 0 if none. GC uses this to
+// translate the retention window into an LSN cutoff.
+func (s *Service) LatestLSNBefore(branchID string, cutoff time.Time) (int64, error) {
+	ctx := context.Background()
+	var entry struct {
+		LSN int64 `bson:"lsn"`
+	}
+	err := s.collection.FindOne(ctx,
+		bson.M{"branch_id": branchID, "timestamp": bson.M{"$lte": cutoff}},
+		options.FindOne().SetSort(bson.M{"lsn": -1}).SetProjection(bson.M{"lsn": 1}),
+	).Decode(&entry)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return entry.LSN, nil
+}
+
+// DeleteDataEntriesUpTo removes a collection's data entries (puts and
+// deletes) on one branch with LSN at or below cutoff. Control entries are
+// kept — they are tiny and carry branch/project lineage. Callers are
+// responsible for the coverage argument (see the gc package).
+func (s *Service) DeleteDataEntriesUpTo(branchID, collection string, cutoff int64) (int64, error) {
+	ctx := context.Background()
+	res, err := s.collection.DeleteMany(ctx, bson.M{
+		"branch_id":  branchID,
+		"collection": collection,
+		"operation":  bson.M{"$in": []OperationType{OpPut, OpDelete}},
+		"lsn":        bson.M{"$lte": cutoff},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}
+
+// DeleteBranchEntries removes every entry belonging to a branch. Only safe
+// once the branch is deleted and no live descendant can traverse it.
+func (s *Service) DeleteBranchEntries(branchID string) (int64, error) {
+	ctx := context.Background()
+	res, err := s.collection.DeleteMany(ctx, bson.M{"branch_id": branchID})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}
+
 // GetMetrics returns a snapshot of current metrics
 func (s *Service) GetMetrics() MetricsSnapshot {
 	return s.metrics.GetSnapshot()

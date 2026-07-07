@@ -201,6 +201,38 @@ func (s *Service) load(ctx context.Context, snap *Snapshot) (map[string]bson.M, 
 	return state, nil
 }
 
+// NewestUsableLSN returns the LSN of the newest snapshot of (branch,
+// collection) at or below maxLSN that is usable for a read whose segment
+// upper bound is readUpperBound, or 0 if none. GC uses this to compute how
+// far a collection's entries are covered: pass math.MaxInt64 as
+// readUpperBound to require validity for every possible future reader.
+func (s *Service) NewestUsableLSN(branch *wal.Branch, collection string, maxLSN, readUpperBound int64) (int64, error) {
+	ctx := context.Background()
+	cursor, err := s.manifests.Find(ctx,
+		bson.M{
+			"branch_id":  branch.ID,
+			"collection": collection,
+			"lsn":        bson.M{"$lte": maxLSN},
+		},
+		options.Find().SetSort(bson.M{"lsn": -1}),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query snapshots: %w", err)
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	for cursor.Next(ctx) {
+		var snap Snapshot
+		if err := cursor.Decode(&snap); err != nil {
+			return 0, fmt.Errorf("failed to decode snapshot manifest: %w", err)
+		}
+		if s.usable(&snap, branch, readUpperBound) {
+			return snap.LSN, nil
+		}
+	}
+	return 0, cursor.Err()
+}
+
 // CollectionsUpTo implements materializer.SnapshotSource: collections that
 // have a snapshot for this branch within the LSN window.
 func (s *Service) CollectionsUpTo(branchID string, minLSN, maxLSN int64) ([]string, error) {
