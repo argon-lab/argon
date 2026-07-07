@@ -61,6 +61,18 @@ type Service struct {
 	wal       *wal.Service
 	branches  *branchwal.BranchService
 	snapshots *snapshot.Service
+
+	// pinLSNs returns the pinned LSNs on a branch. Wired by the caller so
+	// this package does not depend on the pin package. A pin at LSN P is a
+	// permanent reader at bound P: it clamps the cutoff exactly like a
+	// live child's fork point does.
+	pinLSNs func(branchID string) ([]int64, error)
+}
+
+// SetPinLookup registers the pinned-LSN lookup used to protect pinned
+// history from reclamation.
+func (s *Service) SetPinLookup(lookup func(branchID string) ([]int64, error)) {
+	s.pinLSNs = lookup
 }
 
 // NewService creates a GC service.
@@ -142,6 +154,14 @@ func (s *Service) gcBranch(ctx context.Context, branch *wal.Branch, liveChildren
 		return nil, fmt.Errorf("failed to list collections: %w", err)
 	}
 
+	var pinnedLSNs []int64
+	if s.pinLSNs != nil {
+		pinnedLSNs, err = s.pinLSNs(branch.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up pins: %w", err)
+		}
+	}
+
 	for _, collection := range collections {
 		// S: coverage for the branch's own (and post-fork) readers — must
 		// be valid for every possible future read bound.
@@ -163,6 +183,17 @@ func (s *Service) gcBranch(ctx context.Context, branch *wal.Branch, liveChildren
 				return nil, err
 			}
 			cutoff = min64(cutoff, childCoverage)
+		}
+
+		// Pins are permanent readers at their LSN: same rule as fork
+		// points. No usable snapshot at or below the pin means nothing
+		// here may be reclaimed at all.
+		for _, pinLSN := range pinnedLSNs {
+			pinCoverage, err := s.snapshots.NewestUsableLSN(branch, collection, pinLSN, pinLSN)
+			if err != nil {
+				return nil, err
+			}
+			cutoff = min64(cutoff, pinCoverage)
 		}
 
 		if cutoff <= 0 {

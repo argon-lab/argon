@@ -134,6 +134,39 @@ func (s *Service) CreateBranchAtLSN(projectID, sourceBranchID, newBranchName str
 	return newBranch, nil
 }
 
+// CreateBranchFromPin forks a branch at a pinned LSN. Unlike
+// CreateBranchAtLSN it does not bound the target by the source's current
+// head: a pin stays valid across resets — its reads fall inside the
+// discarded range, where the pre-reset rule preserves them — so a pinned
+// LSN may legitimately lie above a reset head.
+func (s *Service) CreateBranchFromPin(projectID, sourceBranchID, newBranchName string, pinnedLSN int64) (*wal.Branch, error) {
+	if newBranchName == "" {
+		return nil, fmt.Errorf("branch name must not be empty")
+	}
+	sourceBranch, err := s.branches.GetBranchByID(sourceBranchID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get source branch: %w", err)
+	}
+	if pinnedLSN < sourceBranch.BaseLSN {
+		return nil, fmt.Errorf("pinned LSN %d is below the source branch's base %d",
+			pinnedLSN, sourceBranch.BaseLSN)
+	}
+
+	newBranch := &wal.Branch{
+		ID:        primitive.NewObjectID().Hex(),
+		ProjectID: projectID,
+		Name:      newBranchName,
+		ParentID:  sourceBranch.ID,
+		BaseLSN:   pinnedLSN,
+		HeadLSN:   pinnedLSN,
+		CreatedAt: time.Now(),
+	}
+	if err := s.branches.CreateBranchWithData(newBranch); err != nil {
+		return nil, fmt.Errorf("failed to create branch: %w", err)
+	}
+	return newBranch, nil
+}
+
 // CreateBranchAtTime creates a new branch from a specific timestamp
 func (s *Service) CreateBranchAtTime(projectID, sourceBranchID, newBranchName string, timestamp time.Time) (*wal.Branch, error) {
 	// Get the source branch

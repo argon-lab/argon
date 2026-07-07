@@ -8,6 +8,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -59,6 +61,12 @@ func NewRouter(services *walcli.Services) *Router {
 		v1.GET("/projects/:project/branches/:branch/diff", r.diffBranch)
 		v1.POST("/projects/:project/branches/:branch/merge-preview", r.mergePreview)
 		v1.POST("/merge-plans/:id/apply", r.mergeApply)
+
+		v1.GET("/projects/:project/pins", r.listPins)
+		v1.POST("/projects/:project/pins", r.createPin)
+		v1.DELETE("/projects/:project/pins/:name", r.deletePin)
+		v1.POST("/projects/:project/pins/:name/branches", r.branchFromPin)
+		v1.POST("/projects/:project/pins/:name/sandboxes", r.sandboxFromPin)
 
 		v1.POST("/projects/:project/branches/:branch/undo", r.undoRange)
 		v1.GET("/projects/:project/branches/:branch/time-travel", r.timeTravelInfo)
@@ -303,6 +311,139 @@ func (r *Router) createSandbox(c *gin.Context) {
 		"expires_at":        info.ExpiresAt,
 		"forked_from":       info.ForkedFrom,
 		"fork_lsn":          info.ForkLSN,
+	})
+}
+
+// --- pins ---
+
+func (r *Router) listPins(c *gin.Context) {
+	projectID, _, ok := r.resolve(c)
+	if !ok {
+		return
+	}
+	pins, err := r.services.Pins.List(projectID)
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"pins": pins})
+}
+
+func (r *Router) createPin(c *gin.Context) {
+	projectID, _, ok := r.resolve(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Branch string `json:"branch"`
+		Name   string `json:"name" binding:"required"`
+		LSN    int64  `json:"lsn"`
+		Note   string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		abortErr(c, http.StatusBadRequest, err)
+		return
+	}
+	branchName := body.Branch
+	if branchName == "" {
+		branchName = "main"
+	}
+	branch, err := r.services.Branches.GetBranch(projectID, branchName)
+	if err != nil {
+		abortErr(c, http.StatusNotFound, fmt.Errorf("branch %q not found", branchName))
+		return
+	}
+	pin, err := r.services.Pins.Create(projectID, branch.ID, body.Name, body.LSN, body.Note)
+	if err != nil {
+		abortErr(c, http.StatusConflict, err)
+		return
+	}
+	c.JSON(http.StatusCreated, pin)
+}
+
+func (r *Router) deletePin(c *gin.Context) {
+	projectID, _, ok := r.resolve(c)
+	if !ok {
+		return
+	}
+	if err := r.services.Pins.Delete(projectID, c.Param("name")); err != nil {
+		abortErr(c, http.StatusNotFound, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+func (r *Router) branchFromPin(c *gin.Context) {
+	projectID, _, ok := r.resolve(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		abortErr(c, http.StatusBadRequest, err)
+		return
+	}
+	pin, err := r.services.Pins.Get(projectID, c.Param("name"))
+	if err != nil {
+		abortErr(c, http.StatusNotFound, err)
+		return
+	}
+	branch, err := r.services.Restore.CreateBranchFromPin(projectID, pin.BranchID, body.Name, pin.LSN)
+	if err != nil {
+		abortErr(c, http.StatusConflict, err)
+		return
+	}
+	c.JSON(http.StatusCreated, branch)
+}
+
+func (r *Router) sandboxFromPin(c *gin.Context) {
+	projectID, _, ok := r.resolve(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Name       string  `json:"name"`
+		TTLMinutes float64 `json:"ttl_minutes"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil && err.Error() != "EOF" {
+		abortErr(c, http.StatusBadRequest, err)
+		return
+	}
+	pin, err := r.services.Pins.Get(projectID, c.Param("name"))
+	if err != nil {
+		abortErr(c, http.StatusNotFound, err)
+		return
+	}
+	name := body.Name
+	if name == "" {
+		suffix := make([]byte, 4)
+		if _, err := rand.Read(suffix); err != nil {
+			abortErr(c, http.StatusInternalServerError, err)
+			return
+		}
+		name = pin.Name + "-run-" + hex.EncodeToString(suffix)
+	}
+	branch, err := r.services.Restore.CreateBranchFromPin(projectID, pin.BranchID, name, pin.LSN)
+	if err != nil {
+		abortErr(c, http.StatusConflict, err)
+		return
+	}
+	ttl := time.Duration(body.TTLMinutes) * time.Minute
+	info, err := r.services.Sandbox.Adopt(c.Request.Context(), branch.ID, ttl)
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, err)
+		return
+	}
+	r.startIngester(info.BranchID)
+	c.JSON(http.StatusCreated, gin.H{
+		"branch":            info.BranchName,
+		"connection_string": r.services.BranchConnectionString(info.PhysicalDB),
+		"expires_at":        info.ExpiresAt,
+		"forked_from":       info.ForkedFrom,
+		"fork_lsn":          info.ForkLSN,
+		"pin":               pin.Name,
 	})
 }
 
