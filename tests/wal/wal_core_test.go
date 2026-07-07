@@ -2,6 +2,7 @@ package wal_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -30,8 +31,11 @@ func setupTestDB(t *testing.T) *mongo.Database {
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 	require.NoError(t, err)
 
-	// Use a unique database name for each test
-	dbName := "argon_wal_test_" + time.Now().Format("20060102150405")
+	// Use a unique database name for each test. Nanosecond resolution
+	// matters: tests that open two databases (e.g. the cross-database
+	// determinism property) collide on a second-granularity name when the
+	// machine is fast enough.
+	dbName := fmt.Sprintf("argon_wal_test_%d", time.Now().UnixNano())
 	db := client.Database(dbName)
 
 	// Clean up after test
