@@ -194,15 +194,59 @@ func (s *Service) usable(snap *Snapshot, branch *wal.Branch, readUpperBound int6
 	return true
 }
 
+// load fetches and decodes a snapshot's chunks in parallel. Chunks hold
+// disjoint, contiguous key ranges (the encoder cuts a sorted stream), so
+// each decodes into a private map and the merge is a plain union.
+// Decompression and per-document BSON decoding dominate snapshot reads —
+// benchmark feedback measured them at ~70% of a warm read — and they
+// parallelize embarrassingly.
 func (s *Service) load(ctx context.Context, snap *Snapshot) (map[string]bson.M, error) {
-	state := make(map[string]bson.M, snap.DocCount)
-	for _, chunkID := range snap.ChunkIDs {
-		data, err := s.store.Get(ctx, chunkID)
+	if len(snap.ChunkIDs) == 0 {
+		return make(map[string]bson.M), nil
+	}
+	if len(snap.ChunkIDs) == 1 {
+		state := make(map[string]bson.M, snap.DocCount)
+		data, err := s.store.Get(ctx, snap.ChunkIDs[0])
 		if err != nil {
 			return nil, err
 		}
 		if err := decodeChunk(data, s.compressor, state); err != nil {
-			return nil, fmt.Errorf("chunk %s: %w", chunkID, err)
+			return nil, fmt.Errorf("chunk %s: %w", snap.ChunkIDs[0], err)
+		}
+		return state, nil
+	}
+
+	partials := make([]map[string]bson.M, len(snap.ChunkIDs))
+	errs := make([]error, len(snap.ChunkIDs))
+	var wg sync.WaitGroup
+	for i, chunkID := range snap.ChunkIDs {
+		wg.Add(1)
+		go func(i int, chunkID string) {
+			defer wg.Done()
+			data, err := s.store.Get(ctx, chunkID)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			partial := make(map[string]bson.M)
+			if err := decodeChunk(data, s.compressor, partial); err != nil {
+				errs[i] = fmt.Errorf("chunk %s: %w", chunkID, err)
+				return
+			}
+			partials[i] = partial
+		}(i, chunkID)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	state := make(map[string]bson.M, snap.DocCount)
+	for _, partial := range partials {
+		for k, v := range partial {
+			state[k] = v
 		}
 	}
 	return state, nil

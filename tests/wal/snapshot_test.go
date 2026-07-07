@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,4 +289,50 @@ func TestSnapshot_BoundsReplayDepth(t *testing.T) {
 	// replay on a 20k-entry history.
 	assert.Less(t, snapElapsed, fullElapsed,
 		"snapshot-backed materialization should be faster than full replay")
+}
+
+// TestSnapshot_MultiChunkParallelLoad forces a snapshot to span multiple
+// chunks and requires the (parallel) load to reproduce full replay exactly.
+func TestSnapshot_MultiChunkParallelLoad(t *testing.T) {
+	db := setupTestDB(t)
+	f := newSnapshotFixture(t, db)
+	ctx := context.Background()
+
+	main, err := f.branches.CreateBranch("snap-chunks", "main", "")
+	require.NoError(t, err)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
+
+	// ~6MB of documents (300 × 20KB) exceeds the 4MB chunk cut-off.
+	payload := strings.Repeat("x", 20*1024)
+	batch := make([]bson.M, 0, 50)
+	for i := 0; i < 300; i++ {
+		batch = append(batch, bson.M{"_id": fmt.Sprintf("doc-%03d", i), "n": int32(i), "payload": payload})
+		if len(batch) == 50 {
+			_, err := writer.PutMany(ctx, "bulk", batch)
+			require.NoError(t, err)
+			batch = batch[:0]
+		}
+	}
+	main, _ = f.branches.GetBranchByID(main.ID)
+
+	snaps, err := f.snapshots.CreateSnapshot(ctx, main.ID, main.HeadLSN)
+	require.NoError(t, err)
+	var bulk *snapshot.Snapshot
+	for _, s := range snaps {
+		if s.Collection == "bulk" {
+			bulk = s
+		}
+	}
+	require.NotNil(t, bulk)
+	require.Greater(t, len(bulk.ChunkIDs), 1, "the snapshot must span multiple chunks for this test to mean anything")
+
+	start := time.Now()
+	accelerated, err := f.mat.MaterializeCollection(main, "bulk")
+	require.NoError(t, err)
+	t.Logf("parallel load of %d chunks (%d docs): %v", len(bulk.ChunkIDs), bulk.DocCount, time.Since(start))
+
+	full, err := f.matFull.MaterializeCollection(main, "bulk")
+	require.NoError(t, err)
+	assert.Equal(t, full, accelerated, "parallel chunk load must equal full replay")
+	assert.Len(t, accelerated, 300)
 }
