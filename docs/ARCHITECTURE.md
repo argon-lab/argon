@@ -257,10 +257,12 @@ https://github.com/argon-lab/benchmarks — reproducible with
 
 Planned next (in order):
 
-1. **M3 (remaining) — true drop-in**: physical per-branch MongoDB databases
-   and change-stream capture are merged; per-branch connection strings and
-   `argon undo --session` are in progress. Drop-in compatibility is claimed
-   only once official driver test suites pass against branch databases.
+1. **M3 (last box) — driver-suite validation**: physical per-branch
+   databases (`argon checkout`), change-stream ingestion, and per-actor
+   `argon undo` are all merged. What remains is running the official
+   pymongo/mongoose test suites against branch databases in CI — until
+   then, "any driver connects" is stated as an architectural fact, not an
+   unqualified drop-in claim.
 2. **M4 — merge and diff**: three-way document-level merge with reviewable
    merge plans.
 
