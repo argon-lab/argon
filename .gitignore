@@ -178,3 +178,8 @@ vendor/
 compat/mongoose/node_modules/
 api/api
 compat-verify
+
+# The vendored console UI is embedded into the api binary (go:embed) —
+# it must be committed even though dist/ is ignored everywhere else.
+!api/server/ui/dist/
+!api/server/ui/dist/**
