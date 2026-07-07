@@ -12,6 +12,7 @@ import (
 	"github.com/argon-lab/argon/internal/importer"
 	"github.com/argon-lab/argon/internal/ingest"
 	"github.com/argon-lab/argon/internal/materializer"
+	"github.com/argon-lab/argon/internal/merge"
 	"github.com/argon-lab/argon/internal/migrate"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/restore"
@@ -39,6 +40,7 @@ type Services struct {
 	Checkout     *checkout.Service
 	Ingest       *ingest.Service
 	Undo         *undo.Service
+	Merge        *merge.Service
 	Monitor      *wal.Monitor
 	MongoURI     string
 }
@@ -102,6 +104,7 @@ func NewServices() (*Services, error) {
 	checkoutService := checkout.NewService(client, db, branchService, materializerService)
 	ingestService := ingest.NewService(client, db, walService, branchService)
 	undoService := undo.NewService(walService, branchService, client)
+	mergeService := merge.NewService(db, walService, branchService, materializerService, client)
 	// Snapshot immediately after imports: an imported history is otherwise
 	// pure linear replay until something trips the auto-snapshot threshold.
 	importerService.SetImportedHook(func(branch *wal.Branch) {
@@ -147,6 +150,7 @@ func NewServices() (*Services, error) {
 		Checkout:     checkoutService,
 		Ingest:       ingestService,
 		Undo:         undoService,
+		Merge:        mergeService,
 		Monitor:      monitor,
 		MongoURI:     mongoURI,
 	}, nil

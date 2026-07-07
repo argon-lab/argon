@@ -22,6 +22,7 @@ type ingestFixture struct {
 	checkout *checkout.Service
 	ingest   *ingest.Service
 	client   *mongo.Client
+	metaDB   *mongo.Database
 	branchID string
 	physical *mongo.Database
 }
@@ -53,6 +54,7 @@ func newIngestFixture(t *testing.T, project string) *ingestFixture {
 		checkout:        co,
 		ingest:          ing,
 		client:          client,
+		metaDB:          db,
 		branchID:        main.ID,
 		physical:        client.Database(info.PhysicalDB),
 	}
