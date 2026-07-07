@@ -1,41 +1,35 @@
 # CLI reference
 
-Every command talks to the MongoDB deployment named by `MONGODB_URI`
-(default `mongodb://localhost:27017`); Argon's metadata lives in the
-`argon_wal` database there. Shared flags: `-p/--project`, `-b/--branch`
-(default `main`), `-o/--output table|json|yaml`.
+Every command talks to `MONGODB_URI` (default `mongodb://localhost:27017`);
+metadata lives in the `argon_wal` database. Shared flags: `-p/--project`,
+`-b/--branch` (default `main`), `-o/--output table|json|yaml`.
 
-## Projects and branches
+## Projects & branches
 
 ```
-argon projects create <name>          Create a project (with a main branch)
+argon projects create <name>                   project + main branch
 argon projects list
-argon branches create <name> -p P [--from B]   A metadata write, no data copy
-argon branches list -p P
-argon branches delete <name> -p P     Refused for main, for branches with
-                                      live children, and for pinned branches
+argon branches create <name> -p P [--from B]   instant — a pointer, no copy
+argon branches list   -p P
+argon branches delete <name> -p P              refused for main, branches with
+                                               live children, pinned branches
 ```
 
-## Working with real MongoDB databases
+## Work with real databases
 
 ```
-argon checkout -p P -b B    Materialize the branch into a physical MongoDB
-                            database and print its connection string.
-                            Re-running refreshes to the branch's WAL state.
-argon connect  -p P -b B    Print the connection string of a checked-out branch
-argon watch    -p P -b B    Capture the branch's direct writes into the WAL
-                            (change stream; keep it running while you write)
-argon release  -p P -b B    Drop the physical database; the WAL keeps history
-argon proxy [--listen :27018]
-                            Wire-protocol proxy: clients connect to
-                            mongodb://host:27018/<project>~<branch>
-                            (directConnection=true) and are routed to the
-                            branch's physical database
+argon checkout -p P -b B      materialize into a physical MongoDB database,
+                              print its URI (re-run to refresh)
+argon connect  -p P -b B      print a checked-out branch's URI
+argon watch    -p P -b B      capture direct writes into history (keep running)
+argon release  -p P -b B      drop the physical db; history stays
+argon proxy [--listen :27018] stable URIs: mongodb://host/<project>~<branch>
+argon console [--port 1818]   local web console (REST API + UI), opens browser
 ```
 
-While a branch is checked out, its WAL is fed by `watch` (or the API/MCP
-server's supervised ingesters); programmatic SDK writes to it are refused
-to keep one source of truth.
+While a branch is checked out, its history is fed by `watch` (or the
+API/MCP servers' ingesters); SDK writes to it are refused — one source of
+truth.
 
 ## Import ("git clone")
 
@@ -45,8 +39,7 @@ argon import database --uri U --database D --project P [--dry-run] [--yes]
 argon import status
 ```
 
-Import writes every document as versioned history and snapshots the result
-automatically, so subsequent reads don't replay the whole import.
+Imports auto-snapshot, so reads never replay the whole import.
 
 ## History: time travel, undo, restore
 
@@ -55,78 +48,63 @@ argon time-travel info  -p P -b B
 argon time-travel query -p P -b B --lsn N [-c collection]
 
 argon undo -p P -b B --from-lsn N [--to-lsn M] [--actor A] [--dry-run]
-        Revert a range by restoring pre-images — append-only compensations,
-        never rewritten history. With --actor, reverts one writer's changes
-        and refuses documents that someone else touched since.
+    Revert a range by restoring pre-images — append-only, never rewrites
+    history. --actor reverts one writer and refuses documents someone
+    else touched since.
 
 argon restore preview -p P -b B (--lsn N | --time RFC3339)
 argon restore reset   -p P -b B (--lsn N | --time RFC3339) [--backup NAME]
-        Rewind the branch head. Recorded, not destructive: discarded
-        entries stay for audit; --backup forks the pre-reset head first.
+    Rewind the head. Recorded, not destructive: discarded entries stay
+    for audit; --backup forks the pre-reset head first.
 argon restore branch  -p P -b B (--lsn N | --time RFC3339) --as NAME
-        Fork the historical state into a new branch instead.
+    Fork the historical state into a new branch instead.
 ```
 
 ## Merge — data pull requests
 
 ```
-argon diff          -p P -b B      What merging B into its parent would change
-argon merge preview -p P -b B      Compute and persist a reviewable plan
+argon diff          -p P -b B                  what merging B would change
+argon merge preview -p P -b B                  persist a reviewable plan
 argon merge apply <plan-id> [--strategy theirs|ours]
 argon merge list    -p P
 ```
 
-Plans apply exactly once and refuse stale parent heads. Conflicts (both
-sides changed the same document since the fork) fail loudly unless a
-strategy resolves them; every merge is one WAL entry range, undoable like
-any other.
+Plans apply exactly once and refuse stale parent heads; conflicts fail
+loudly unless a strategy resolves them. Merges are undoable like any range.
 
 ## Pins — immutable datasets
 
 ```
-argon pin create  -p P [-b B] --name N [--lsn L | --time T] [--note ...]
+argon pin create  -p P [-b B] --name N [--lsn L | --time T] [--note …]
 argon pin list    -p P
 argon pin delete  -p P --name N
-argon pin branch  -p P --name N --as NEW       Durable branch from the pin
+argon pin branch  -p P --name N --as NEW       durable branch from the pin
 argon pin sandbox -p P --name N [--ttl 1h]     TTL sandbox from the pin
 ```
 
-A pin names a branch state and keeps it materializable forever: GC never
-reclaims what a pinned read needs, and resets can't disturb it. Pin an
-eval dataset once; fork a sandbox per run; every run starts identical.
+Pinned states survive GC and resets forever — pin an eval dataset once,
+fork a sandbox per run, get identical input every time.
 
 ## Sandboxes — disposable agent branches
 
 ```
-argon sandbox create -p P [--from B] [--name N] [--ttl 1h]
+argon sandbox create -p P [--from B] [--name N] [--ttl 1h]   fork+checkout+TTL
 argon sandbox list / discard / keep / sweep
 ```
 
-`create` forks, checks out and TTL-stamps in one step and prints the
-connection string. `sweep` reaps expired sandboxes (pinned ones are
-skipped loudly); `keep` removes the TTL.
+`sweep` reaps expired sandboxes (pinned ones skipped loudly); `keep`
+removes the TTL.
 
-## Snapshots and GC
+## Snapshots, GC, agents, migration
 
 ```
-argon snapshot create -p P -b B      Manual snapshot (they're also automatic)
+argon snapshot create -p P -b B     manual (they're also automatic)
 argon snapshot list   -p P -b B
 argon gc -p P [--retention 168h] [--dry-run]
-```
+    Reclaim entries covered by snapshots, outside retention, and needed
+    by no live child or pin. No snapshot → nothing is ever deleted.
 
-Snapshots bound replay depth; GC deletes WAL entries that are covered by
-snapshots, outside the retention window, and needed by no live child or
-pin. No snapshot → nothing is ever deleted.
-
-## Agents and migration
-
-```
-argon mcp                 Serve the sandbox/merge/undo/pin workflow over the
-                          Model Context Protocol (stdio); supervises an
-                          ingester for every sandbox it hands out
-argon console [--port 1818] [--host 127.0.0.1] [--no-browser]
-                          Serve the web console (REST API + UI) against your
-                          local engine and open it in a browser
-argon migrate-wal --project P [--dry-run]    v1 → v2 WAL schema migration
-argon status / metrics    Health and performance counters
+argon mcp                           MCP server over stdio (13 tools)
+argon migrate-wal --project P [--dry-run]      v1 → v2 schema migration
+argon status / metrics              health and performance counters
 ```
