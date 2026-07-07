@@ -8,16 +8,20 @@ This directory contains guides for publishing Argon to various package managers.
 |---------|----------|---------|----------------|
 | CLI | Homebrew | ✅ Ready | `brew install argon-lab/tap/argonctl` |
 | CLI | NPM | ✅ Ready | `npm install -g argonctl` |
-| Python SDK | PyPI | ✅ Ready | `pip install argon-mongodb` |
-| Go SDK | Go Modules | ✅ Ready | `go get github.com/argon-lab/argon` |
+| Python (agents) | PyPI | Pending first release from [argon-agents](https://github.com/argon-lab/argon-agents) | — |
+| Go engine | Go Modules | ✅ Ready | `go get github.com/argon-lab/argon` |
+
+The legacy `argon-mongodb` PyPI package targeted the v1 engine and is
+frozen; its in-repo source was removed with v2. The v2 Python surface is
+the REST-based `argon-agents` package.
 
 ## 🚀 Quick Publishing Checklist
 
 ### 1. Create GitHub Release
 ```bash
 # Tag the version
-git tag v1.0.0
-git push origin v1.0.0
+git tag v2.0.0
+git push origin v2.0.0
 
 # Build binaries for all platforms
 make build-all-platforms

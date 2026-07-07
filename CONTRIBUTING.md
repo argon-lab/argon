@@ -28,7 +28,7 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to ensure a wel
    ```
 3. **Add the upstream repository**:
    ```bash
-   git remote add upstream https://github.com/argonlabs/argon.git
+   git remote add upstream https://github.com/argon-lab/argon.git
    ```
 4. **Create a new branch** for your feature or fix:
    ```bash
@@ -40,44 +40,64 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to ensure a wel
 ### Prerequisites
 
 - Go 1.21+
-- Python 3.8+ (for Python SDK)
-- MongoDB 5.0+ (for testing)
-- Docker (optional, for containerized development)
+- Docker (for MongoDB and MinIO)
+- Node 20+ and Python 3.10+ only if you touch the driver-compatibility
+  harness (`compat/`)
 
-### Building from Source
+### MongoDB (replica set required)
 
-```bash
-# Install Go dependencies
-go mod download
-
-# Build the project
-make build
-
-# Run tests
-make test
-
-# Run benchmarks
-make bench
-```
-
-### Running Locally
+Change streams — and therefore most integration tests — need a replica
+set. One-node is fine:
 
 ```bash
-# Start MongoDB (if not already running)
-docker run -d -p 27017:27017 --name argon-mongo mongo:6.0
-
-# Run Argon server
-./argon server --config config.yaml
-
-# In another terminal, test with CLI
-./argon branch list
+docker run -d --name argon-mongo -p 27017:27017 mongo:7 --replSet rs0
+docker exec argon-mongo mongosh --quiet --eval \
+  'rs.initiate({_id:"rs0", members:[{_id:0, host:"localhost:27017"}]})'
 ```
+
+### Building and testing
+
+The repo holds three Go modules: the engine (root), `cli/`, and `api/`.
+
+```bash
+go build ./... && (cd cli && go build ./...) && (cd api && go build ./...)
+
+go test ./... -count=1            # engine + integration tests (needs the replica set)
+(cd api && go test ./...)         # REST control plane
+
+golangci-lint run ./...           # run in each module you touched
+```
+
+The S3 chunk-store tests are gated: they skip unless
+`ARGON_TEST_S3_ENDPOINT` / `ARGON_TEST_S3_BUCKET` (plus `AWS_*`
+credentials) point at an S3-compatible store. Locally, MinIO works:
+
+```bash
+docker run -d --name argon-minio -p 9010:9000 \
+  -e MINIO_ROOT_USER=argon -e MINIO_ROOT_PASSWORD=argon12345 minio/minio server /data
+ARGON_TEST_S3_ENDPOINT=http://localhost:9010 ARGON_TEST_S3_BUCKET=argon-test \
+  AWS_ACCESS_KEY_ID=argon AWS_SECRET_ACCESS_KEY=argon12345 AWS_REGION=us-east-1 \
+  go test ./tests/wal/ -run TestChunkStore -count=1
+```
+
+The driver-compatibility harness (`bash compat/run.sh`) runs real pymongo
+and mongoose workloads against a checked-out branch and verifies WAL
+convergence; CI runs it on every push.
+
+### Two rules the tests enforce
+
+- **Determinism**: replaying the same WAL prefix must always produce the
+  same state. If your change makes replay depend on map order, wall
+  clocks, or anything else nondeterministic, the property tests will fail.
+- **Honest performance**: in-repo performance tests are regression
+  canaries with loose thresholds, not benchmarks. Performance claims come
+  only from [argon-lab/benchmarks](https://github.com/argon-lab/benchmarks).
 
 ## How to Contribute
 
 ### Reporting Bugs
 
-1. Check if the bug has already been reported in [Issues](https://github.com/argonlabs/argon/issues)
+1. Check if the bug has already been reported in [Issues](https://github.com/argon-lab/argon/issues)
 2. If not, create a new issue using the bug report template
 3. Include:
    - Clear description of the bug
@@ -88,7 +108,7 @@ docker run -d -p 27017:27017 --name argon-mongo mongo:6.0
 
 ### Suggesting Features
 
-1. Check existing [feature requests](https://github.com/argonlabs/argon/issues?q=is%3Aissue+label%3Aenhancement)
+1. Check existing [feature requests](https://github.com/argon-lab/argon/issues?q=is%3Aissue+label%3Aenhancement)
 2. Create a new issue using the feature request template
 3. Describe:
    - The problem you're trying to solve
@@ -251,9 +271,10 @@ docker run -d -p 27017:27017 --name argon-mongo mongo:6.0
 
 ### API Documentation
 
-- Update `docs/API_REFERENCE.md` for API changes
-- Include request/response examples
-- Document error codes and meanings
+- CLI changes: update `docs/CLI.md`
+- REST/MCP changes: update `docs/AGENTS.md`
+- Engine behavior changes: update `docs/ARCHITECTURE.md` — it is the
+  authoritative description and must stay truthful
 
 ## Community
 
