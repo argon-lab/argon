@@ -46,14 +46,14 @@ Argon gives MongoDB superpowers with **Git-like branching** and **time travel**.
 
 ### 🎯 Key Benefits
 
-- **⚡ Millisecond Branches** - Creating a branch writes metadata, not data copies
+- **⚡ Millisecond Branches** - Creating a branch writes metadata, not data copies: [0.86 ms p50 / 1.93 ms p99 on a 50k-entry project, 479 bytes of storage per branch — measured](https://github.com/argon-lab/benchmarks/blob/main/RESULTS.md)
 - **⏰ Time Travel** - Inspect and restore your data from any point in history, addressed by LSN or timestamp
 - **🔬 Deterministic Replay** - The same history always reconstructs the same state, byte for byte — verified by property tests in CI
 - **🔄 Safe Restore** - Preview changes before restoring; restores are themselves logged, so you can undo the undo
 - **🗜️ Smart Compression** - WAL entries are automatically compressed with zstd
-- **🧭 Honest Engineering** - Performance numbers will return to this README when our public, reproducible benchmark suite ships (see roadmap below)
+- **🧭 Honest Engineering** - Every performance number links to a run of the [public benchmark suite](https://github.com/argon-lab/benchmarks) that you can reproduce with `docker compose up`
 
-> **A note on claims:** earlier versions of this README quoted numbers like "1ms branching" and "220,000+ queries/sec" that we could not back with reproducible benchmarks. We removed them. From now on, every number we publish links to a benchmark you can run yourself.
+> **A note on claims:** earlier versions of this README quoted numbers like "1ms branching" and "220,000+ queries/sec" that we could not back with reproducible benchmarks. We removed them. Numbers now come exclusively from [argon-lab/benchmarks](https://github.com/argon-lab/benchmarks) — pinned engine ref, recorded environment, reproducible by anyone.
 
 ## Quick Demo
 
@@ -124,8 +124,8 @@ Argon's engine is being rebuilt milestone by milestone, correctness first ([full
 | Milestone | Scope | Status |
 |---|---|---|
 | **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
-| **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · **public reproducible benchmarks** 🚧 | Engine shipped · benchmarks in progress |
-| **M3 · True drop-in** | One physical MongoDB database per branch, change-stream capture, per-branch connection strings, `argon undo --session` | Planned |
+| **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · [public reproducible benchmarks](https://github.com/argon-lab/benchmarks) ✅ | ✅ Shipped |
+| **M3 · True drop-in** | Physical MongoDB database per branch ✅ · change-stream write capture ✅ · per-branch connection strings 🚧 · `argon undo --session` 🚧 | 🚧 In progress |
 | **M4 · Merge & diff** | Document-level diff, three-way merge, reviewable data PRs | Planned |
 | **M5 · Agent ecosystem** | MCP server, LangGraph checkpointer, TTL sandboxes, eval pinning | Planned |
 

@@ -248,19 +248,20 @@ Current limitations (deliberate scope):
   snapshots cover them; snapshot chunks can additionally live in an
   S3-compatible or filesystem chunk store (see "Chunk store backends"
   above). GCS is not yet a backend.
-- No published performance numbers yet: the public, reproducible benchmark
-  suite is the remaining M2 deliverable, and numbers return only with it.
+- Per-operation write throughput and divergence storage amplification are
+  not yet benchmarked — blocked on a public write surface (#16).
+
+Performance characteristics are measured by the public benchmark suite at
+https://github.com/argon-lab/benchmarks — reproducible with
+`docker compose up`, results recorded with pinned engine refs.
 
 Planned next (in order):
 
-1. **M2 (remaining) — public benchmarks**: a reproducible benchmark repo
-   (`docker compose up`); every published performance number links to a
-   run you can reproduce.
-2. **M3 — mongod as compute**: branches materialize into real MongoDB
-   databases (lazily), reads/writes run on mongod with change-stream
-   capture into the WAL, per-branch connection strings — full query
-   compatibility without reimplementing MongoDB.
-3. **M4 — merge and diff**: three-way document-level merge with reviewable
+1. **M3 (remaining) — true drop-in**: physical per-branch MongoDB databases
+   and change-stream capture are merged; per-branch connection strings and
+   `argon undo --session` are in progress. Drop-in compatibility is claimed
+   only once official driver test suites pass against branch databases.
+2. **M4 — merge and diff**: three-way document-level merge with reviewable
    merge plans.
 
 ## Storage collections

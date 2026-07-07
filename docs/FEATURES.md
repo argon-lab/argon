@@ -1,9 +1,10 @@
 # Argon Features Overview
 
 > This document describes what is implemented **today**. Where a capability is
-> planned but not built, it says so and names the milestone. Performance
-> numbers will be published together with the reproducible benchmark suite in
-> M2 — until then we deliberately don't quote any. See
+> planned but not built, it says so and names the milestone. Every performance
+> number quoted here links to a run of the
+> [public benchmark suite](https://github.com/argon-lab/benchmarks) you can
+> reproduce with `docker compose up`. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for how each feature works.
 
 ## 🚀 Core Features
@@ -85,14 +86,19 @@ with full document images:
 
 ## 📈 Performance
 
-We removed the performance table that used to live here: its numbers had no
-reproducible benchmark behind them. M2 ships a public benchmark repo
-(`docker compose up`), and every number we publish will link to a run you can
-reproduce. What we can say structurally today:
+All numbers below come from the
+[first official run](https://github.com/argon-lab/benchmarks/blob/main/RESULTS.md)
+of the public benchmark suite (engine `8bf0f1e`, MongoDB 7.0.25 in Docker on
+Apple Silicon, 50k-document history). Absolute values vary with hardware —
+reproduce on yours with `docker compose up`:
 
-- Branch creation cost is **one metadata write**, independent of data size
-- Snapshots keep time-travel replay **bounded** regardless of history length
-- WAL entries are compressed per entry (zstd)
+- **Branch creation: 0.86 ms p50 / 1.93 ms p99** on a project with a
+  50k-entry history — one metadata write, independent of data size
+- **Storage per branch: 479 bytes** (data+index delta, n=200)
+- **Bulk import: ~48k documents/second** through `walcli.ImportDatabase`
+- **Time-travel materialization: 9.5 ms at LSN 1k → 296.8 ms at 50k**
+  (full replay in that run; see RESULTS.md for the honest notes on
+  snapshot behavior)
 
 ## ⚠️ Current Limitations (deliberate scope)
 
@@ -104,16 +110,17 @@ reproduce. What we can say structurally today:
 - WAL entries live in MongoDB and are reclaimed by retention-window GC once
   snapshots cover them; snapshot chunks can additionally live in an
   S3-compatible or filesystem chunk store.
-- No published performance numbers yet: the public benchmark suite is the
-  remaining M2 deliverable, and numbers return only with it.
+- Per-operation write throughput and divergence storage amplification are
+  not yet benchmarked — blocked on a public write surface
+  ([#16](https://github.com/argon-lab/argon/issues/16)).
 
 ## 🔮 Roadmap
 
 | Milestone | Scope | Status |
 |---|---|---|
 | **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
-| **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · **public reproducible benchmarks** 🚧 | Engine shipped · benchmarks in progress |
-| **M3 · True drop-in** | One physical MongoDB database per branch, change-stream capture, per-branch connection strings, `argon undo --session` | Planned |
+| **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · [public reproducible benchmarks](https://github.com/argon-lab/benchmarks) ✅ | ✅ Shipped |
+| **M3 · True drop-in** | Physical MongoDB database per branch ✅ · change-stream write capture ✅ · per-branch connection strings 🚧 · `argon undo --session` 🚧 | 🚧 In progress |
 | **M4 · Merge & diff** | Document-level diff, three-way merge, reviewable data PRs | Planned |
 | **M5 · Agent ecosystem** | MCP server, LangGraph checkpointer, TTL sandboxes, eval pinning | Planned |
 
