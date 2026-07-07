@@ -1,225 +1,120 @@
 # Argon Features Overview
 
+> This document describes what is implemented **today**. Where a capability is
+> planned but not built, it says so and names the milestone. Performance
+> numbers will be published together with the reproducible benchmark suite in
+> M2 — until then we deliberately don't quote any. See
+> [ARCHITECTURE.md](ARCHITECTURE.md) for how each feature works.
+
 ## 🚀 Core Features
 
-### MongoDB Time Travel & Branching
-- **Instant branch creation** in 1ms (86x faster than alternatives)
-- **Time travel queries** - Access any historical database state
-- **Zero-copy branching** with LSN pointer efficiency
-- **Complete audit trail** via Write-Ahead Log (WAL)
-- **Real-time operation capture** through MongoDB change streams
+### Git-like branching
+- **Millisecond branch creation** — a branch is one metadata document
+  (parent, fork LSN, head LSN); no data is copied, regardless of database size
+- **Branch ancestry with fork-point isolation** — sibling branches can never
+  see each other's writes
+- **Branch deletion reclaims storage** — snapshots and unreferenced chunks
+  are dropped with the branch
 
-### Performance
-- **37,905+ operations/second** WAL write throughput
-- **1ms branch creation** regardless of database size
-- **<50ms time travel queries** for historical state
-- **30-50MB memory usage** for efficient Go engine
-- **119+ test coverage** with comprehensive validation
+### Time travel & restore
+- **Query any historical state**, addressed by LSN or timestamp
+- **Deterministic replay** — the same history always reconstructs the same
+  state, byte for byte; enforced structurally and verified by property tests
+  in CI (repeated replay, cross-instance, historical LSNs)
+- **Restore / reset** rewinds a branch; abandoned history stays in the log
+  for audit (discarded ranges), so you can undo the undo
+- **Snapshots bound replay depth** — materialization starts from the nearest
+  snapshot and replays only the delta above it; snapshots are taken
+  automatically off the write path, content-addressed, and deduplicated
 
-### Architecture & Reliability
-- **Pure WAL system** - Single unified architecture
-- **Production monitoring** with health checks and metrics
-- **MongoDB 4.4+** native integration with change streams
-- **Cross-platform CLI** available via Homebrew, NPM, PyPI
-- **Go and Python SDKs** for programmatic access
+### Audit trail
+- Every write is a WAL entry with **full pre/post document images** and an
+  **actor** field (`user:...`, `agent:...`, `importer`)
+- Immutable, append-only log — the foundation for diff, undo, and compliance
+  (merge/diff commands land in M4)
+- WAL entries are compressed per entry (zstd by default)
 
 ## 📊 Developer Experience
 
-### CLI Interface
+### CLI
 ```bash
-# Install via package managers
+# Install
 brew install argon-lab/tap/argonctl    # macOS
 npm install -g argonctl                 # Cross-platform
 pip install argon-mongodb               # Python SDK
 
-# Simple commands
+# Use
 export ENABLE_WAL=true
 argon projects create my-app
+argon import database --uri "mongodb://localhost:27017" --database myapp --project my-app
 argon branches create feature-x -p my-app
 argon time-travel info -p my-app -b main
+argon restore preview --time "5 minutes ago"
+argon snapshot create -p my-app -b main -c users
 ```
 
-### SDK Integration
-- **Python SDK** - `import argon; client = argon.Client()`
-- **Go SDK** - `go get github.com/argon-lab/argon/pkg/walcli`
-- **Clean CLI commands** - No confusing prefixes or legacy commands
-- **Environment variables** - Simple `ENABLE_WAL=true` configuration
-- **Package distribution** - Available on all major package managers
+### SDKs
+- **Go SDK** — `go get github.com/argon-lab/argon/pkg/walcli`
+- **Python SDK** — `pip install argon-mongodb`, including MLflow, DVC, and
+  Weights & Biases integrations for experiment tracking
 
-## 🧠 ML/AI Ready Features
+### How writes are captured (current, honest)
+Writes go through the Argon driver/SDK, which resolves each operation against
+branch state once, at write time, and logs the outcome as put/delete entries
+with full document images:
 
-### Data Science Workflow
-- **Experiment isolation** - Each experiment gets its own branch
-- **Reproducible results** - Time travel to exact training data state
-- **Safe data exploration** - Branch production data for analysis
-- **Historical comparisons** - Compare model performance across time
-- **Zero-risk experimentation** - Never affect production data
+- **Real result counts** — matched/modified/deleted/upserted, duplicate-key
+  errors on insert
+- **Broad update-operator support** — `$set`, `$unset`, `$inc`, `$mul`,
+  `$min`, `$max`, `$rename`, `$push`, `$addToSet`, `$pull`, `$pop`,
+  `$setOnInsert`, `$currentDate`; integer types are preserved
+- **Loud failures** — unsupported query or update operators return errors
+  instead of being silently ignored
+- ⚠️ **Writes made directly to MongoDB with a native driver bypass the WAL
+  today.** True drop-in capture — change streams, per-branch connection
+  strings, pymongo/mongoose unchanged — is Milestone 3.
 
-### ML Integration Points
-- **Python SDK** designed for Jupyter notebooks and ML workflows
-- **Branch-based experiments** for systematic A/B testing
-- **Data versioning** through time travel capabilities
-- **Audit trails** for compliance and experiment tracking
-- **Fast iteration** with 1ms branch creation for rapid experimentation
+## 🧠 ML/AI Workflows
 
-### Analytics
-- **Usage metrics** and performance monitoring
-- **Cost tracking** and resource optimization
-- **Query performance** analysis and optimization
-- **Storage efficiency** reporting and alerts
-- **Team collaboration** metrics and insights
+- **Experiment isolation** — each experiment gets its own branch
+- **Reproducible training data** — pin the exact LSN a run trained against
+- **Safe exploration** — branch production-shaped data without touching
+  production
+- **Experiment tracking** — MLflow, DVC, and W&B integrations in the Python
+  SDK
 
-## 🔧 Developer Experience
+## 📈 Performance
 
-### CLI Tool
-```bash
-# Install globally
-npm install -g argonctl
-brew install argon-lab/tap/argonctl
+We removed the performance table that used to live here: its numbers had no
+reproducible benchmark behind them. M2 ships a public benchmark repo
+(`docker compose up`), and every number we publish will link to a run you can
+reproduce. What we can say structurally today:
 
-# Basic operations
-argon projects create --name my-project
-argon branches create feature-branch --from main
-argon branches merge feature-branch --into main
-```
+- Branch creation cost is **one metadata write**, independent of data size
+- Snapshots keep time-travel replay **bounded** regardless of history length
+- WAL entries are compressed per entry (zstd)
 
-### Python SDK
-```python
-import argon
+## ⚠️ Current Limitations (deliberate scope)
 
-# Create client
-client = argon.Client(api_key="your-api-key")
-
-# Branch operations
-branch = client.branches.create("experiment-1", from_branch="main")
-data = client.data.get_collection("users", branch="experiment-1")
-client.branches.merge("experiment-1", "main")
-```
-
-### REST API
-```bash
-# Authenticate
-curl -X POST /api/auth/signin
-
-# Create project
-curl -X POST /api/projects \
-  -H "Content-Type: application/json" \
-  -d '{"name": "ML Project", "description": "My ML experiment"}'
-
-# List branches
-curl -X GET /api/projects/{id}/branches
-```
-
-## 📈 Performance Metrics
-
-| Metric | Target | Achieved | Notes |
-|--------|--------|----------|-------|
-| Branch Creation | <500ms | **1ms** | 86x faster than alternatives |
-| WAL Write Throughput | 10k ops/s | **37,905+ ops/s** | Production-grade performance |
-| Time Travel Queries | <100ms | **<50ms** | Instant historical access |
-| Memory Usage | <100MB | **30-50MB** | Efficient Go engine |
-| System Startup | <5s | **<2s** | Fast initialization |
-
-## 🔒 Production Features
-
-### Reliability
-- **Production monitoring** with health checks and system metrics
-- **Comprehensive testing** with 119+ test assertions
-- **GitHub Actions CI/CD** with MongoDB service integration
-- **Cross-platform support** (macOS, Linux, Windows)
-- **Package manager distribution** (Homebrew, NPM, PyPI)
-
-### Data Safety
-- **Complete audit trail** - Every operation logged in WAL
-- **Time travel recovery** - Restore to any point in history
-- **Branch isolation** - Experiments never affect production
-- **Zero data loss** - WAL ensures durability
-- **Instant rollbacks** - Restore problematic changes immediately
-
-## 🌐 Integration Ready
-
-### Current Integrations
-- **MongoDB 4.4+** - Native change streams support
-- **Python ecosystem** - NumPy, Pandas, scikit-learn compatible
-- **Go ecosystem** - Standard library compatible
-- **Package managers** - Homebrew, NPM, PyPI distribution
-- **GitHub** - Open source with active development
-
-### Planned Integrations
-- **MLflow** for experiment tracking (roadmap)
-- **Jupyter notebooks** for data science workflows (roadmap)
-- **Docker containers** for easy deployment (roadmap)
-- **PostgreSQL WAL** support (roadmap)
-- **Web dashboard** for visual management (roadmap)
-
-## 🎯 Use Cases
-
-### Data Science Teams
-- **Experiment isolation** with branch-based data
-- **Model versioning** and rollback capabilities
-- **A/B testing** with real production data
-- **Feature engineering** with safe experimentation
-- **Collaborative development** with merge workflows
-
-### Development Teams
-- **Feature development** with production data copies
-- **Schema migration** testing in isolation
-- **Performance testing** with realistic datasets
-- **Debugging** with exact production state
-- **Staging environments** with current data
-
-### Enterprise Users
-- **Compliance and auditing** with full change history
-- **Disaster recovery** with point-in-time snapshots
-- **Multi-environment** management and promotion
-- **Cost optimization** with efficient storage
-- **Team collaboration** with access controls
-
-## 🛠️ Technical Architecture
-
-### Core Components
-- **Go WAL Engine** - High-performance operation logging and time travel
-- **Python SDK** - Pythonic interface for data science workflows
-- **MongoDB** - Primary storage with change streams integration
-- **LSN Indexing** - Fast time travel via Log Sequence Number pointers
-- **CLI Interface** - Clean commands without legacy prefixes
-
-### Current Capabilities
-- **Single process** architecture for simplicity
-- **Local and cloud** storage options
-- **Change stream** processing for real-time capture
-- **Memory efficient** operation (30-50MB)
-- **Cross-platform** deployment (macOS, Linux, Windows)
-
-### Production Ready
-- **GitHub Actions** CI/CD with comprehensive testing
-- **119+ test assertions** covering all core functionality
-- **Performance monitoring** with built-in metrics
-- **Package distribution** via major package managers
-- **Open source** development with community contributions
+- Reads materialize in memory: no indexes, no aggregation pipeline; Find
+  options (sort/skip/limit/projection) are not applied yet. M3 fixes this
+  structurally by running reads on real mongod.
+- No merge/diff commands yet (M4) — pre-images already record the data they
+  will need.
+- All WAL entries live in MongoDB; cold-history offload to object storage is
+  the remainder of M2.
 
 ## 🔮 Roadmap
 
-### Phase 1: Core Stability (Current)
-- ✅ **Pure WAL Architecture** - Single unified system
-- ✅ **Package Distribution** - Homebrew, NPM, PyPI
-- ✅ **Production Monitoring** - Health checks and metrics
-- ✅ **Cross-platform CLI** - Clean command interface
-- ✅ **Documentation Overhaul** - Updated for WAL architecture
+| Milestone | Scope | Status |
+|---|---|---|
+| **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
+| **M2 · Bounded time travel** | Snapshots that bound replay depth (✅ merged), WAL segmentation + GC, **public reproducible benchmarks** | 🚧 In progress |
+| **M3 · True drop-in** | One physical MongoDB database per branch, change-stream capture, per-branch connection strings, `argon undo --session` | Planned |
+| **M4 · Merge & diff** | Document-level diff, three-way merge, reviewable data PRs | Planned |
+| **M5 · Agent ecosystem** | MCP server, LangGraph checkpointer, TTL sandboxes, eval pinning | Planned |
 
-### Phase 2: User Experience (Next 2 months)
-- **Web dashboard** for visual branch management
-- **Enhanced documentation** with video tutorials
-- **Community building** and user onboarding
-- **Performance optimization** and benchmarking
-- **User feedback integration** and UX improvements
-
-### Phase 3: Advanced Features (Next 6 months)
-- **PostgreSQL WAL support** for broader database coverage
-- **ML framework integrations** (MLflow, Jupyter)
-- **Enterprise authentication** and access control
-- **Garbage collection** for WAL entry cleanup
-- **Multi-database transactions** and conflict resolution
+Full roadmap: https://www.argonlabs.tech/roadmap
 
 ---
 

@@ -3,7 +3,8 @@
 ## Overview
 
 Argon is a Git-like version control layer for MongoDB: branch, time-travel,
-diff and restore your data the way you manage code. It is built on a
+and restore your data the way you manage code (merge and diff are on the
+roadmap, M4). It is built on a
 write-ahead log (WAL) whose replay is **deterministic by construction**, with
 branches implemented as pointers into that log.
 

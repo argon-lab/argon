@@ -165,6 +165,6 @@ cd argon/cli && go build -o argon
 
 ⭐ **Star us** if Argon saves your day!
 
-[Get Started →](docs/QUICK_START.md) | [Live Demo →](https://console.argonlabs.tech)
+[Get Started →](docs/QUICK_START.md) | [Interactive Demo →](https://www.argonlabs.tech/demo)
 
 </div>
