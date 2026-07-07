@@ -7,6 +7,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
+	"github.com/argon-lab/argon/internal/gc"
 	"github.com/argon-lab/argon/internal/importer"
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/migrate"
@@ -30,6 +31,7 @@ type Services struct {
 	Importer     *importer.ImportService
 	Migrate      *migrate.Service
 	Snapshots    *snapshot.Service
+	GC           *gc.Service
 	Monitor      *wal.Monitor
 }
 
@@ -81,10 +83,12 @@ func NewServices() (*Services, error) {
 		return nil, fmt.Errorf("failed to create snapshot service: %w", err)
 	}
 	snapshotService.EnableAuto(snapshot.DefaultAutoConfig())
-	// Reclaim a branch's snapshots when it is deleted.
+	gcService := gc.NewService(walService, branchService, snapshotService)
+	// Reclaim a deleted branch's WAL entries and snapshots. Safe because
+	// regular deletion refuses branches with children.
 	branchService.SetDeleteHook(func(branchID string) {
-		if _, _, err := snapshotService.CleanupBranch(context.Background(), branchID); err != nil {
-			fmt.Printf("Warning: failed to clean up snapshots for branch %s: %v\n", branchID, err)
+		if _, _, _, err := gcService.ReclaimDeletedBranch(context.Background(), branchID); err != nil {
+			fmt.Printf("Warning: failed to reclaim storage for branch %s: %v\n", branchID, err)
 		}
 	})
 
@@ -114,8 +118,15 @@ func NewServices() (*Services, error) {
 		Importer:     importerService,
 		Migrate:      migrateService,
 		Snapshots:    snapshotService,
+		GC:           gcService,
 		Monitor:      monitor,
 	}, nil
+}
+
+// RunGC wraps garbage collection for CLI use: the cli module cannot import
+// internal packages, so the config type stays behind this boundary.
+func (s *Services) RunGC(ctx context.Context, projectID string, retention time.Duration, dryRun bool) (*gc.Report, error) {
+	return s.GC.RunProject(ctx, projectID, gc.Config{RetentionWindow: retention, DryRun: dryRun})
 }
 
 // ImportPreview wraps the importer preview functionality for CLI use

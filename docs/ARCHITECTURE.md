@@ -149,8 +149,34 @@ without one, fall back to full replay unchanged.
   1000 LSNs, checked at most every 64 writes per branch), a snapshot is
   taken off the write path. `argon snapshot create/list` does it manually.
 - **Reclamation**: deleting a branch (which requires it to have no
-  children) drops its manifests and any chunks no other manifest
-  references.
+  children) drops its WAL entries, its manifests and any chunks no other
+  manifest references.
+
+## Garbage collection (retention window)
+
+`argon gc` (and `Services.RunGC`) deletes WAL entries that no reader can
+ever need again. Per (branch, collection), the reclaim cutoff is
+
+```
+min( S,  R,  min over live children of S_i )
+```
+
+where `S` is the newest snapshot valid for every possible future reader
+(no later discarded range overlaps it), `R` is the newest LSN older than
+the retention window (default 7 days), and `S_i` is the newest snapshot at
+or below each live child's fork point — children and all their descendants
+read the parent's segment with an upper bound pinned to the fork, so they
+can only be served by snapshots at or below it. Entries at or below the
+cutoff are deleted; control entries stay.
+
+Two consequences worth stating plainly: history without snapshot coverage
+is **never** deleted, no matter how old — and reclaiming entries ends
+time-travel, audit and undo below the cutoff, which is exactly what a
+retention window means.
+
+Together with snapshots this gives storage an upper bound: state size plus
+the retention window of history, instead of the full write history
+forever.
 
 ## Write path (SDK / interceptor)
 
@@ -205,18 +231,17 @@ Current limitations (deliberate scope):
   options (sort/skip/limit/projection) not applied; results in canonical
   document-ID order.
 - No merge/diff commands yet (pre-images already carry the data they need).
-- WAL entries all live in MongoDB; cold history is not yet offloaded.
+- WAL entries and snapshot chunks live in MongoDB; offload to object
+  storage (S3/GCS) is an optional cost optimization behind the ChunkStore
+  interface, not yet implemented.
 
 Planned next (in order):
 
-1. **M2 (remaining) — WAL segmentation**: cold segments offloaded to object
-   storage, entry GC under a PITR retention window once snapshots cover
-   them.
-2. **M3 — mongod as compute**: branches materialize into real MongoDB
+1. **M3 — mongod as compute**: branches materialize into real MongoDB
    databases (lazily), reads/writes run on mongod with change-stream
    capture into the WAL, per-branch connection strings — full query
    compatibility without reimplementing MongoDB.
-3. **M4 — merge and diff**: three-way document-level merge with reviewable
+2. **M4 — merge and diff**: three-way document-level merge with reviewable
    merge plans.
 
 ## Storage collections
