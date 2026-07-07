@@ -177,3 +177,4 @@ argon.exe
 vendor/
 compat/mongoose/node_modules/
 api/api
+compat-verify

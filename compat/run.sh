@@ -27,10 +27,22 @@ run_driver() {
   trap "kill $watch_pid 2>/dev/null || true" RETURN
   sleep 2  # let the change stream open
 
+  local head0
+  head0=$(/tmp/compat-verify --project "$project" --branch main --mode head)
+
   ARGON_BRANCH_URI="$uri" "$@"
 
   echo "=== $name: verifying convergence ==="
   /tmp/compat-verify --project "$project" --branch main --timeout 90s
+
+  # The full agent loop on driver-written data: undo the entire session,
+  # let the compensations flow back through the ingester, and require the
+  # database to converge to empty with the WAL still in lockstep.
+  echo "=== $name: undoing the entire driver session (from LSN $((head0 + 1))) ==="
+  /tmp/argonctl undo -p "$project" -b main --from-lsn "$((head0 + 1))" > /dev/null
+  /tmp/compat-verify --project "$project" --branch main --timeout 90s
+  /tmp/compat-verify --project "$project" --branch main --mode empty --timeout 90s
+
   kill "$watch_pid" 2>/dev/null || true
   wait "$watch_pid" 2>/dev/null || true
 }
