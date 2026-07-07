@@ -31,7 +31,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 	projectService, err := projectwal.NewProjectService(db, walService, branchService)
 	require.NoError(t, err)
 
-	materializerService := materializer.NewService(walService)
+	materializerService := materializer.NewService(walService, branchService)
 	timeTravelService := timetravel.NewService(walService, materializerService)
 	restoreService := restore.NewService(walService, branchService, materializerService, timeTravelService)
 	ctx := context.Background()
@@ -40,7 +40,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 		project, _ := projectService.CreateProject("e2e-test")
 		branches, _ := branchService.ListBranches(project.ID)
 		mainBranch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, mainBranch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, mainBranch, branchService, materializerService)
 
 		// Simulate a day of operations
 		checkpoints := make(map[string]int64)
@@ -73,7 +73,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			bson.M{"$set": bson.M{
 				"version":  "1.1.0",
 				"features": []string{"auth", "api", "newfeature"},
-			}})
+			}}, false)
 		assert.NoError(t, err)
 
 		// Add test users
@@ -98,7 +98,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 		// Bad config update
 		_, err = interceptor.UpdateOne(ctx, "config",
 			bson.M{"_id": "app"},
-			bson.M{"$set": bson.M{"version": "2.0.0-broken"}})
+			bson.M{"$set": bson.M{"version": "2.0.0-broken"}}, false)
 		assert.NoError(t, err)
 		checkpoints["evening"] = walService.GetCurrentLSN(project.ID)
 
@@ -159,10 +159,10 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			assert.Equal(t, "1.0.0", featureConfig["app"]["version"])
 
 			// Develop on feature branch
-			featureInterceptor := driverwal.NewInterceptor(walService, featureBranch, branchService)
+			featureInterceptor := driverwal.NewInterceptor(walService, featureBranch, branchService, materializerService)
 			_, err = featureInterceptor.UpdateOne(ctx, "config",
 				bson.M{"_id": "app"},
-				bson.M{"$set": bson.M{"version": "1.0.1-feature-x"}})
+				bson.M{"$set": bson.M{"version": "1.0.1-feature-x"}}, false)
 			assert.NoError(t, err)
 
 			// Branches are isolated
@@ -203,7 +203,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			assert.Error(t, err)
 
 			// Create branch with existing name
-			interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+			interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 			_, _ = interceptor.InsertOne(ctx, "test", bson.M{"_id": "1"})
 			branch, _ = branchService.GetBranchByID(branch.ID)
 
@@ -227,7 +227,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 		project, _ := projectService.CreateProject("concurrent-tt")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		// Create initial data
 		for i := 0; i < 100; i++ {
@@ -316,7 +316,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 		project, _ := projectService.CreateProject("nested-docs")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		// Create complex document
 		doc := bson.M{
@@ -349,7 +349,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 				"$push": bson.M{
 					"metadata.tags": "v2",
 				},
-			})
+			}, false)
 		assert.NoError(t, err)
 
 		branch, _ = branchService.GetBranchByID(branch.ID)
@@ -367,11 +367,11 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 
 		// Create branch and modify
 		featureBranch, _ := restoreService.CreateBranchAtLSN(project.ID, branch.ID, "nested-feature", checkpoint1)
-		featureInt := driverwal.NewInterceptor(walService, featureBranch, branchService)
+		featureInt := driverwal.NewInterceptor(walService, featureBranch, branchService, materializerService)
 
 		_, err = featureInt.UpdateOne(ctx, "complex",
 			bson.M{"_id": "complex1"},
-			bson.M{"$set": bson.M{"metadata.version": 99}})
+			bson.M{"$set": bson.M{"metadata.version": 99}}, false)
 		assert.NoError(t, err)
 
 		// Verify isolation
@@ -390,7 +390,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 		project, _ := projectService.CreateProject("large-scale")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		// Create checkpoints
 		checkpoints := []int64{}
@@ -450,7 +450,7 @@ func TestWeek3_StressTest(t *testing.T) {
 	walService, _ := wal.NewService(db)
 	branchService, _ := branchwal.NewBranchService(db, walService)
 	projectService, _ := projectwal.NewProjectService(db, walService, branchService)
-	materializerService := materializer.NewService(walService)
+	materializerService := materializer.NewService(walService, branchService)
 	timeTravelService := timetravel.NewService(walService, materializerService)
 	restoreService := restore.NewService(walService, branchService, materializerService, timeTravelService)
 	ctx := context.Background()
@@ -469,7 +469,7 @@ func TestWeek3_StressTest(t *testing.T) {
 			wg.Add(1)
 			go func(writerID int) {
 				defer wg.Done()
-				interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+				interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 				for i := 0; i < opsPerWriter; i++ {
 					doc := bson.M{
@@ -484,7 +484,7 @@ func TestWeek3_StressTest(t *testing.T) {
 						// Occasional updates
 						_, _ = interceptor.UpdateOne(ctx, "stress",
 							bson.M{"_id": fmt.Sprintf("w%d-doc%d", writerID, i-10)},
-							bson.M{"$set": bson.M{"updated": true}})
+							bson.M{"$set": bson.M{"updated": true}}, false)
 					}
 				}
 			}(w)

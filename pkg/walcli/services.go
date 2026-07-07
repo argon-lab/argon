@@ -63,7 +63,7 @@ func NewServices() (*Services, error) {
 		return nil, fmt.Errorf("failed to create project service: %w", err)
 	}
 
-	materializerService := materializer.NewService(walService)
+	materializerService := materializer.NewService(walService, branchService)
 	timeTravelService := timetravel.NewService(walService, materializerService)
 	restoreService := restore.NewService(walService, branchService, materializerService, timeTravelService)
 	importerService := importer.NewImportService(walService, projectService, branchService)

@@ -228,56 +228,52 @@ func (c *Compressor) decompressSnappy(data []byte) ([]byte, error) {
 	return snappy.Decode(nil, data)
 }
 
-// CompressEntry compresses the document fields of a WAL entry
+// CompressEntry compresses the image fields of a WAL entry
 func (c *Compressor) CompressEntry(entry *Entry) error {
-	// Compress document if present
-	if len(entry.Document) > 0 {
-		compressed, err := c.Compress(entry.Document)
+	// Compress post-image if present
+	if len(entry.PostImage) > 0 {
+		compressed, err := c.Compress(entry.PostImage)
 		if err != nil {
-			return fmt.Errorf("failed to compress document: %w", err)
+			return fmt.Errorf("failed to compress post-image: %w", err)
 		}
-		entry.CompressedDocument = compressed
-		entry.Document = nil // Clear original to save space
+		entry.CompressedPostImage = compressed
+		entry.PostImage = nil // Clear original to save space
 	}
 
-	// Compress old document if present
-	if len(entry.OldDocument) > 0 {
-		compressed, err := c.Compress(entry.OldDocument)
+	// Compress pre-image if present
+	if len(entry.PreImage) > 0 {
+		compressed, err := c.Compress(entry.PreImage)
 		if err != nil {
-			return fmt.Errorf("failed to compress old document: %w", err)
+			return fmt.Errorf("failed to compress pre-image: %w", err)
 		}
-		entry.CompressedOldDocument = compressed
-		entry.OldDocument = nil // Clear original to save space
+		entry.CompressedPreImage = compressed
+		entry.PreImage = nil // Clear original to save space
 	}
 
 	return nil
 }
 
-// DecompressEntry decompresses the document fields of a WAL entry
+// DecompressEntry decompresses the image fields of a WAL entry
 func (c *Compressor) DecompressEntry(entry *Entry) error {
-	// Decompress document if present
-	if len(entry.CompressedDocument) > 0 {
-		decompressed, err := c.Decompress(entry.CompressedDocument)
+	// Decompress post-image if present
+	if len(entry.CompressedPostImage) > 0 {
+		decompressed, err := c.Decompress(entry.CompressedPostImage)
 		if err != nil {
-			return fmt.Errorf("failed to decompress document: %w", err)
+			return fmt.Errorf("failed to decompress post-image: %w", err)
 		}
-		entry.Document = decompressed
-		entry.CompressedDocument = nil // Clear compressed to save memory
+		entry.PostImage = decompressed
+		entry.CompressedPostImage = nil // Clear compressed to save memory
 	}
 
-	// Decompress old document if present
-	if len(entry.CompressedOldDocument) > 0 {
-		decompressed, err := c.Decompress(entry.CompressedOldDocument)
+	// Decompress pre-image if present
+	if len(entry.CompressedPreImage) > 0 {
+		decompressed, err := c.Decompress(entry.CompressedPreImage)
 		if err != nil {
-			return fmt.Errorf("failed to decompress old document: %w", err)
+			return fmt.Errorf("failed to decompress pre-image: %w", err)
 		}
-		entry.OldDocument = decompressed
-		entry.CompressedOldDocument = nil // Clear compressed to save memory
+		entry.PreImage = decompressed
+		entry.CompressedPreImage = nil // Clear compressed to save memory
 	}
-
-	// For backward compatibility - if no compressed fields but document fields exist,
-	// the entry was stored without compression
-	// Nothing to do in this case - documents are already in the right place
 
 	return nil
 }

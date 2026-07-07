@@ -111,32 +111,32 @@ func TestCompressor_Entry(t *testing.T) {
 	entry := &wal.Entry{
 		ProjectID:  "test-project",
 		BranchID:   "main",
-		Operation:  wal.OpUpdate,
+		Operation:  wal.OpPut,
 		Collection: "test",
 		DocumentID: "doc1",
-		Document:   docBytes,
-		OldDocument: docBytes, // Use same for old document
+		PostImage:  docBytes,
+		PreImage:   docBytes, // Use same for pre-image
 	}
 
 	// Get original sizes
-	origDocSize := len(entry.Document)
-	origOldDocSize := len(entry.OldDocument)
+	origDocSize := len(entry.PostImage)
+	origOldDocSize := len(entry.PreImage)
 
 	// Compress entry
 	err = compressor.CompressEntry(entry)
 	require.NoError(t, err)
 
 	// Verify compression happened
-	assert.Less(t, len(entry.CompressedDocument), origDocSize)
-	assert.Less(t, len(entry.CompressedOldDocument), origOldDocSize)
+	assert.Less(t, len(entry.CompressedPostImage), origDocSize)
+	assert.Less(t, len(entry.CompressedPreImage), origOldDocSize)
 
 	// Verify compression happened
-	assert.NotNil(t, entry.CompressedDocument)
-	assert.Nil(t, entry.Document)
+	assert.NotNil(t, entry.CompressedPostImage)
+	assert.Nil(t, entry.PostImage)
 	
 	// Store compressed for verification
-	compressedDoc := make([]byte, len(entry.CompressedDocument))
-	copy(compressedDoc, entry.CompressedDocument)
+	compressedDoc := make([]byte, len(entry.CompressedPostImage))
+	copy(compressedDoc, entry.CompressedPostImage)
 
 	// Decompress entry
 	err = compressor.DecompressEntry(entry)
@@ -145,22 +145,22 @@ func TestCompressor_Entry(t *testing.T) {
 	// Debug output
 	t.Logf("Original doc size: %d bytes", len(docBytes))
 	t.Logf("Compressed doc size: %d bytes", len(compressedDoc))
-	t.Logf("Decompressed doc size: %d bytes", len(entry.Document))
+	t.Logf("Decompressed doc size: %d bytes", len(entry.PostImage))
 	t.Logf("First few bytes of original: %x", docBytes[:20])
-	if len(entry.Document) >= 20 {
-		t.Logf("First few bytes of decompressed: %x", []byte(entry.Document)[:20])
+	if len(entry.PostImage) >= 20 {
+		t.Logf("First few bytes of decompressed: %x", []byte(entry.PostImage)[:20])
 	} else {
-		t.Logf("Decompressed data too short: %x", []byte(entry.Document))
+		t.Logf("Decompressed data too short: %x", []byte(entry.PostImage))
 	}
 	t.Logf("Compression type in metadata: %d", compressedDoc[0])
 	
 	// Verify decompression restored data
-	assert.NotNil(t, entry.Document)
-	assert.Nil(t, entry.CompressedDocument)
+	assert.NotNil(t, entry.PostImage)
+	assert.Nil(t, entry.CompressedPostImage)
 
 	// Verify decompression
-	assert.Equal(t, docBytes, []byte(entry.Document))
-	assert.Equal(t, docBytes, []byte(entry.OldDocument))
+	assert.Equal(t, docBytes, []byte(entry.PostImage))
+	assert.Equal(t, docBytes, []byte(entry.PreImage))
 	
 	// Verify it was actually compressed (should have metadata prefix)
 	assert.True(t, compressedDoc[0] == byte(wal.CompressionZstd) || 

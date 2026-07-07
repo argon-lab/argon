@@ -32,14 +32,14 @@ func TestTimeTravelPerformance(t *testing.T) {
 	projectService, err := projectwal.NewProjectService(db, walService, branchService)
 	require.NoError(t, err)
 
-	materializerService := materializer.NewService(walService)
+	materializerService := materializer.NewService(walService, branchService)
 	timeTravelService := timetravel.NewService(walService, materializerService)
 	ctx := context.Background()
 
 	project, _ := projectService.CreateProject("perf-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 	t.Run("Time travel query performance", func(t *testing.T) {
 		// Create a significant history
@@ -68,7 +68,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 						"timestamp": time.Now(),
 					},
 				}
-				_, err := interceptor.UpdateOne(ctx, "history", bson.M{"_id": docID}, update)
+				_, err := interceptor.UpdateOne(ctx, "history", bson.M{"_id": docID}, update, false)
 				assert.NoError(t, err)
 			}
 
@@ -231,14 +231,14 @@ func BenchmarkTimeTravel(b *testing.B) {
 	walService, _ := wal.NewService(db)
 	branchService, _ := branchwal.NewBranchService(db, walService)
 	projectService, _ := projectwal.NewProjectService(db, walService, branchService)
-	materializerService := materializer.NewService(walService)
+	materializerService := materializer.NewService(walService, branchService)
 	timeTravelService := timetravel.NewService(walService, materializerService)
 	ctx := context.Background()
 
 	project, _ := projectService.CreateProject("bench")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 	// Create test data
 	for i := 0; i < 1000; i++ {

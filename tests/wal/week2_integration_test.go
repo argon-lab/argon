@@ -29,7 +29,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 	projectService, err := projectwal.NewProjectService(db, walService, branchService)
 	require.NoError(t, err)
 
-	materializerService := materializer.NewService(walService)
+	materializerService := materializer.NewService(walService, branchService)
 	ctx := context.Background()
 
 	t.Run("Complete workflow test", func(t *testing.T) {
@@ -43,7 +43,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		mainBranch := branches[0]
 
 		// 2. Test write operations
-		interceptor := driverwal.NewInterceptor(walService, mainBranch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, mainBranch, branchService, materializerService)
 
 		// Insert users
 		users := []bson.M{
@@ -60,7 +60,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		// Update operations
 		_, err = interceptor.UpdateOne(ctx, "users",
 			bson.M{"_id": "u2"},
-			bson.M{"$set": bson.M{"role": "moderator", "updated_at": time.Now()}})
+			bson.M{"$set": bson.M{"role": "moderator", "updated_at": time.Now()}}, false)
 		assert.NoError(t, err)
 
 		// Delete operation
@@ -78,7 +78,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		assert.Contains(t, state["u2"], "updated_at")
 
 		// 4. Test query operations
-		collection := driverwal.NewCollection("users", mainBranch, walService, branchService, materializerService, nil)
+		collection := driverwal.NewCollection("users", mainBranch, walService, branchService, materializerService)
 
 		// Count all
 		count, err := collection.CountDocuments(ctx, bson.M{})
@@ -101,7 +101,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		featureBranch, err := branchService.CreateBranch(project.ID, "feature", mainBranch.ID)
 		require.NoError(t, err)
 
-		featureInterceptor := driverwal.NewInterceptor(walService, featureBranch, branchService)
+		featureInterceptor := driverwal.NewInterceptor(walService, featureBranch, branchService, materializerService)
 
 		// Insert a new user in feature branch
 		_, err = featureInterceptor.InsertOne(ctx, "users", bson.M{
@@ -111,12 +111,12 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		})
 		assert.NoError(t, err)
 
-		// Update a user in feature branch (note: in MVP, branches are isolated)
-		_, err = featureInterceptor.InsertOne(ctx, "users", bson.M{
-			"_id":  "u1",
-			"name": "Alice",
-			"role": "superadmin",
-		})
+		// Update the inherited user in the feature branch: the branch sees
+		// main's u1 through its ancestry, and modifying it must copy-on-write
+		// into the feature branch only.
+		_, err = featureInterceptor.UpdateOne(ctx, "users",
+			bson.M{"_id": "u1"},
+			bson.M{"$set": bson.M{"role": "superadmin"}}, false)
 		assert.NoError(t, err)
 
 		// Verify isolation
@@ -137,7 +137,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		project, _ := projectService.CreateProject("analytics")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		// Insert document with nested fields
 		doc := bson.M{
@@ -163,19 +163,19 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 			bson.M{"$inc": bson.M{
 				"metrics.views":  100,
 				"metrics.clicks": 10,
-			}})
+			}}, false)
 		assert.NoError(t, err)
 
 		// Test $unset
 		_, err = interceptor.UpdateOne(ctx, "analytics",
 			bson.M{"_id": "stats1"},
-			bson.M{"$unset": bson.M{"tags": ""}})
+			bson.M{"$unset": bson.M{"tags": ""}}, false)
 		assert.NoError(t, err)
 
 		// Test $set with nested
 		_, err = interceptor.UpdateOne(ctx, "analytics",
 			bson.M{"_id": "stats1"},
-			bson.M{"$set": bson.M{"settings.theme": "light"}})
+			bson.M{"$set": bson.M{"settings.theme": "light"}}, false)
 		assert.NoError(t, err)
 
 		// Verify all updates
@@ -184,8 +184,8 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 
 		metrics := state["stats1"]["metrics"].(bson.M)
 		// The materializer's addNumbers returns float64
-		assert.Equal(t, float64(1100), metrics["views"])
-		assert.Equal(t, float64(60), metrics["clicks"])
+		assert.EqualValues(t, 1100, metrics["views"])
+		assert.EqualValues(t, 60, metrics["clicks"])
 
 		assert.NotContains(t, state["stats1"], "tags")
 
@@ -197,7 +197,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		project, _ := projectService.CreateProject("inventory")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		// Insert test data
 		products := []bson.M{
@@ -214,7 +214,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		}
 
 		branch, _ = branchService.GetBranchByID(branch.ID)
-		collection := driverwal.NewCollection("products", branch, walService, branchService, materializerService, nil)
+		collection := driverwal.NewCollection("products", branch, walService, branchService, materializerService)
 
 		// Test various operators
 		testCases := []struct {
@@ -257,7 +257,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 			wg.Add(1)
 			go func(goroutineID int) {
 				defer wg.Done()
-				interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+				interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 				for i := 0; i < opsPerGoroutine; i++ {
 					// Mix of operations
@@ -277,7 +277,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 						if i > 0 {
 							filter := bson.M{"_id": fmt.Sprintf("g%d-i%d", goroutineID, i-1)}
 							update := bson.M{"$set": bson.M{"updated": true, "update_count": i}}
-							_, err := interceptor.UpdateOne(ctx, "stress", filter, update)
+							_, err := interceptor.UpdateOne(ctx, "stress", filter, update, false)
 							if err != nil {
 								errors <- err
 							}
@@ -324,7 +324,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 		project, _ := projectService.CreateProject("history-test")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		docID := primitive.NewObjectID()
 
@@ -346,7 +346,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 					"status":     status,
 					"version":    i + 2,
 					"updated_at": time.Now(),
-				}})
+				}}, false)
 			assert.NoError(t, err)
 		}
 
@@ -369,14 +369,14 @@ func TestWeek2_EdgeCases(t *testing.T) {
 	walService, _ := wal.NewService(db)
 	branchService, _ := branchwal.NewBranchService(db, walService)
 	projectService, _ := projectwal.NewProjectService(db, walService, branchService)
-	materializerService := materializer.NewService(walService)
+	materializerService := materializer.NewService(walService, branchService)
 	ctx := context.Background()
 
 	t.Run("Empty filter matches all", func(t *testing.T) {
 		project, _ := projectService.CreateProject("edge-test")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		// Insert test docs
 		for i := 0; i < 5; i++ {
@@ -385,7 +385,7 @@ func TestWeek2_EdgeCases(t *testing.T) {
 		}
 
 		branch, _ = branchService.GetBranchByID(branch.ID)
-		collection := driverwal.NewCollection("test", branch, walService, branchService, materializerService, nil)
+		collection := driverwal.NewCollection("test", branch, walService, branchService, materializerService)
 
 		count, err := collection.CountDocuments(ctx, bson.M{})
 		assert.NoError(t, err)
@@ -396,14 +396,14 @@ func TestWeek2_EdgeCases(t *testing.T) {
 		project, _ := projectService.CreateProject("edge-test2")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		// Update document that doesn't exist
 		result, err := interceptor.UpdateOne(ctx, "test",
 			bson.M{"_id": "nonexistent"},
-			bson.M{"$set": bson.M{"value": 100}})
+			bson.M{"$set": bson.M{"value": 100}}, false)
 		assert.NoError(t, err)
-		assert.Equal(t, int64(1), result.MatchedCount) // MVP assumes match
+		assert.Equal(t, int64(0), result.MatchedCount, "no match may not be fabricated")
 
 		// Verify no document created
 		branch, _ = branchService.GetBranchByID(branch.ID)
@@ -415,7 +415,7 @@ func TestWeek2_EdgeCases(t *testing.T) {
 		project, _ := projectService.CreateProject("edge-test3")
 		branches, _ := branchService.ListBranches(project.ID)
 		branch := branches[0]
-		interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+		interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 
 		// Insert docs
 		docs := []bson.M{
@@ -434,7 +434,8 @@ func TestWeek2_EdgeCases(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, int64(1), result.DeletedCount)
 
-		// Verify WAL entry created without document ID
+		// The filter is resolved at write time: the delete entry names the
+		// document it removed (first match in sorted-ID order).
 		entries, _ := walService.GetBranchEntries(branch.ID, "test", 0, walService.GetCurrentLSN(branch.ProjectID))
 		var deleteEntry *wal.Entry
 		for _, entry := range entries {
@@ -444,6 +445,12 @@ func TestWeek2_EdgeCases(t *testing.T) {
 			}
 		}
 		assert.NotNil(t, deleteEntry)
-		assert.Empty(t, deleteEntry.DocumentID) // No ID extracted from complex filter
+		assert.Equal(t, "1", deleteEntry.DocumentID, "delete entries carry the resolved document ID")
+
+		// Exactly one type-A document remains.
+		branch, _ = branchService.GetBranchByID(branch.ID)
+		state, _ := materializerService.MaterializeCollection(branch, "test")
+		assert.Len(t, state, 2)
+		assert.Contains(t, state, "3")
 	})
 }

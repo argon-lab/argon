@@ -60,10 +60,10 @@ func TestWALService_Basic(t *testing.T) {
 	entry1 := &wal.Entry{
 		ProjectID:  "test-project",
 		BranchID:   "main",
-		Operation:  wal.OpInsert,
+		Operation:  wal.OpPut,
 		Collection: "users",
 		DocumentID: "user-1",
-		Document:   mustMarshalBSON(bson.M{"name": "Alice"}),
+		PostImage:  mustMarshalBSON(bson.M{"name": "Alice"}),
 	}
 
 	lsn1, err := walService.Append(entry1)
@@ -74,10 +74,10 @@ func TestWALService_Basic(t *testing.T) {
 	entry2 := &wal.Entry{
 		ProjectID:  "test-project",
 		BranchID:   "main",
-		Operation:  wal.OpInsert,
+		Operation:  wal.OpPut,
 		Collection: "users",
 		DocumentID: "user-2",
-		Document:   mustMarshalBSON(bson.M{"name": "Bob"}),
+		PostImage:  mustMarshalBSON(bson.M{"name": "Bob"}),
 	}
 
 	lsn2, err := walService.Append(entry2)

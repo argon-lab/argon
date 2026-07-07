@@ -58,10 +58,15 @@ func (s *Service) ResetBranchToLSN(branchID string, targetLSN int64) (*wal.Branc
 	}
 
 	if len(entriesAfterTarget) > 0 {
-		// In production, you might want to create a backup branch or require confirmation
-		// For now, we'll proceed but log a warning
-		fmt.Printf("WARNING: Resetting branch %s to LSN %d will discard %d operations\n",
-			branch.Name, targetLSN, len(entriesAfterTarget))
+		// Record the abandoned window before lowering the head. The entries
+		// stay in the WAL for audit, but materialization must skip them:
+		// the next write's LSN will be higher than theirs, so without this
+		// record, advancing the head would resurrect the discarded history.
+		if err := s.branches.AddDiscardedRange(branchID, targetLSN+1, branch.HeadLSN); err != nil {
+			return nil, fmt.Errorf("failed to record discarded range: %w", err)
+		}
+		branch.DiscardedRanges = append(branch.DiscardedRanges,
+			wal.LSNRange{From: targetLSN + 1, To: branch.HeadLSN})
 	}
 
 	// Update branch HEAD
@@ -108,11 +113,14 @@ func (s *Service) CreateBranchAtLSN(projectID, sourceBranchID, newBranchName str
 			targetLSN, sourceBranch.BaseLSN, sourceBranch.HeadLSN)
 	}
 
-	// Create the new branch
+	// Create the new branch. ParentID anchors the ancestry chain: without
+	// it the branch would materialize from nothing instead of inheriting
+	// the source branch's history up to the fork point.
 	newBranch := &wal.Branch{
 		ID:        primitive.NewObjectID().Hex(),
 		ProjectID: projectID,
 		Name:      newBranchName,
+		ParentID:  sourceBranch.ID,
 		BaseLSN:   targetLSN,
 		HeadLSN:   targetLSN,
 		CreatedAt: time.Now(),

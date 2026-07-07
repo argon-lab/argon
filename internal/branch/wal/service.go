@@ -74,10 +74,14 @@ func (s *BranchService) CreateBranch(projectID, name, parentID string) (*wal.Bra
 		}
 	}
 
+	// The branch ID is generated up front so the WAL entry can reference
+	// it; data entries key on branch IDs, so control entries must too.
+	branchID := primitive.NewObjectID().Hex()
+
 	// Create WAL entry for branch creation
 	entry := &wal.Entry{
 		ProjectID: projectID,
-		BranchID:  name,
+		BranchID:  branchID,
 		Operation: wal.OpCreateBranch,
 		Metadata: map[string]interface{}{
 			"branch_name": name,
@@ -92,7 +96,7 @@ func (s *BranchService) CreateBranch(projectID, name, parentID string) (*wal.Bra
 
 	// Create branch record
 	branch := &wal.Branch{
-		ID:         primitive.NewObjectID().Hex(),
+		ID:         branchID,
 		ProjectID:  projectID,
 		Name:       name,
 		ParentID:   parentID,
@@ -155,6 +159,36 @@ func (s *BranchService) GetBranchByID(branchID string) (*wal.Branch, error) {
 	}
 
 	return &branch, nil
+}
+
+// GetBranchByIDAny retrieves a branch by its ID regardless of deletion
+// state. Ancestry resolution uses this: a force-deleted parent must still
+// anchor its descendants' history, whose entries remain in the WAL.
+func (s *BranchService) GetBranchByIDAny(branchID string) (*wal.Branch, error) {
+	ctx := context.Background()
+	var branch wal.Branch
+
+	err := s.collection.FindOne(ctx, bson.M{"_id": branchID}).Decode(&branch)
+	if err != nil {
+		return nil, err
+	}
+
+	return &branch, nil
+}
+
+// AddDiscardedRange records an LSN window abandoned by a reset so that
+// materialization skips it. The entries themselves stay in the WAL for
+// audit and for time travel to points before the reset.
+func (s *BranchService) AddDiscardedRange(branchID string, from, to int64) error {
+	if from > to {
+		return fmt.Errorf("invalid discarded range [%d, %d]", from, to)
+	}
+	ctx := context.Background()
+	_, err := s.collection.UpdateOne(ctx,
+		bson.M{"_id": branchID},
+		bson.M{"$push": bson.M{"discarded_ranges": wal.LSNRange{From: from, To: to}}},
+	)
+	return err
 }
 
 // ListBranches lists all branches for a project

@@ -5,7 +5,6 @@ import (
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
 	"github.com/argon-lab/argon/internal/wal"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // Database represents a WAL-enabled database
@@ -15,7 +14,6 @@ type Database struct {
 	wal          *wal.Service
 	branches     *branchwal.BranchService
 	materializer Materializer
-	underlying   *mongo.Database
 }
 
 // NewDatabase creates a new WAL-enabled database
@@ -25,7 +23,6 @@ func NewDatabase(
 	walService *wal.Service,
 	branchService *branchwal.BranchService,
 	materializer Materializer,
-	underlying *mongo.Database,
 ) *Database {
 	return &Database{
 		name:         name,
@@ -33,7 +30,6 @@ func NewDatabase(
 		wal:          walService,
 		branches:     branchService,
 		materializer: materializer,
-		underlying:   underlying,
 	}
 }
 
@@ -45,7 +41,6 @@ func (d *Database) Collection(name string) *Collection {
 		d.wal,
 		d.branches,
 		d.materializer,
-		d.underlying.Collection(name),
 	)
 }
 
