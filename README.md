@@ -1,5 +1,11 @@
 # Argon — Git for MongoDB
 
+<p align="center">
+  <a href="https://www.argonlabs.tech">
+    <img src=".github/assets/hero.png" alt="Argon — Git for MongoDB, built for AI agents: branch off prod, run an agent, undo the session" width="100%">
+  </a>
+</p>
+
 [![Build Status](https://github.com/argon-lab/argon/actions/workflows/ci.yml/badge.svg)](https://github.com/argon-lab/argon/actions/workflows/ci.yml)
 [![Go Report](https://goreportcard.com/badge/github.com/argon-lab/argon)](https://goreportcard.com/report/github.com/argon-lab/argon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
