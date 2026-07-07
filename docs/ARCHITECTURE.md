@@ -231,6 +231,33 @@ is gone. Expression evaluation survives only as a migration artifact
 expression entries one final time, and canonical BSON
 comparison/serialization lives there for snapshots and diffs.
 
+### The wire-protocol proxy (`argon proxy`)
+
+Checked-out branches have machine-generated physical database names
+(`argon_br_<id>`). The proxy (`internal/wireproxy`) gives them stable,
+human-readable connection strings instead:
+
+```
+mongodb://proxy-host:27018/<project>~<branch>?directConnection=true
+```
+
+It is a TCP proxy that parses OP_MSG frames from the client, rewrites the
+`$db` field of commands addressed to a branch alias (`project~branch`) to
+the branch's physical database, and forwards everything else byte-for-byte
+— responses are a raw copy in the other direction. mongod still evaluates
+every query; the proxy only routes.
+
+Honest constraints: compression is negotiated away (the proxy blanks the
+handshake's `compression` field so OP_COMPRESSED never appears);
+`directConnection=true` is required (topology discovery would hand clients
+the upstream's own address); with auth, `authSource=admin` must be
+explicit because the URI database is the alias. Aliases that don't resolve
+(unknown project/branch, or a branch that isn't checked out) get a
+synthesized `{ok: 0}` command error naming the proxy, not a dropped
+connection. Capture stays asynchronous through the change-stream ingester
+— the proxy is deliberately only the routing layer, though it is the
+natural place synchronous capture would live one day.
+
 ## Migration from schema v1
 
 v1 logged updates/deletes as expressions and re-executed them on replay —
@@ -249,8 +276,12 @@ entries removed). Migration is idempotent.
 - **Resolve-then-append is not atomic** — concurrent writers to the same
   branch are last-writer-wins at document level. The WAL itself stays
   consistent because every entry is self-contained.
-- **Capture is driver-level** — only writes through the Argon SDK/driver are
-  logged today. Writes made directly to MongoDB bypass the WAL.
+- **Capture is asynchronous** — for checked-out branches, any driver's
+  writes to the physical database become history via the change-stream
+  ingester (`argon watch`, the API server, or the MCP server must be
+  running); the WAL trails the primary by the ingest lag. Writes made
+  while no ingester runs are recovered on resume (resume tokens), but
+  writes to non-Argon databases are never captured.
 
 ## Known limitations and roadmap
 
@@ -270,15 +301,14 @@ Performance characteristics are measured by the public benchmark suite at
 https://github.com/argon-lab/benchmarks — reproducible with
 `docker compose up`, results recorded with pinned engine refs.
 
-Planned next (in order):
+Recently closed from this list: driver compatibility is now exercised in
+CI on every push (pymongo and mongoose harnesses writing through a live
+ingester, plus WAL-convergence verification), and the LangGraph
+checkpointer / Mem0 factory ship as the `argon-agents` Python package on
+top of the REST API.
 
-1. **M3 (last box) — driver-suite validation**: running the official
-   pymongo/mongoose test suites against branch databases in CI — until
-   then, "any driver connects" is stated as an architectural fact, not an
-   unqualified drop-in claim.
-2. **M5 (remaining) — integrations**: LangGraph checkpointer with fork and
-   rewind; eval dataset pinning. The MCP server and TTL sandboxes shipped
-   in #23.
+Planned next: eval dataset pinning; GCS chunk-store backend; synchronous
+capture in the wire proxy.
 
 ## Storage collections
 
