@@ -67,6 +67,10 @@ jobs:
     - name: Build CLI
       working-directory: ./cli
       run: go build -v .
+
+    - name: Test API
+      working-directory: ./api
+      run: go test -v ./...
     
   driver-compat:
     name: Driver Compatibility
