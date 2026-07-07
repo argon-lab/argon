@@ -21,7 +21,7 @@ func newCheckoutFixture(t *testing.T) (*snapshotFixture, *checkout.Service, *mon
 	db := setupTestDB(t)
 	f := newSnapshotFixture(t, db)
 	client := db.Client()
-	svc := checkout.NewService(client, f.branches, f.mat)
+	svc := checkout.NewService(client, db, f.branches, f.mat)
 	return f, svc, client
 }
 

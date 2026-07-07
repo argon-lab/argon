@@ -10,6 +10,7 @@ import (
 	"github.com/argon-lab/argon/internal/checkout"
 	"github.com/argon-lab/argon/internal/gc"
 	"github.com/argon-lab/argon/internal/importer"
+	"github.com/argon-lab/argon/internal/ingest"
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/migrate"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
@@ -34,6 +35,7 @@ type Services struct {
 	Snapshots    *snapshot.Service
 	GC           *gc.Service
 	Checkout     *checkout.Service
+	Ingest       *ingest.Service
 	Monitor      *wal.Monitor
 	MongoURI     string
 }
@@ -94,7 +96,8 @@ func NewServices() (*Services, error) {
 	}
 	snapshotService.EnableAuto(snapshot.DefaultAutoConfig())
 	gcService := gc.NewService(walService, branchService, snapshotService)
-	checkoutService := checkout.NewService(client, branchService, materializerService)
+	checkoutService := checkout.NewService(client, db, branchService, materializerService)
+	ingestService := ingest.NewService(client, db, walService, branchService)
 	// Reclaim a deleted branch's WAL entries and snapshots. Safe because
 	// regular deletion refuses branches with children.
 	branchService.SetDeleteHook(func(branchID string) {
@@ -131,6 +134,7 @@ func NewServices() (*Services, error) {
 		Snapshots:    snapshotService,
 		GC:           gcService,
 		Checkout:     checkoutService,
+		Ingest:       ingestService,
 		Monitor:      monitor,
 		MongoURI:     mongoURI,
 	}, nil

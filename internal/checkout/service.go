@@ -26,6 +26,7 @@ const insertBatchSize = 1000
 // Service checks branches out into physical databases and back.
 type Service struct {
 	client       *mongo.Client
+	ingestState  *mongo.Collection
 	branches     *branchwal.BranchService
 	materializer *materializer.Service
 }
@@ -33,8 +34,15 @@ type Service struct {
 // NewService creates a checkout service. The client must be the same
 // deployment that holds the Argon metadata: physical branch databases live
 // alongside it.
-func NewService(client *mongo.Client, branches *branchwal.BranchService, mat *materializer.Service) *Service {
-	return &Service{client: client, branches: branches, materializer: mat}
+func NewService(client *mongo.Client, metaDB *mongo.Database, branches *branchwal.BranchService, mat *materializer.Service) *Service {
+	return &Service{
+		client: client,
+		// Same collection the ingest package owns; written here only to
+		// clear stale stream positions (importing ingest would cycle).
+		ingestState:  metaDB.Collection("wal_ingest_state"),
+		branches:     branches,
+		materializer: mat,
+	}
 }
 
 // PhysicalDBName is the database a branch materializes into. Branch IDs
@@ -73,9 +81,13 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	dbName := PhysicalDBName(branch.ID)
 	physical := s.client.Database(dbName)
 
-	// Idempotent refresh: rebuild from the WAL state.
+	// Idempotent refresh: rebuild from the WAL state. The old change-stream
+	// position points into the dropped database and must not be resumed.
 	if err := physical.Drop(ctx); err != nil {
 		return nil, fmt.Errorf("failed to reset physical database: %w", err)
+	}
+	if _, err := s.ingestState.DeleteOne(ctx, bson.M{"_id": branch.ID}); err != nil {
+		return nil, fmt.Errorf("failed to clear ingest state: %w", err)
 	}
 
 	info := &Info{BranchID: branch.ID, PhysicalDB: dbName, LSN: branch.HeadLSN}
