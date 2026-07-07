@@ -1,6 +1,6 @@
 # Argon CLI
 
-The official CLI for Argon - MongoDB branching with time travel.
+The official CLI for Argon — Git for MongoDB: branch, time-travel, merge and undo with real drivers and versioned history underneath.
 
 ## Installation
 

@@ -1,145 +1,36 @@
-# Performance Benchmarks
+# Performance
 
-Argon delivers industry-leading performance for MongoDB branching operations.
+Argon's performance numbers live in exactly one place: the public,
+reproducible benchmark suite.
 
-## 📊 **Verified Performance Results**
+**[github.com/argon-lab/benchmarks](https://github.com/argon-lab/benchmarks)**
+— pinned engine refs, recorded environment, reproducible with
+`docker compose up`; results are committed to
+[RESULTS.md](https://github.com/argon-lab/benchmarks/blob/main/RESULTS.md)
+there.
 
-All benchmarks below are from **real test runs** on production hardware. Results are reproducible via:
-```bash
-go test ./tests/wal/ -run Performance -v
-```
+This is policy, not an accident. Earlier versions of these docs quoted
+numbers ("1ms branching", "86x faster", "37,905+ ops/sec", "220,000+
+queries/sec") that could not be traced to a reproducible run, so we removed
+them all. A performance claim you cannot reproduce is marketing, and it
+does not belong in documentation.
 
-### **WAL Operations**
-| Operation | Performance | Notes |
-|-----------|-------------|-------|
-| **Concurrent WAL Appends** | **37,905 ops/sec** | 10,000 ops across multiple goroutines |
-| **Sequential WAL Appends** | **9,501 ops/sec** | Single-threaded baseline |
-| **WAL Query Retrieval** | **387,596 ops/sec** | 10,000 entries in 25.8ms |
+What the benchmarks measure today:
 
-### **Time Travel Performance**
-| Operation | Performance | Notes |
-|-----------|-------------|-------|
-| **Concurrent Time Travel Queries** | **8,261 queries/sec** | 1,000 queries in 121ms |
-| **Large Collection Materialization** | **237,889 docs/sec** | 5,000 docs in 21ms |
-| **Average Time Travel Latency** | **121.044µs** | Sub-millisecond response |
+- **Branch creation latency** — a branch is a metadata write; the suite
+  measures p50/p99 on projects with substantial history, and the storage
+  cost per branch.
+- **Snapshot effectiveness** — cold-read latency with and without
+  snapshots, i.e. what bounding replay depth actually buys.
+- **Write capture overhead** — ingest lag between a driver write landing
+  in the physical database and its WAL entry existing.
 
-### **Branch Operations**
-| Operation | Performance | Notes |
-|-----------|-------------|-------|
-| **Branch Creation** | **472.989µs avg** | 100 branches in 47.3ms |
-| **Branch Hierarchy Creation** | **456.828µs avg** | 50-level deep hierarchy |
-| **Zero Data Copying** | **Instant** | No storage overhead |
+If you publish an Argon number anywhere — a README, a blog post, a talk —
+it must come from a linked RESULTS.md run. Regressions the local
+regression canaries can't catch show up there; treat the suite as the
+source of truth.
 
-### **Write Operations**
-| Operation | Performance | Notes |
-|-----------|-------------|-------|
-| **Concurrent Document Inserts** | **16,792 ops/sec** | 1,000 docs in 59.5ms |
-| **Sequential Document Inserts** | **4,888 ops/sec** | Baseline performance |
-| **Mixed Operations** | **5,787 ops/sec** | Insert/update/delete mix |
-| **Large Document (1MB) Insert** | **3.465ms** | Single large document |
-
-## 🏆 **Industry Comparison**
-
-### **Branch Creation Speed**
-- **Argon**: 472µs (sub-millisecond)
-- **Traditional DB Cloning**: 100ms - 10+ seconds
-- **Improvement**: **200x - 20,000x faster**
-
-### **Storage Efficiency**
-- **Argon**: Zero data duplication (WAL pointers only)
-- **Traditional Branching**: 100% data duplication per branch
-- **Storage Savings**: **99%+ reduction**
-
-### **Time Travel Capability**
-- **Argon**: Query any historical state in <1ms
-- **Traditional Solutions**: Not available or requires expensive snapshots
-- **Advantage**: **Unique capability**
-
-## 🔬 **Benchmark Methodology**
-
-### **Test Environment**
-- **Hardware**: Production-grade system
-- **Database**: Real MongoDB instance (not mocked)
-- **Concurrency**: Multiple goroutines for concurrent tests
-- **Dataset Size**: 1,000 - 10,000 operations per test
-- **Measurements**: High-precision timing with nanosecond accuracy
-
-### **Test Types**
-1. **Stress Tests**: High-load concurrent operations
-2. **Performance Tests**: Throughput and latency measurements  
-3. **Scale Tests**: Large dataset handling
-4. **Real-world Simulation**: Mixed operation patterns
-
-### **Reproducibility**
-All benchmarks are reproducible:
-```bash
-# Run all performance tests
-go test ./tests/wal/ -run Performance -v
-
-# Run specific benchmark
-go test ./tests/wal/ -run TestWALPerformance -v
-go test ./tests/wal/ -run TestTimeTravelPerformance -v
-go test ./tests/wal/ -run TestBranchPerformance -v
-```
-
-## 📈 **Performance Scaling**
-
-### **Linear Scaling Observed**
-- **10 operations**: 472µs per operation
-- **100 operations**: 472µs per operation  
-- **1,000 operations**: 472µs per operation
-- **10,000 operations**: 472µs per operation
-
-### **Concurrency Benefits**
-- **1 goroutine**: 9,501 ops/sec
-- **Multiple goroutines**: 37,905 ops/sec
-- **Scaling factor**: 4x improvement with concurrency
-
-## 🎯 **Performance Guarantees**
-
-Based on extensive testing, Argon provides:
-
-- ✅ **Sub-millisecond branch creation** (<1ms)
-- ✅ **10,000+ ops/sec** write throughput
-- ✅ **5,000+ queries/sec** time travel performance
-- ✅ **Zero storage overhead** for branches
-- ✅ **Linear scaling** with dataset size
-- ✅ **Concurrent operation support** with 4x speedup
-
-## 🔧 **Performance Tuning**
-
-### **MongoDB Configuration**
-```bash
-# Recommended MongoDB settings for optimal performance
-mongod --wiredTigerCacheSizeGB=4 --wiredTigerCollectionBlockCompressor=snappy
-```
-
-### **Connection Optimization**
-```go
-// Use connection pooling for best performance
-client, err := mongo.Connect(ctx, options.Client().
-    ApplyURI(mongoURI).
-    SetMaxPoolSize(100).
-    SetMinPoolSize(10))
-```
-
-### **WAL Settings**
-```bash
-# Environment variables for tuning
-export MONGODB_URI="mongodb://localhost:27017"
-export ENABLE_WAL=true
-```
-
-## 📊 **Real-world Performance**
-
-### **Production Deployments**
-- **ML Pipeline**: 50,000+ experiment branches, <500ms creation
-- **A/B Testing**: 10,000+ parallel test environments, instant switching  
-- **Development Teams**: 100+ developers, zero conflicts
-- **Data Recovery**: Point-in-time restore in seconds (not hours)
-
-### **Scalability Proven**
-- **Database Size**: Tested with 100GB+ databases
-- **Branch Count**: 10,000+ active branches
-- **Time Travel Range**: 1 million+ LSN entries
-- **Query Performance**: Consistent sub-millisecond response
+In-repo performance tests (`tests/wal/*_performance_test.go`) are
+deliberately *regression canaries* with loose thresholds — they catch
+order-of-magnitude regressions in CI, they are not benchmarks, and their
+numbers must never be quoted.

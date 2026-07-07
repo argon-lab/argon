@@ -1,170 +1,128 @@
-<div align="right">
-  <details>
-    <summary >🌐 Language</summary>
-    <div>
-      <div align="center">
-        <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=en">English</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=zh-CN">简体中文</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=zh-TW">繁體中文</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=ja">日本語</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=ko">한국어</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=hi">हिन्दी</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=th">ไทย</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=fr">Français</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=de">Deutsch</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=es">Español</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=it">Italiano</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=ru">Русский</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=pt">Português</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=nl">Nederlands</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=pl">Polski</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=ar">العربية</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=fa">فارسی</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=tr">Türkçe</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=vi">Tiếng Việt</a>
-        | <a href="https://openaitx.github.io/view.html?user=argon-lab&project=argon&lang=id">Bahasa Indonesia</a>
-      </div>
-    </div>
-  </details>
-</div>
-
-# Argon - MongoDB Time Machine 🚀
+# Argon — Git for MongoDB
 
 [![Build Status](https://github.com/argon-lab/argon/actions/workflows/ci.yml/badge.svg)](https://github.com/argon-lab/argon/actions/workflows/ci.yml)
 [![Go Report](https://goreportcard.com/badge/github.com/argon-lab/argon)](https://goreportcard.com/report/github.com/argon-lab/argon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
 [![Homebrew](https://img.shields.io/badge/Homebrew-argonctl-orange?logo=homebrew)](https://github.com/argon-lab/homebrew-tap)
 [![npm](https://img.shields.io/npm/v/argonctl?logo=npm&label=npm)](https://www.npmjs.com/package/argonctl)
-[![PyPI](https://img.shields.io/pypi/v/argon-mongodb?logo=pypi&label=PyPI)](https://pypi.org/project/argon-mongodb/)
 
-**Travel through time in your MongoDB database. Branch, restore, and experiment without fear.**
+**Branch, time-travel, merge and undo your MongoDB — with real drivers, real
+mongod, and versioned history underneath. Built for the age of AI agents.**
 
 ## What is Argon?
 
-Argon gives MongoDB superpowers with **Git-like branching** and **time travel**. Create database branches in milliseconds, inspect any point in history, and rewind your mistakes.
+Argon is a version-control engine for MongoDB. Every write becomes an entry
+in a deterministic write-ahead log; branches are metadata pointers into that
+log. On top of that one idea:
 
-### 🎯 Key Benefits
+- **Branch in milliseconds** — creating a branch writes a pointer, not a
+  copy, regardless of data size
+- **Work with any MongoDB driver** — `argon checkout` materializes a branch
+  into a real MongoDB database; pymongo, mongoose, the Go driver, indexes,
+  aggregation and transactions all run on mongod itself, and every write is
+  captured back into versioned history
+- **Time-travel and undo** — materialize any historical state by LSN or
+  timestamp; revert ranges of history (even one agent's writes) with
+  append-only compensations
+- **Merge with review** — three-way merges as persisted, reviewable plans:
+  a data pull request; conflicts are never resolved silently
+- **Agent-native** — TTL sandboxes, dataset pins for reproducible evals, an
+  MCP server, a REST control plane, and LangGraph/Mem0 adapters
+  ([argon-agents](https://github.com/argon-lab/argon-agents))
 
-- **⚡ Millisecond Branches** - Creating a branch writes metadata, not data copies: [0.86 ms p50 / 1.93 ms p99 on a 50k-entry project, 479 bytes of storage per branch — measured](https://github.com/argon-lab/benchmarks/blob/main/RESULTS.md)
-- **⏰ Time Travel** - Inspect and restore your data from any point in history, addressed by LSN or timestamp
-- **🔬 Deterministic Replay** - The same history always reconstructs the same state, byte for byte — verified by property tests in CI
-- **🔄 Safe Restore** - Preview changes before restoring; restores are themselves logged, so you can undo the undo
-- **🗜️ Smart Compression** - WAL entries are automatically compressed with zstd
-- **🧭 Honest Engineering** - Every performance number links to a run of the [public benchmark suite](https://github.com/argon-lab/benchmarks) that you can reproduce with `docker compose up`
+Performance numbers live in one place: the
+[public benchmark suite](https://github.com/argon-lab/benchmarks), pinned
+engine refs, reproducible with `docker compose up`. This README quotes none,
+by policy.
 
-> **A note on claims:** earlier versions of this README quoted numbers like "1ms branching" and "220,000+ queries/sec" that we could not back with reproducible benchmarks. We removed them. Numbers now come exclusively from [argon-lab/benchmarks](https://github.com/argon-lab/benchmarks) — pinned engine ref, recorded environment, reproducible by anyone.
-
-## Quick Demo
+## Sixty seconds
 
 ```bash
-# Install
-brew install argon-lab/tap/argonctl    # macOS
-npm install -g argonctl                 # Cross-platform
+brew install argon-lab/tap/argonctl        # or: npm install -g argonctl
+# MongoDB must run as a replica set (change streams) — see docs/OPERATIONS.md
 
-# Step 1: Import your existing MongoDB (like "git clone")
-argon import database --uri "mongodb://localhost:27017" --database myapp --project myapp
-# ✅ Your data now has time travel capabilities!
+# Bring an existing database in ("git clone")
+argon import database --uri mongodb://localhost:27017 --database myapp --project myapp
 
-# Step 2: Use Argon like Git for your database
-argon branches create test-env           # Branch like "git checkout -b"
-argon time-travel query --project myapp --branch main --lsn 1000
+# Branch ("git checkout -b") — a metadata write, instant at any size
+argon branches create experiment -p myapp
 
-# Step 3: Disaster recovery made simple
-argon restore preview --time "1 hour ago"
-argon restore reset --time "before disaster"
+# Materialize the branch into a real MongoDB database and get a URI
+argon checkout -p myapp -b experiment
+argon watch -p myapp -b experiment        # capture writes as history
+
+# ... point any driver at the URI, write freely ...
+
+# Review and merge the work back — a data pull request
+argon diff -p myapp -b experiment
+argon merge preview -p myapp -b experiment
+argon merge apply <plan-id>
+
+# Disaster recovery: preview, then rewind
+argon restore preview -p myapp -b main --time 2026-07-07T09:00:00Z
+argon restore reset   -p myapp -b main --time 2026-07-07T09:00:00Z --backup pre-incident
 ```
 
-## Git-Like Workflow for MongoDB
+For agents, the same engine over MCP: `claude mcp add argon -- argon mcp`
+hands your agent sandboxes, diffs, merges, undo and pins as tools.
 
-### 🔄 **Step 1: Import ("git clone" for databases)**
-```bash
-# Bring your existing MongoDB into Argon
-argon import preview --uri "mongodb://localhost:27017" --database myapp
-argon import database --uri "mongodb://localhost:27017" --database myapp --project myapp
-# ✅ Your existing data now has time travel capabilities!
-```
+## Status
 
-### 🧪 **Step 2: Branch ("git checkout -b")**
-```bash
-# Create branches for testing, staging, experiments
-argon branches create staging --project myapp
-argon branches create experiment-v2 --project myapp
-# Branches are metadata pointers - created instantly, no data copied 🚀
-```
-
-### 📊 **Step 3: Time Travel ("git log" for data)**
-```bash
-# See your data's history
-argon time-travel info --project myapp --branch main
-argon time-travel query --project myapp --branch main --lsn 1000
-# Compare data across time like Git commits
-```
-
-### 🚨 **Step 4: Restore ("git reset" for disasters)**
-```bash
-# "Someone deleted all users!"
-argon restore reset --time "5 minutes ago"
-# Crisis averted in seconds, not hours
-```
-
-## How It Works
-
-Every write goes through Argon's driver and is recorded in a **Write-Ahead Log (WAL)** as an LSN-addressed entry with full document images. That one idea powers everything else:
-- Branching is a metadata write (parent, fork LSN, head LSN) — milliseconds, regardless of data size
-- Time travel replays the log up to a target LSN; replay is deterministic and property-tested
-- Restore is a deterministic rewind, and is itself logged
-
-**Current integration path:** writes are captured through Argon's Go driver / SDKs and the `argon import` flow. True drop-in support — pymongo and mongoose working unchanged against per-branch connection strings — is Milestone 3 on the roadmap below, and we won't claim it before the official driver test suites pass against Argon branches.
-
-## Status & Roadmap
-
-Argon's engine is being rebuilt milestone by milestone, correctness first ([full roadmap](https://www.argonlabs.tech/roadmap)):
+The v2 engine is complete: every milestone of the
+[rebuild plan](docs/ARCHITECTURE.md) has shipped, each merged only with CI
+green.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
-| **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · [public reproducible benchmarks](https://github.com/argon-lab/benchmarks) ✅ | ✅ Shipped |
-| **M3 · True drop-in** | Physical MongoDB database per branch (`argon checkout` → connection string) ✅ · change-stream write capture ✅ · `argon undo` with per-actor conflict detection ✅ · real-driver validation in CI (pymongo + mongoose workloads, WAL capture verified canonical-byte-exact, full session undo) ✅ | ✅ Shipped |
-| **M4 · Merge & diff** | `argon diff` ✅ · three-way merge with persisted, reviewable plans (`argon merge preview/apply`) ✅ · conflicts never resolved silently ✅ · merges undoable like any range ✅ | ✅ Shipped |
-| **M5 · Agent ecosystem** | MCP server (`argon mcp`, 9 tools, supervised ingesters) ✅ · TTL sandboxes (`argon sandbox`) ✅ · LangGraph checkpointer + Mem0 factory (`argon-agents` on the REST API) ✅ · eval dataset pinning 🚧 | Shipped · eval pinning remaining |
+| **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ |
+| **M2 · Bounded time travel** | Content-addressed snapshots bound replay depth · retention-window GC + full branch reclamation · MongoDB/S3/filesystem chunk stores · [public benchmarks](https://github.com/argon-lab/benchmarks) | ✅ |
+| **M3 · True drop-in** | Physical MongoDB database per branch (`argon checkout` → URI) · change-stream capture with transaction grouping (`argon watch`) · `argon undo` with per-actor conflict detection · real-driver workloads (pymongo, mongoose) verified against WAL convergence in CI on every push | ✅ |
+| **M4 · Merge & diff** | `argon diff` · three-way merges as persisted, reviewable plans (`argon merge preview/apply`) · conflicts never silent · merges undoable like any range | ✅ |
+| **M5 · Agent ecosystem** | MCP server (13 tools, supervised ingesters) · TTL sandboxes · dataset pins for reproducible evals (`argon pin`) · REST control plane · LangGraph checkpointer + Mem0 factory ([argon-agents](https://github.com/argon-lab/argon-agents)) | ✅ |
+| **Beyond** | Wire-protocol proxy: stable `mongodb://proxy/<project>~<branch>` connection strings (`argon proxy`) | ✅ |
 
-## Installation
+Planned next: GCS chunk-store backend; synchronous capture in the wire
+proxy. Honest limitations are listed in
+[ARCHITECTURE.md](docs/ARCHITECTURE.md#known-limitations-and-roadmap).
 
-```bash
-# CLI
-brew install argon-lab/tap/argonctl    # macOS
-npm install -g argonctl                 # Node.js
-pip install argon-mongodb               # Python SDK
+## How it works
 
-# From Source
-git clone https://github.com/argon-lab/argon
-cd argon/cli && go build -o argon
-```
+One deterministic, physical write-ahead log per project. Entries carry full
+document images (zstd-compressed), so replay is a pure fold — the same
+prefix always materializes the same state, byte for byte, property-tested in
+CI. Branches are `(parent, fork LSN, head LSN)` pointers; snapshots are
+content-addressed chunks that bound replay depth (and deduplicate across
+branches); GC reclaims what snapshots cover and retention allows, and never
+touches history that a live branch, a pin, or an uncovered read still
+needs.
+
+The full design — including the consistency model, stated honestly — is in
+[ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Documentation
 
-- 📖 [Quick Start Guide](./docs/QUICK_START.md)
-- 🛠️ [API Reference](./docs/API_REFERENCE.md)
-- 💡 [Use Cases](./docs/USE_CASES.md)
-- 🏗️ [Architecture](./docs/ARCHITECTURE.md)
+| | |
+|---|---|
+| [Quick start](docs/QUICK_START.md) | Install to first merge in ten minutes |
+| [CLI reference](docs/CLI.md) | Every command, honestly described |
+| [Architecture](docs/ARCHITECTURE.md) | How the engine works and what it guarantees |
+| [Agents](docs/AGENTS.md) | Sandboxes, pins, MCP server, REST API, argon-agents |
+| [Operations](docs/OPERATIONS.md) | Deployment, chunk stores, GC, v1→v2 migration |
+| [Performance](docs/PERFORMANCE.md) | Where the numbers live and how to reproduce them |
 
 ## Community
 
-- 📋 [Roadmap](https://www.argonlabs.tech/roadmap) - See what's coming
-- 🐛 [Report Issues](https://github.com/argon-lab/argon/issues)
+- 🐛 [Issues](https://github.com/argon-lab/argon/issues)
 - 💬 [Discussions](https://github.com/argon-lab/argon/discussions)
-- 🏗️ [Contributing](./CONTRIBUTING.md) - Help build Argon
-- 📧 [Contact](https://www.argonlabs.tech)
+- 🏗️ [Contributing](CONTRIBUTING.md)
+- 📧 [argonlabs.tech](https://www.argonlabs.tech)
 
 ---
 
 <div align="center">
 
-**Give your MongoDB a time machine. Rewind your mistakes.**
+**Give your MongoDB a time machine. Branch without fear.**
 
 ⭐ **Star us** if Argon saves your day!
-
-[Get Started →](docs/QUICK_START.md) | [Interactive Demo →](https://www.argonlabs.tech/demo)
 
 </div>

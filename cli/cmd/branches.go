@@ -15,7 +15,7 @@ var branchesCmd = &cobra.Command{
 
 var branchesCreateCmd = &cobra.Command{
 	Use:   "create [branch-name]",
-	Short: "Create a new branch (1ms creation time)",
+	Short: "Create a new branch (a metadata write, no data copy)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")

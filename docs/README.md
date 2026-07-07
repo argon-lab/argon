@@ -1,67 +1,28 @@
-# Argon Documentation
+# Argon documentation
 
-Welcome to Argon - production-ready MongoDB branching with time travel capabilities.
+Argon is a version-control engine for MongoDB: branches, time travel,
+merges and undo over a deterministic write-ahead log, with real MongoDB
+databases as the working surface.
 
-## 🚀 **Pure WAL Architecture**
+Reading order:
 
-Argon provides a unified MongoDB branching system with revolutionary capabilities:
+1. **[QUICK_START.md](QUICK_START.md)** — install to first merge in ten
+   minutes: import, branch, checkout, capture, merge, rewind.
+2. **[CLI.md](CLI.md)** — the command reference.
+3. **[AGENTS.md](AGENTS.md)** — the agent workflow: TTL sandboxes, dataset
+   pins for reproducible evals, the MCP server, the REST control plane,
+   the wire proxy, and the
+   [argon-agents](https://github.com/argon-lab/argon-agents) Python
+   package (LangGraph, Mem0).
+4. **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the engine works: the WAL,
+   branches and ancestry, snapshots, GC, merge, the consistency model
+   stated honestly, and known limitations.
+5. **[OPERATIONS.md](OPERATIONS.md)** — running it: replica-set
+   requirement, snapshot chunk-store backends (MongoDB/S3/filesystem),
+   retention and GC, migrating v1 data.
+6. **[PERFORMANCE.md](PERFORMANCE.md)** — a pointer, deliberately: every
+   performance number lives in the reproducible
+   [benchmark suite](https://github.com/argon-lab/benchmarks), nowhere
+   else.
 
-- **Instant Branching** - 1ms branch creation (86x faster than alternatives)
-- **Time Travel** - Query any historical database state  
-- **Production Ready** - 37,905+ ops/sec performance with comprehensive monitoring
-
-## 📖 **Documentation Index**
-
-### **🚀 Getting Started**
-- [**Quick Start Guide**](./QUICK_START.md) - Get up and running in 5 minutes
-- **Install CLI**: `brew install argon-lab/tap/argonctl` or `npm install -g argonctl`
-- **Install SDK**: `pip install argon-mongodb` or `go get github.com/argon-lab/argon`
-
-### **🛠️ Developer Guides**
-- [**Go SDK Reference**](./GO_SDK.md) - Production-ready Go integration
-- [**Python SDK Reference**](./PYTHON_SDK.md) - ML/Data Science workflows
-- [**CLI Reference**](./CLI_REFERENCE.md) - Complete command documentation
-- [**API Reference**](./API_REFERENCE.md) - REST API endpoints
-
-### **🏗️ Architecture & Production**
-- [**Architecture Overview**](./ARCHITECTURE.md) - System architecture
-- [**Performance Benchmarks**](./PERFORMANCE.md) - Verified performance data
-- [**Production Deployment**](./PRODUCTION_DEPLOYMENT_GUIDE.md) - Enterprise deployment
-- [**Features**](./FEATURES.md) - Complete feature list
-
-### **💡 Use Cases & Examples**
-- [**ML/Data Science Workflows**](./ML_INTEGRATIONS.md) - Jupyter, MLflow, DVC integration
-- [**A/B Testing**](./AB_TESTING.md) - Database branch testing patterns
-- [**Development Workflows**](./DEV_WORKFLOWS.md) - Team collaboration patterns
-- [**Migration Guide**](./MIGRATION.md) - Moving from traditional MongoDB
-
-### **🔧 Advanced Topics**
-- [**Time Travel Queries**](./TIME_TRAVEL.md) - Historical data access
-- [**Branch Management**](./BRANCH_MANAGEMENT.md) - Advanced branching strategies
-- [**Monitoring & Observability**](./MONITORING.md) - Production monitoring
-- [**Troubleshooting**](./TROUBLESHOOTING.md) - Common issues and solutions
-
-### **🤝 Community**
-- [**Contributing Guide**](../CONTRIBUTING.md) - How to contribute to Argon
-- [**Code of Conduct**](./CODE_OF_CONDUCT.md) - Community guidelines
-- [**FAQ**](./FAQ.md) - Frequently asked questions
-- [**Support**](./SUPPORT.md) - Getting help
-
----
-
-## 🌐 **External Links**
-- **Website**: https://www.argonlabs.tech/
-- **Console**: https://console.argonlabs.tech/
-- **GitHub**: https://github.com/argon-lab/argon
-- **Issues**: https://github.com/argon-lab/argon/issues
-
-## ⚡ **Quick Installation**
-```bash
-# CLI (choose one)
-brew install argon-lab/tap/argonctl    # macOS
-npm install -g argonctl                 # Cross-platform
-
-# SDKs
-pip install argon-mongodb               # Python
-go get github.com/argon-lab/argon      # Go
-```
+Contributing? Start with [CONTRIBUTING.md](../CONTRIBUTING.md).

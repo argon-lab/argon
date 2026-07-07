@@ -1,108 +1,105 @@
-# Quick Start Guide
+# Quick start
 
-Get up and running with Argon MongoDB branching in under 5 minutes.
+From install to your first merged branch in about ten minutes.
 
-## 📦 **Installation**
+## 1. Install
 
-### Option 1: Homebrew (macOS)
 ```bash
-brew install argon-lab/tap/argonctl
-```
+brew install argon-lab/tap/argonctl     # macOS
+npm install -g argonctl                  # cross-platform
 
-### Option 2: NPM (Cross-platform)
-```bash
-npm install -g argonctl
-```
-
-### Option 3: Python SDK
-```bash
-# Install SDK with CLI wrapper
-pip install argon-mongodb
-
-# With ML integrations
-pip install argon-mongodb[ml]
-```
-
-### Option 4: From Source
-```bash
+# or from source
 git clone https://github.com/argon-lab/argon
-cd argon/cli && go build -o argon
+cd argon/cli && go build -o argon .
 ```
 
-## 🚀 **First Steps**
+## 2. MongoDB (replica set required)
 
-### 1. Enable WAL and Check Status
+Argon captures writes through change streams, which MongoDB only serves on
+replica sets. A single-node replica set is fine for development:
+
 ```bash
-export ENABLE_WAL=true
-argon status
-```
-**Expected Output:**
-```
-🚀 Argon System Status:
-   Time Travel: ✅ Enabled
-   Instant Branching: ✅ Enabled
-   Performance Mode: ✅ WAL Architecture
+docker run -d --name argon-mongo -p 27017:27017 mongo:7 --replSet rs0
+docker exec argon-mongo mongosh --quiet --eval \
+  'rs.initiate({_id:"rs0", members:[{_id:0, host:"localhost:27017"}]})'
 ```
 
-### 2. Create Your First Project
+Argon connects to `MONGODB_URI` (default `mongodb://localhost:27017`) and
+keeps its metadata in the `argon_wal` database.
+
+## 3. Import an existing database ("git clone")
+
 ```bash
-argon projects create my-app
-```
-**Expected Output:**
-```
-✅ Created project 'my-app' with time travel enabled
-   Project ID: 6a7c9e12c395913d7800d91f
-   Default branch: main
+argon import preview  --uri mongodb://localhost:27017 --database myapp
+argon import database --uri mongodb://localhost:27017 --database myapp --project myapp
 ```
 
-### 3. List Projects
+Every document becomes versioned history on the project's `main` branch,
+and a snapshot is taken automatically so reads never replay the whole
+import. (Starting fresh instead: `argon projects create myapp`.)
+
+## 4. Branch and work with any driver
+
 ```bash
-argon projects list
-```
-**Expected Output:**
-```
-📁 Projects with Time Travel:
-  - my-app (ID: 6a7c9e12c395913d7800d91f)
-    Branches: 1
+argon branches create experiment -p myapp     # a metadata write — instant
+argon checkout -p myapp -b experiment         # materialize into a real MongoDB db
+argon watch    -p myapp -b experiment         # capture writes as history (keep running)
 ```
 
-### 4. View Time Travel Information
+`checkout` prints a connection string. Point pymongo, mongoose, mongosh —
+anything — at it and work normally: real indexes, aggregation,
+transactions, all evaluated by mongod itself. While `watch` runs, every
+write becomes a WAL entry attributed to its actor.
+
+Prefer stable connection strings? `argon proxy` serves
+`mongodb://<host>:27018/<project>~<branch>?directConnection=true` and
+routes to the branch's physical database (see
+[AGENTS.md](AGENTS.md#the-wire-proxy)).
+
+## 5. Review and merge — a data pull request
+
 ```bash
-argon time-travel info -p 6a7c9e12c395913d7800d91f -b main
-```
-**Expected Output:**
-```
-⏰ Time Travel Info for branch 'main':
-   Branch ID: 6a7c9e12c395913d7800d91f
-   LSN Range: 0 - 4
-   Total Entries: 0
+argon diff          -p myapp -b experiment    # what would change
+argon merge preview -p myapp -b experiment    # persist a reviewable plan
+argon merge apply <plan-id>                   # exactly-once, refuses stale heads
 ```
 
-## 🎉 **You're Ready!**
+Conflicts are never resolved silently: `apply` fails and names them;
+resolve with `--strategy theirs|ours` or fix the data and re-preview.
 
-You now have a working MongoDB project with:
-- ✅ **Git-like branching** enabled
-- ✅ **Time travel** capabilities  
-- ✅ **Zero-copy** branch creation
-- ✅ **Complete audit trail** via WAL
+## 6. Time travel, undo, restore
 
-## 🔄 **Next Steps**
+```bash
+argon time-travel info  -p myapp -b main
+argon time-travel query -p myapp -b main --lsn 1000
 
-### For Developers
-- **Go SDK**: `go get github.com/argon-lab/argon/pkg/walcli`
-- [CLI Reference](./CLI_REFERENCE.md) - Full command documentation
+# Revert a range (or one actor's writes) with append-only compensations
+argon undo -p myapp -b main --from-lsn 990 --to-lsn 1000 --dry-run
 
-### For Data Scientists
-- **Python SDK**: `pip install argon-mongodb[ml]`
-- [Jupyter Integration](./ML_INTEGRATIONS.md) - Notebook experiments
+# Rewind the whole branch — preview first, keep a backup fork
+argon restore preview -p myapp -b main --time 2026-07-07T09:00:00Z
+argon restore reset   -p myapp -b main --time 2026-07-07T09:00:00Z --backup pre-incident
+```
 
-### For Production
-- [Deployment Guide](./PRODUCTION_DEPLOYMENT_GUIDE.md) - Enterprise setup
-- [Security Guide](./SECURITY.md) - Production security
+Resets are recorded, not destructive: discarded entries stay in the WAL
+for audit, and the backup branch (or any pin) keeps the old state
+readable.
 
-## ❓ **Need Help?**
+## 7. For agents
 
-- [FAQ](./FAQ.md) - Common questions
-- [Troubleshooting](./TROUBLESHOOTING.md) - Common issues
-- [GitHub Issues](https://github.com/argon-lab/argon/issues) - Report bugs
-- [Support](./SUPPORT.md) - Get community help
+```bash
+claude mcp add argon -- argon mcp        # sandboxes, diff/merge, undo, pins as MCP tools
+argon sandbox create -p myapp --ttl 1h   # disposable branch + connection string
+argon pin create -p myapp --name eval-v1 # immutable dataset for reproducible evals
+argon pin sandbox -p myapp --name eval-v1
+```
+
+The full agent workflow — sandboxes, pins, the REST control plane and the
+Python adapters — is in [AGENTS.md](AGENTS.md).
+
+## Where next
+
+- [CLI.md](CLI.md) — every command
+- [ARCHITECTURE.md](ARCHITECTURE.md) — what the engine guarantees, honestly
+- [OPERATIONS.md](OPERATIONS.md) — snapshot stores (S3/filesystem), GC and
+  retention, v1→v2 migration
