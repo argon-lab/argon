@@ -17,6 +17,7 @@ import (
 	"github.com/argon-lab/argon/internal/restore"
 	"github.com/argon-lab/argon/internal/snapshot"
 	"github.com/argon-lab/argon/internal/timetravel"
+	"github.com/argon-lab/argon/internal/undo"
 	"github.com/argon-lab/argon/internal/wal"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -36,6 +37,7 @@ type Services struct {
 	GC           *gc.Service
 	Checkout     *checkout.Service
 	Ingest       *ingest.Service
+	Undo         *undo.Service
 	Monitor      *wal.Monitor
 	MongoURI     string
 }
@@ -98,6 +100,7 @@ func NewServices() (*Services, error) {
 	gcService := gc.NewService(walService, branchService, snapshotService)
 	checkoutService := checkout.NewService(client, db, branchService, materializerService)
 	ingestService := ingest.NewService(client, db, walService, branchService)
+	undoService := undo.NewService(walService, branchService, client)
 	// Reclaim a deleted branch's WAL entries and snapshots. Safe because
 	// regular deletion refuses branches with children.
 	branchService.SetDeleteHook(func(branchID string) {
@@ -135,9 +138,29 @@ func NewServices() (*Services, error) {
 		GC:           gcService,
 		Checkout:     checkoutService,
 		Ingest:       ingestService,
+		Undo:         undoService,
 		Monitor:      monitor,
 		MongoURI:     mongoURI,
 	}, nil
+}
+
+// BuildUndoPlan and ApplyUndoPlan wrap the undo service for CLI use (the
+// cli module cannot import internal packages).
+func (s *Services) BuildUndoPlan(branchID string, fromLSN, toLSN int64, actor string) (*undo.Plan, error) {
+	branch, err := s.Branches.GetBranchByID(branchID)
+	if err != nil {
+		return nil, err
+	}
+	return s.Undo.BuildPlan(branch, fromLSN, toLSN, actor)
+}
+
+// ApplyUndoPlan executes a previously built plan.
+func (s *Services) ApplyUndoPlan(ctx context.Context, branchID string, plan *undo.Plan) (restored, deleted int, err error) {
+	branch, err := s.Branches.GetBranchByID(branchID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return s.Undo.Apply(ctx, branch, plan)
 }
 
 // BranchConnectionString renders the URI applications use to reach a
