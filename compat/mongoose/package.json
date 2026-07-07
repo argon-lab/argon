@@ -1,0 +1,7 @@
+{
+  "name": "argon-mongoose-compat",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node compat.test.mjs" },
+  "dependencies": { "mongoose": "^8.0.0" }
+}

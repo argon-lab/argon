@@ -45,6 +45,9 @@ type Services struct {
 	Sandbox      *sandbox.Service
 	Monitor      *wal.Monitor
 	MongoURI     string
+	// Client is the deployment connection, exposed for tools that read
+	// physical branch databases (e.g. convergence verification).
+	Client *mongo.Client
 }
 
 // NewServices creates and returns all WAL services
@@ -157,6 +160,7 @@ func NewServices() (*Services, error) {
 		Sandbox:      sandboxService,
 		Monitor:      monitor,
 		MongoURI:     mongoURI,
+		Client:       client,
 	}, nil
 }
 

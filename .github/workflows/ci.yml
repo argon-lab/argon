@@ -68,6 +68,47 @@ jobs:
       working-directory: ./cli
       run: go build -v .
     
+  driver-compat:
+    name: Driver Compatibility
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Start MongoDB (single-node replica set)
+      run: |
+        docker run -d --name compat-mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+        for i in $(seq 1 30); do
+          docker exec compat-mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' && break
+          sleep 1
+        done
+        docker exec compat-mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
+        for i in $(seq 1 30); do
+          [ "$(docker exec compat-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break
+          sleep 1
+        done
+
+    - name: Install Python driver
+      run: pip install pymongo pytest
+
+    - name: Run the driver-compat harness
+      run: bash compat/run.sh
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
