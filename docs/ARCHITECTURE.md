@@ -41,6 +41,7 @@ is planned but not built, it says so explicitly.
 │  ├─ timetravel           historical state queries          │
 │  ├─ restore              reset / branch-from-history       │
 │  ├─ driver (interceptor) write-time filter resolution      │
+│  ├─ snapshot             image layer: bounded replay depth │
 │  ├─ importer             bulk import into put entries      │
 │  └─ migrate              v1 → v2 WAL migration             │
 └──────────────────────────────┬─────────────────────────────┘
@@ -115,6 +116,41 @@ discarded window, while a branch forked *before* the reset has its fork
 point at or below it. Pre-reset forks therefore keep the history they
 legitimately captured, and post-reset readers never resurrect it.
 
+## Snapshots (the image layer)
+
+A snapshot captures the fully materialized state of one collection on one
+branch at one LSN — including everything inherited through the ancestry
+chain. Materialization then starts from the nearest usable snapshot and
+replays only the delta above it, which bounds read cost regardless of how
+long the branch's history grows. Reads below a snapshot, and branches
+without one, fall back to full replay unchanged.
+
+- **Storage**: content-addressed chunks (hex SHA-256 of the compressed
+  bytes, ~4MB pre-compression, zstd) in `wal_snapshot_chunks`; manifests in
+  `wal_snapshots`. Identical content stores once, so snapshots of
+  slowly-changing collections share almost all their chunks. Documents
+  serialize in canonical sorted-key form to keep the bytes deterministic.
+  The `ChunkStore` interface is where object-storage backends (S3/GCS)
+  plug in.
+- **Lookup**: materialization searches the leaf-most ancestry hop first — a
+  leaf snapshot covers the entire inherited chain beneath it. Within a hop,
+  the newest usable snapshot inside the segment's LSN window wins.
+- **Reset interaction**: reset never touches snapshots. Each manifest
+  records how many discarded ranges existed when it was built
+  (`RangesApplied`); ranges are append-only, so a reader detects
+  invalidation by checking only ranges recorded afterwards, with the same
+  visibility rule replay applies to entries. Post-reset snapshots are
+  automatically valid again.
+- **Incremental**: `CreateSnapshot` materializes through the snapshot-aware
+  path itself, so each snapshot builds from the previous one plus the delta.
+- **Automatic**: the driver notifies the snapshot service after writes;
+  once a branch head advances a threshold past its newest snapshot (default
+  1000 LSNs, checked at most every 64 writes per branch), a snapshot is
+  taken off the write path. `argon snapshot create/list` does it manually.
+- **Reclamation**: deleting a branch (which requires it to have no
+  children) drops its manifests and any chunks no other manifest
+  references.
+
 ## Write path (SDK / interceptor)
 
 Applications write through the Argon driver wrapper, which resolves each
@@ -162,21 +198,19 @@ entries removed). Migration is idempotent.
 
 ## Known limitations and roadmap
 
-Current limitations (deliberate M1 scope):
+Current limitations (deliberate scope):
 
 - Reads materialize in memory: no indexes, no aggregation pipeline, Find
   options (sort/skip/limit/projection) not applied; results in canonical
   document-ID order.
-- Materialization replays from the branch root every time — cost grows with
-  history length.
 - No merge/diff commands yet (pre-images already carry the data they need).
+- WAL entries all live in MongoDB; cold history is not yet offloaded.
 
 Planned next (in order):
 
-1. **M2 — snapshot layer**: periodic collection snapshots at an LSN
-   (image layers), so materialization = nearest snapshot + bounded delta
-   replay; WAL segmentation, object-storage offload and GC with a PITR
-   retention window.
+1. **M2 (remaining) — WAL segmentation**: cold segments offloaded to object
+   storage, entry GC under a PITR retention window once snapshots cover
+   them.
 2. **M3 — mongod as compute**: branches materialize into real MongoDB
    databases (lazily), reads/writes run on mongod with change-stream
    capture into the WAL, per-branch connection strings — full query
@@ -192,6 +226,8 @@ Planned next (in order):
 | `wal_branches` | Branch metadata: pointers, ancestry, discarded ranges |
 | `wal_projects` | Project metadata |
 | `wal_counters` | Per-project LSN counters |
+| `wal_snapshots` | Snapshot manifests |
+| `wal_snapshot_chunks` | Content-addressed snapshot data |
 
 Indexes on `wal_log`: unique `(project_id, lsn)`;
 `(branch_id, collection, lsn)`; `(branch_id, collection, document_id, lsn)`;

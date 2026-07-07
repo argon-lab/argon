@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
@@ -16,10 +17,16 @@ import (
 // Service creates and serves collection snapshots.
 type Service struct {
 	manifests    *mongo.Collection
-	chunks       ChunkStore
+	chunks       *mongo.Collection // raw handle for GC reference checks
+	store        ChunkStore
 	branches     *branchwal.BranchService
 	materializer *materializer.Service
 	compressor   *wal.Compressor
+
+	// Auto-snapshot state (see auto.go).
+	autoMu       sync.Mutex
+	autoCfg      *AutoConfig
+	autoBranches map[string]*autoState
 }
 
 // NewService creates a snapshot service. It registers itself as the
@@ -34,7 +41,8 @@ func NewService(db *mongo.Database, branches *branchwal.BranchService, mat *mate
 
 	s := &Service{
 		manifests:    db.Collection("wal_snapshots"),
-		chunks:       NewMongoChunkStore(db),
+		chunks:       db.Collection("wal_snapshot_chunks"),
+		store:        NewMongoChunkStore(db),
 		branches:     branches,
 		materializer: mat,
 		compressor:   compressor,
@@ -100,7 +108,7 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 	chunkIDs := make([]string, 0, len(chunks))
 	var sizeBytes int64
 	for _, chunk := range chunks {
-		id, err := s.chunks.Put(ctx, chunk)
+		id, err := s.store.Put(ctx, chunk)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +190,7 @@ func (s *Service) usable(snap *Snapshot, branch *wal.Branch, readUpperBound int6
 func (s *Service) load(ctx context.Context, snap *Snapshot) (map[string]bson.M, error) {
 	state := make(map[string]bson.M, snap.DocCount)
 	for _, chunkID := range snap.ChunkIDs {
-		data, err := s.chunks.Get(ctx, chunkID)
+		data, err := s.store.Get(ctx, chunkID)
 		if err != nil {
 			return nil, err
 		}

@@ -18,6 +18,18 @@ type BranchService struct {
 	db         *mongo.Database
 	collection *mongo.Collection
 	wal        *wal.Service
+
+	// onDelete runs after a branch is successfully soft-deleted through
+	// DeleteBranch (never after ForceDeleteBranch: force-deleted branches
+	// may still anchor descendants' history). Used to reclaim snapshots
+	// without this package depending on the snapshot package.
+	onDelete func(branchID string)
+}
+
+// SetDeleteHook registers a callback invoked after a successful
+// DeleteBranch.
+func (s *BranchService) SetDeleteHook(hook func(branchID string)) {
+	s.onDelete = hook
 }
 
 // NewBranchService creates a new WAL branch service
@@ -279,8 +291,17 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 		bson.M{"_id": branch.ID},
 		bson.M{"$set": bson.M{"is_deleted": true}},
 	)
+	if err != nil {
+		return err
+	}
 
-	return err
+	// Safe because DeleteBranch refuses branches with children: nothing
+	// can reach this branch's snapshots through an ancestry chain anymore.
+	if s.onDelete != nil {
+		s.onDelete(branch.ID)
+	}
+
+	return nil
 }
 
 // UpdateBranchHead advances the head LSN of a branch. $max keeps the head

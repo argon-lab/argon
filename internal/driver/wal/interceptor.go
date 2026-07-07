@@ -18,6 +18,13 @@ type Materializer interface {
 	MaterializeBranch(branch *wal.Branch) (map[string]map[string]bson.M, error)
 }
 
+// AutoSnapshotter is notified after writes so it can decide whether the
+// branch has outgrown its newest snapshot. Implementations must be cheap
+// and non-blocking; the snapshot service throttles internally.
+type AutoSnapshotter interface {
+	MaybeSnapshot(branch *wal.Branch)
+}
+
 // Interceptor turns MongoDB write operations into deterministic WAL entries.
 //
 // Filters and update operators are resolved here, exactly once, at write
@@ -35,6 +42,7 @@ type Interceptor struct {
 	branches     *branchwal.BranchService
 	materializer Materializer
 	actor        string
+	autoSnapshot AutoSnapshotter
 }
 
 // NewInterceptor creates a new WAL interceptor
@@ -51,6 +59,12 @@ func NewInterceptor(walService *wal.Service, branch *wal.Branch, branchService *
 // "agent:session-42") for audit and per-session undo.
 func (i *Interceptor) SetActor(actor string) {
 	i.actor = actor
+}
+
+// SetAutoSnapshotter enables threshold-based automatic snapshotting for
+// this handle's branch.
+func (i *Interceptor) SetAutoSnapshotter(a AutoSnapshotter) {
+	i.autoSnapshot = a
 }
 
 // InsertResult represents the result of an insert operation
@@ -399,6 +413,9 @@ func (i *Interceptor) advanceHead(lsn int64) error {
 	}
 	if lsn > i.branch.HeadLSN {
 		i.branch.HeadLSN = lsn
+	}
+	if i.autoSnapshot != nil {
+		i.autoSnapshot.MaybeSnapshot(i.branch)
 	}
 	return nil
 }

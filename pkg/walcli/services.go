@@ -80,6 +80,13 @@ func NewServices() (*Services, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create snapshot service: %w", err)
 	}
+	snapshotService.EnableAuto(snapshot.DefaultAutoConfig())
+	// Reclaim a branch's snapshots when it is deleted.
+	branchService.SetDeleteHook(func(branchID string) {
+		if _, _, err := snapshotService.CleanupBranch(context.Background(), branchID); err != nil {
+			fmt.Printf("Warning: failed to clean up snapshots for branch %s: %v\n", branchID, err)
+		}
+	})
 
 	// Create monitor with production-ready configuration
 	monitorConfig := wal.MonitorConfig{
