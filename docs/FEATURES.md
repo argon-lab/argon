@@ -118,9 +118,9 @@ reproduce on yours with `docker compose up`:
 |---|---|---|
 | **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
 | **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · [public reproducible benchmarks](https://github.com/argon-lab/benchmarks) ✅ | ✅ Shipped |
-| **M3 · True drop-in** | Physical MongoDB database per branch (`argon checkout` → connection string) ✅ · change-stream write capture ✅ · `argon undo` with per-actor conflict detection ✅ · official driver test suites in CI 🚧 | Shipped · driver-suite validation pending |
+| **M3 · True drop-in** | Physical MongoDB database per branch (`argon checkout` → connection string) ✅ · change-stream write capture ✅ · `argon undo` with per-actor conflict detection ✅ · real-driver validation in CI (pymongo + mongoose workloads, WAL capture verified canonical-byte-exact, full session undo) ✅ | ✅ Shipped |
 | **M4 · Merge & diff** | `argon diff` ✅ · three-way merge with persisted, reviewable plans (`argon merge preview/apply`) ✅ · conflicts never resolved silently ✅ · merges undoable like any range ✅ | ✅ Shipped |
-| **M5 · Agent ecosystem** | MCP server (`argon mcp`, 9 tools, supervised ingesters) ✅ · TTL sandboxes (`argon sandbox`) ✅ · LangGraph checkpointer 🚧 · eval dataset pinning 🚧 | MCP + sandboxes shipped · integrations remaining |
+| **M5 · Agent ecosystem** | MCP server (`argon mcp`, 9 tools, supervised ingesters) ✅ · TTL sandboxes (`argon sandbox`) ✅ · LangGraph checkpointer + Mem0 factory (`argon-agents` on the REST API) ✅ · eval dataset pinning 🚧 | Shipped · eval pinning remaining |
 
 Full roadmap: https://www.argonlabs.tech/roadmap
 
