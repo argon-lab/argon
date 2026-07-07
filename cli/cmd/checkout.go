@@ -8,6 +8,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// resolveProjectID maps a --project value to the project ID: by name
+// first, falling back to treating the value as an ID for scripts that
+// pass one directly.
+func resolveProjectID(services *walcli.Services, projectName string) (string, error) {
+	if project, err := services.Projects.GetProjectByName(projectName); err == nil {
+		return project.ID, nil
+	}
+	if project, err := services.Projects.GetProject(projectName); err == nil {
+		return project.ID, nil
+	}
+	return "", fmt.Errorf("project %q not found", projectName)
+}
+
 // resolveBranch loads the project and branch named by the shared flags.
 func resolveBranch(services *walcli.Services, projectName, branchName string) (string, error) {
 	project, err := services.Projects.GetProjectByName(projectName)

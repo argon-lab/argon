@@ -30,7 +30,11 @@ var timeTravelInfoCmd = &cobra.Command{
 			return err
 		}
 
-		branch, err := services.Branches.GetBranch(projectName, branchName)
+		projectID, err := resolveProjectID(services, projectName)
+		if err != nil {
+			return err
+		}
+		branch, err := services.Branches.GetBranch(projectID, branchName)
 		if err != nil {
 			return fmt.Errorf("branch not found: %w", err)
 		}
@@ -86,7 +90,11 @@ var timeTravelQueryCmd = &cobra.Command{
 			return err
 		}
 
-		branch, err := services.Branches.GetBranch(projectName, branchName)
+		projectID, err := resolveProjectID(services, projectName)
+		if err != nil {
+			return err
+		}
+		branch, err := services.Branches.GetBranch(projectID, branchName)
 		if err != nil {
 			return fmt.Errorf("branch not found: %w", err)
 		}
