@@ -12,6 +12,7 @@ import (
 	"github.com/argon-lab/argon/internal/migrate"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/restore"
+	"github.com/argon-lab/argon/internal/snapshot"
 	"github.com/argon-lab/argon/internal/timetravel"
 	"github.com/argon-lab/argon/internal/wal"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -28,6 +29,7 @@ type Services struct {
 	Restore      *restore.Service
 	Importer     *importer.ImportService
 	Migrate      *migrate.Service
+	Snapshots    *snapshot.Service
 	Monitor      *wal.Monitor
 }
 
@@ -73,6 +75,11 @@ func NewServices() (*Services, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create migration service: %w", err)
 	}
+	// Registers itself as the materializer's snapshot source.
+	snapshotService, err := snapshot.NewService(db, branchService, materializerService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create snapshot service: %w", err)
+	}
 
 	// Create monitor with production-ready configuration
 	monitorConfig := wal.MonitorConfig{
@@ -99,6 +106,7 @@ func NewServices() (*Services, error) {
 		Restore:      restoreService,
 		Importer:     importerService,
 		Migrate:      migrateService,
+		Snapshots:    snapshotService,
 		Monitor:      monitor,
 	}, nil
 }
