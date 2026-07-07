@@ -127,10 +127,13 @@ func TestRestore_ResetBranchToTime(t *testing.T) {
 		assert.NoError(t, err)
 
 		time.Sleep(50 * time.Millisecond)
-		midTime := time.Now()
 
 		_, err = interceptor.InsertOne(ctx, "events", bson.M{"_id": "e2", "time": "noon"})
 		assert.NoError(t, err)
+		// Capture the reset target after e2's insert completed, so e2's WAL
+		// timestamp is at or before it no matter how long the insert
+		// round-trips took under load.
+		afterNoon := time.Now()
 
 		time.Sleep(50 * time.Millisecond)
 
@@ -140,8 +143,8 @@ func TestRestore_ResetBranchToTime(t *testing.T) {
 		// Update branch
 		branch, _ = branchService.GetBranchByID(branch.ID)
 
-		// Reset to mid time
-		resetBranch, err := restoreService.ResetBranchToTime(branch.ID, midTime.Add(25*time.Millisecond))
+		// Reset to the moment right after e2
+		resetBranch, err := restoreService.ResetBranchToTime(branch.ID, afterNoon)
 		assert.NoError(t, err)
 
 		// Verify state
