@@ -32,7 +32,7 @@ Examples:
   argon metrics                           # Detailed performance metrics
 
 The first MongoDB database with Git-like time travel.`,
-	Version: "1.0.0",
+	Version: "2.0.0",
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
