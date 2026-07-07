@@ -19,10 +19,25 @@ type BranchLookup interface {
 	GetBranchByIDAny(branchID string) (*wal.Branch, error)
 }
 
+// SnapshotSource serves materialized snapshots so replay can start from the
+// nearest one instead of the branch root. Implemented by the snapshot
+// service; nil means "always replay in full".
+type SnapshotSource interface {
+	// FindUsable returns the loaded state of the newest usable snapshot of
+	// (branch, collection) whose LSN lies in [minLSN, maxLSN], honoring
+	// discarded-range visibility for a read whose segment upper bound is
+	// readUpperBound. ok is false when no usable snapshot exists.
+	FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (state map[string]bson.M, lsn int64, ok bool, err error)
+	// CollectionsUpTo lists collections with snapshots for the branch in
+	// the LSN window.
+	CollectionsUpTo(branchID string, minLSN, maxLSN int64) ([]string, error)
+}
+
 // Service materializes state from WAL entries
 type Service struct {
-	wal      *wal.Service
-	branches BranchLookup
+	wal       *wal.Service
+	branches  BranchLookup
+	snapshots SnapshotSource
 }
 
 // NewService creates a new materializer service
@@ -31,6 +46,13 @@ func NewService(walService *wal.Service, branches BranchLookup) *Service {
 		wal:      walService,
 		branches: branches,
 	}
+}
+
+// SetSnapshotSource wires in a snapshot provider. A setter rather than a
+// constructor argument because the snapshot service itself needs the
+// materializer to build snapshots — the two reference each other.
+func (s *Service) SetSnapshotSource(src SnapshotSource) {
+	s.snapshots = src
 }
 
 // segment is one ancestor's contribution to a branch's history: the
@@ -90,7 +112,10 @@ func (s *Service) ancestrySegments(branch *wal.Branch, targetLSN int64) ([]segme
 }
 
 // MaterializeCollectionAtLSN builds the state of one collection as of
-// targetLSN, following the branch's ancestry chain.
+// targetLSN, following the branch's ancestry chain. When a snapshot source
+// is wired in, replay starts from the nearest usable snapshot (searching
+// leaf-most hop first, since a leaf snapshot covers the entire inherited
+// chain beneath it) and only the delta above it is replayed.
 func (s *Service) MaterializeCollectionAtLSN(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error) {
 	segments, err := s.ancestrySegments(branch, targetLSN)
 	if err != nil {
@@ -98,7 +123,30 @@ func (s *Service) MaterializeCollectionAtLSN(branch *wal.Branch, collection stri
 	}
 
 	state := make(map[string]bson.M)
-	for _, seg := range segments {
+	startIdx := 0
+	if s.snapshots != nil {
+		for i := len(segments) - 1; i >= 0; i-- {
+			seg := segments[i]
+			snapState, snapLSN, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+			if err != nil {
+				return nil, fmt.Errorf("failed to look up snapshot for branch %s: %w", seg.branch.ID, err)
+			}
+			if ok {
+				// A snapshot's state already covers everything at or below
+				// its LSN, including the inherited chain — replay resumes
+				// right above it within this hop.
+				state = snapState
+				startIdx = i
+				segments[i].fromLSN = snapLSN + 1
+				break
+			}
+		}
+	}
+
+	for _, seg := range segments[startIdx:] {
+		if seg.fromLSN > seg.toLSN {
+			continue // Snapshot sits exactly at the segment's end.
+		}
 		entries, err := s.wal.GetBranchEntries(seg.branch.ID, collection, seg.fromLSN, seg.toLSN)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get entries for branch %s: %w", seg.branch.ID, err)
@@ -122,33 +170,42 @@ func (s *Service) MaterializeCollection(branch *wal.Branch, collection string) (
 }
 
 // MaterializeBranchAtLSN builds the state of every collection in a branch as
-// of targetLSN, keyed by collection name.
+// of targetLSN, keyed by collection name. Collections are discovered across
+// the ancestry chain (entries and snapshots) and each is materialized
+// through the snapshot-aware single-collection path.
 func (s *Service) MaterializeBranchAtLSN(branch *wal.Branch, targetLSN int64) (map[string]map[string]bson.M, error) {
 	segments, err := s.ancestrySegments(branch, targetLSN)
 	if err != nil {
 		return nil, err
 	}
 
-	state := make(map[string]map[string]bson.M)
+	collections := make(map[string]bool)
 	for _, seg := range segments {
-		entries, err := s.wal.GetBranchEntries(seg.branch.ID, "", seg.fromLSN, seg.toLSN)
+		names, err := s.wal.DistinctCollections(seg.branch.ID, seg.fromLSN, seg.toLSN)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get entries for branch %s: %w", seg.branch.ID, err)
+			return nil, fmt.Errorf("failed to list collections for branch %s: %w", seg.branch.ID, err)
 		}
-		for _, entry := range entries {
-			if entry.Collection == "" {
-				continue // Control operations carry no collection state.
+		for _, name := range names {
+			collections[name] = true
+		}
+		if s.snapshots != nil {
+			snapNames, err := s.snapshots.CollectionsUpTo(seg.branch.ID, seg.fromLSN, seg.toLSN)
+			if err != nil {
+				return nil, fmt.Errorf("failed to list snapshot collections for branch %s: %w", seg.branch.ID, err)
 			}
-			if seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
-				continue
-			}
-			if _, exists := state[entry.Collection]; !exists {
-				state[entry.Collection] = make(map[string]bson.M)
-			}
-			if err := s.ApplyEntry(state[entry.Collection], entry); err != nil {
-				return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
+			for _, name := range snapNames {
+				collections[name] = true
 			}
 		}
+	}
+
+	state := make(map[string]map[string]bson.M, len(collections))
+	for name := range collections {
+		collState, err := s.MaterializeCollectionAtLSN(branch, name, targetLSN)
+		if err != nil {
+			return nil, err
+		}
+		state[name] = collState
 	}
 
 	return state, nil

@@ -28,6 +28,14 @@ func CanonicalBytes(v interface{}) ([]byte, error) {
 	return bson.Marshal(bson.D{{Key: "v", Value: canonical}})
 }
 
+// Canonicalize converts a BSON value into its canonical form: documents
+// become bson.D with recursively sorted keys, so marshalling the result is
+// deterministic. Snapshot serialization depends on this for content-level
+// chunk deduplication.
+func Canonicalize(v interface{}) (interface{}, error) {
+	return canonicalizeValue(v)
+}
+
 // CanonicalEqual reports whether two BSON values are equal under the
 // canonical (sorted-key) representation.
 func CanonicalEqual(a, b interface{}) (bool, error) {

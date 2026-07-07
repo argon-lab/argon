@@ -267,6 +267,30 @@ func (s *Service) GetDocumentHistory(branchID, collection, documentID string, st
 	return s.GetEntries(filter, opts)
 }
 
+// DistinctCollections returns the collections touched by a branch's own
+// entries within an LSN range.
+func (s *Service) DistinctCollections(branchID string, startLSN, endLSN int64) ([]string, error) {
+	ctx := context.Background()
+	values, err := s.collection.Distinct(ctx, "collection", bson.M{
+		"branch_id":  branchID,
+		"collection": bson.M{"$ne": ""},
+		"lsn": bson.M{
+			"$gte": startLSN,
+			"$lte": endLSN,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	collections := make([]string, 0, len(values))
+	for _, v := range values {
+		if name, ok := v.(string); ok {
+			collections = append(collections, name)
+		}
+	}
+	return collections, nil
+}
+
 // GetProjectEntries retrieves all entries for a project within an LSN range
 func (s *Service) GetProjectEntries(projectID, collection string, startLSN, endLSN int64) ([]*Entry, error) {
 	filter := bson.M{
