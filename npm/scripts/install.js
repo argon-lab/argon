@@ -25,7 +25,8 @@ function getPlatform() {
 }
 
 function getBinaryName() {
-  return process.platform === 'win32' ? 'argon.exe' : 'argon';
+  // The wrapper bin/argon.js execs this; distinct from the wrapper name.
+  return process.platform === 'win32' ? 'argon-bin.exe' : 'argon-bin';
 }
 
 function downloadBinary(url, dest) {
