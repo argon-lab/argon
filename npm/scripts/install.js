@@ -56,7 +56,8 @@ async function install() {
   try {
     const platform = getPlatform();
     const binaryName = getBinaryName();
-    const downloadUrl = `https://github.com/argon-lab/argon/releases/download/v${version}/argon-${platform}`;
+    const assetName = process.platform === 'win32' ? `argon-${platform}.exe` : `argon-${platform}`;
+    const downloadUrl = `https://github.com/argon-lab/argon/releases/download/v${version}/${assetName}`;
     
     const binDir = path.join(__dirname, '..', 'bin');
     const binaryPath = path.join(binDir, binaryName);
