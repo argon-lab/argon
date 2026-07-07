@@ -42,18 +42,18 @@
 
 ## What is Argon?
 
-Argon gives MongoDB superpowers with **Git-like branching** and **time travel**. Create instant database branches, restore to any point in history, and never lose data again.
+Argon gives MongoDB superpowers with **Git-like branching** and **time travel**. Create database branches in milliseconds, inspect any point in history, and rewind your mistakes.
 
 ### 🎯 Key Benefits
 
-- **⚡ Instant Branches** - Clone your entire database in 1ms (not hours)
-- **⏰ Time Travel** - Query your data from any point in history with **220,000+ queries/sec**
-- **🔄 Safe Restore** - Preview changes before restoring
-- **💾 Zero Storage Cost** - Branches share data efficiently with 90% compression
-- **🔌 Drop-in Compatible** - Works with existing MongoDB code
-- **🚀 Enterprise Performance** - 26x faster time travel queries after latest optimizations
-- **✅ Comprehensive Testing** - Extensive test coverage ensuring reliability
-- **🗜️ Smart Compression** - Automatic WAL compression reduces storage by 80-90%
+- **⚡ Millisecond Branches** - Creating a branch writes metadata, not data copies
+- **⏰ Time Travel** - Inspect and restore your data from any point in history, addressed by LSN or timestamp
+- **🔬 Deterministic Replay** - The same history always reconstructs the same state, byte for byte — verified by property tests in CI
+- **🔄 Safe Restore** - Preview changes before restoring; restores are themselves logged, so you can undo the undo
+- **🗜️ Smart Compression** - WAL entries are automatically compressed with zstd
+- **🧭 Honest Engineering** - Performance numbers will return to this README when our public, reproducible benchmark suite ships (see roadmap below)
+
+> **A note on claims:** earlier versions of this README quoted numbers like "1ms branching" and "220,000+ queries/sec" that we could not back with reproducible benchmarks. We removed them. From now on, every number we publish links to a benchmark you can run yourself.
 
 ## Quick Demo
 
@@ -90,7 +90,7 @@ argon import database --uri "mongodb://localhost:27017" --database myapp --proje
 # Create branches for testing, staging, experiments
 argon branches create staging --project myapp
 argon branches create experiment-v2 --project myapp
-# Full database copies created instantly 🚀
+# Branches are metadata pointers - created instantly, no data copied 🚀
 ```
 
 ### 📊 **Step 3: Time Travel ("git log" for data)**
@@ -110,12 +110,24 @@ argon restore reset --time "5 minutes ago"
 
 ## How It Works
 
-Argon intercepts MongoDB operations and logs them to a **Write-Ahead Log (WAL)**, enabling:
-- Instant branching via metadata pointers
-- Time travel by replaying operations
-- Zero-copy efficiency
+Every write goes through Argon's driver and is recorded in a **Write-Ahead Log (WAL)** as an LSN-addressed entry with full document images. That one idea powers everything else:
+- Branching is a metadata write (parent, fork LSN, head LSN) — milliseconds, regardless of data size
+- Time travel replays the log up to a target LSN; replay is deterministic and property-tested
+- Restore is a deterministic rewind, and is itself logged
 
-Your existing MongoDB code works unchanged - just add `ENABLE_WAL=true`.
+**Current integration path:** writes are captured through Argon's Go driver / SDKs and the `argon import` flow. True drop-in support — pymongo and mongoose working unchanged against per-branch connection strings — is Milestone 3 on the roadmap below, and we won't claim it before the official driver test suites pass against Argon branches.
+
+## Status & Roadmap
+
+Argon's engine is being rebuilt milestone by milestone, correctness first ([full roadmap](https://www.argonlabs.tech/roadmap)):
+
+| Milestone | Scope | Status |
+|---|---|---|
+| **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
+| **M2 · Bounded time travel** | Snapshots that bound replay depth, WAL segmentation + GC, **public reproducible benchmarks** | 🚧 In progress |
+| **M3 · True drop-in** | One physical MongoDB database per branch, change-stream capture, per-branch connection strings, `argon undo --session` | Planned |
+| **M4 · Merge & diff** | Document-level diff, three-way merge, reviewable data PRs | Planned |
+| **M5 · Agent ecosystem** | MCP server, LangGraph checkpointer, TTL sandboxes, eval pinning | Planned |
 
 ## Installation
 
@@ -139,8 +151,7 @@ cd argon/cli && go build -o argon
 
 ## Community
 
-- 🤝 [Community Guide](./COMMUNITY.md) - Get involved!
-- 📋 [Roadmap](./ROADMAP.md) - See what's coming
+- 📋 [Roadmap](https://www.argonlabs.tech/roadmap) - See what's coming
 - 🐛 [Report Issues](https://github.com/argon-lab/argon/issues)
 - 💬 [Discussions](https://github.com/argon-lab/argon/discussions)
 - 🏗️ [Contributing](./CONTRIBUTING.md) - Help build Argon
@@ -150,7 +161,7 @@ cd argon/cli && go build -o argon
 
 <div align="center">
 
-**Give your MongoDB a time machine. Never lose data again.**
+**Give your MongoDB a time machine. Rewind your mistakes.**
 
 ⭐ **Star us** if Argon saves your day!
 
