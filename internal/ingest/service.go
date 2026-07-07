@@ -12,6 +12,8 @@ package ingest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
@@ -157,6 +159,19 @@ type changeEvent struct {
 	} `bson:"documentKey"`
 	FullDocument             bson.Raw `bson:"fullDocument"`
 	FullDocumentBeforeChange bson.Raw `bson:"fullDocumentBeforeChange"`
+	// Present on events that belong to a multi-document transaction.
+	LSID      bson.Raw `bson:"lsid"`
+	TxnNumber int64    `bson:"txnNumber"`
+}
+
+// txnID derives a stable identifier for the transaction an event belongs
+// to, or "" for non-transactional writes.
+func (e *changeEvent) txnID() string {
+	if len(e.LSID) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(e.LSID)
+	return fmt.Sprintf("%s-%d", hex.EncodeToString(sum[:8]), e.TxnNumber)
 }
 
 // convertEvent maps one change event to a WAL entry (nil for events that
@@ -185,6 +200,7 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 			DocumentID: wal.DocumentIDString(event.DocumentKey.ID),
 			PostImage:  event.FullDocument,
 			PreImage:   event.FullDocumentBeforeChange,
+			TxnID:      event.txnID(),
 			Actor:      "ingest",
 		}, nil
 
@@ -196,6 +212,7 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 			Collection: event.NS.Collection,
 			DocumentID: wal.DocumentIDString(event.DocumentKey.ID),
 			PreImage:   event.FullDocumentBeforeChange,
+			TxnID:      event.txnID(),
 			Actor:      "ingest",
 		}, nil
 

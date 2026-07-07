@@ -223,3 +223,96 @@ func TestIngest_ResumesAfterRestart(t *testing.T) {
 	assert.Len(t, walState, 6, "no offline write may be lost")
 	assert.Equal(t, f.physicalState(t, "docs"), walState)
 }
+
+func TestIngest_TransactionGrouping(t *testing.T) {
+	f := newIngestFixture(t, "ingest-txn")
+	ctx := context.Background()
+	stop := f.startIngester(t)
+	defer stop()
+
+	// A multi-document transaction across two collections, then a plain
+	// write outside any transaction.
+	session, err := f.client.StartSession()
+	require.NoError(t, err)
+	defer session.EndSession(ctx)
+
+	_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		if _, err := f.physical.Collection("accounts").InsertOne(sc, bson.M{"_id": "a", "balance": int32(100)}); err != nil {
+			return nil, err
+		}
+		if _, err := f.physical.Collection("accounts").InsertOne(sc, bson.M{"_id": "b", "balance": int32(0)}); err != nil {
+			return nil, err
+		}
+		if _, err := f.physical.Collection("ledger").InsertOne(sc, bson.M{"_id": "t1", "amount": int32(100)}); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	require.NoError(t, err)
+
+	_, err = f.physical.Collection("accounts").InsertOne(ctx, bson.M{"_id": "outside"})
+	require.NoError(t, err)
+
+	f.waitForEntries(t, "accounts", 3)
+	f.waitForEntries(t, "ledger", 1)
+
+	branch, err := f.branches.GetBranchByID(f.branchID)
+	require.NoError(t, err)
+	entries, err := f.wal.GetBranchEntries(f.branchID, "", 0, branch.HeadLSN)
+	require.NoError(t, err)
+
+	txnIDs := make(map[string]int)
+	var outsideTxn string
+	sawOutside := false
+	for _, e := range entries {
+		if !e.IsData() || (e.Collection != "accounts" && e.Collection != "ledger") {
+			continue // the fixture's seed lives in "users"
+		}
+		if e.DocumentID == "outside" {
+			outsideTxn = e.TxnID
+			sawOutside = true
+			continue
+		}
+		txnIDs[e.TxnID]++
+	}
+
+	require.True(t, sawOutside)
+	assert.Empty(t, outsideTxn, "non-transactional writes carry no transaction ID")
+	require.Len(t, txnIDs, 1, "all transaction writes share one transaction ID")
+	for id, count := range txnIDs {
+		assert.NotEmpty(t, id)
+		assert.Equal(t, 3, count, "the transaction's three writes grouped together")
+	}
+}
+
+// TestIngest_SecondTransactionGetsDistinctID guards the derivation: same
+// session, next transaction, different ID.
+func TestIngest_SecondTransactionGetsDistinctID(t *testing.T) {
+	f := newIngestFixture(t, "ingest-txn2")
+	ctx := context.Background()
+	stop := f.startIngester(t)
+	defer stop()
+
+	session, err := f.client.StartSession()
+	require.NoError(t, err)
+	defer session.EndSession(ctx)
+
+	for i := 0; i < 2; i++ {
+		docID := fmt.Sprintf("txn-%d", i)
+		_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+			_, err := f.physical.Collection("docs").InsertOne(sc, bson.M{"_id": docID})
+			return nil, err
+		})
+		require.NoError(t, err)
+	}
+
+	f.waitForEntries(t, "docs", 2)
+	branch, _ := f.branches.GetBranchByID(f.branchID)
+	entries, err := f.wal.GetBranchEntries(f.branchID, "docs", 0, branch.HeadLSN)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	assert.NotEmpty(t, entries[0].TxnID)
+	assert.NotEmpty(t, entries[1].TxnID)
+	assert.NotEqual(t, entries[0].TxnID, entries[1].TxnID,
+		"consecutive transactions on one session must not share an ID")
+}
