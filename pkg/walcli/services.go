@@ -77,8 +77,15 @@ func NewServices() (*Services, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create migration service: %w", err)
 	}
+	// Chunk store backend from the environment: mongodb (default),
+	// s3 (recommended for cloud) or filesystem (self-hosted).
+	chunkStore, storeDesc, err := snapshot.NewChunkStoreFromEnv(ctx, db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to configure snapshot store: %w", err)
+	}
+	_ = storeDesc
 	// Registers itself as the materializer's snapshot source.
-	snapshotService, err := snapshot.NewService(db, branchService, materializerService)
+	snapshotService, err := snapshot.NewServiceWithStore(db, branchService, materializerService, chunkStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create snapshot service: %w", err)
 	}

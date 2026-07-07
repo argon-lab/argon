@@ -127,12 +127,25 @@ long the branch's history grows. Reads below a snapshot, and branches
 without one, fall back to full replay unchanged.
 
 - **Storage**: content-addressed chunks (hex SHA-256 of the compressed
-  bytes, ~4MB pre-compression, zstd) in `wal_snapshot_chunks`; manifests in
-  `wal_snapshots`. Identical content stores once, so snapshots of
-  slowly-changing collections share almost all their chunks. Documents
-  serialize in canonical sorted-key form to keep the bytes deterministic.
-  The `ChunkStore` interface is where object-storage backends (S3/GCS)
-  plug in.
+  bytes, ~4MB pre-compression, zstd); manifests always in `wal_snapshots`.
+  Identical content stores once, so snapshots of slowly-changing
+  collections share almost all their chunks. Documents serialize in
+  canonical sorted-key form to keep the bytes deterministic.
+- **Chunk store backends** (`ARGON_SNAPSHOT_STORE`):
+  - `mongodb` (default) — chunks in `wal_snapshot_chunks`; zero
+    configuration, works everywhere.
+  - `s3` — recommended for cloud. `ARGON_S3_BUCKET` (required),
+    `ARGON_S3_PREFIX`, and `ARGON_S3_ENDPOINT` for S3-compatible stores
+    (MinIO, R2, Ceph; switches to path-style addressing). Credentials and
+    region resolve through the standard AWS chain. Uploads of
+    already-present content are skipped (HeadObject on the content
+    address).
+  - `filesystem` — `ARGON_SNAPSHOT_DIR`; sharded directories, atomic
+    write-then-rename. For self-hosted deployments without an object
+    store.
+  All three pass the same contract and end-to-end snapshot tests (S3 runs
+  against MinIO in CI); GC reclaims orphaned chunks through the same
+  interface, so no backend leaks storage.
 - **Lookup**: materialization searches the leaf-most ancestry hop first — a
   leaf snapshot covers the entire inherited chain beneath it. Within a hop,
   the newest usable snapshot inside the segment's LSN window wins.

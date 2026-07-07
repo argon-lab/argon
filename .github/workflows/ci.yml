@@ -40,8 +40,24 @@ jobs:
     
     - name: Download dependencies
       run: go mod download
-    
+
+    - name: Start MinIO (S3 chunk store backend)
+      run: |
+        docker run -d --name ci-minio -p 9010:9000 \
+          -e MINIO_ROOT_USER=argon -e MINIO_ROOT_PASSWORD=argon12345 \
+          minio/minio server /data
+        for i in $(seq 1 30); do
+          curl -sf http://localhost:9010/minio/health/live && break
+          sleep 1
+        done
+
     - name: Run tests
+      env:
+        ARGON_TEST_S3_ENDPOINT: http://localhost:9010
+        ARGON_TEST_S3_BUCKET: argon-test
+        AWS_ACCESS_KEY_ID: argon
+        AWS_SECRET_ACCESS_KEY: argon12345
+        AWS_REGION: us-east-1
       run: go test -v ./...
     
     - name: Build CLI
