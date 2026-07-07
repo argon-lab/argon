@@ -40,21 +40,40 @@ type Options struct {
 	ReadOnly bool
 	// Version is reported by /api/v1/meta.
 	Version string
+
+	// DemoMode turns the server into an anonymous hosted playground:
+	// one ephemeral seeded project per visitor, scoped and rate-limited
+	// (see demo.go). The remaining Demo* fields tune it.
+	DemoMode        bool
+	DemoTTL         time.Duration
+	DemoWriteLimit  int // writes per session per minute
+	DemoMaxProjects int // concurrent demo projects
 }
 
 // OptionsFromEnv reads the server options from the environment:
-// ARGON_CORS_ORIGINS, ARGON_API_TOKEN, ARGON_READ_ONLY.
+// ARGON_CORS_ORIGINS, ARGON_API_TOKEN, ARGON_READ_ONLY, ARGON_DEMO_MODE,
+// ARGON_DEMO_TTL_MINUTES.
 func OptionsFromEnv() Options {
-	readOnly := false
-	switch strings.ToLower(os.Getenv("ARGON_READ_ONLY")) {
-	case "1", "true", "yes":
-		readOnly = true
+	envBool := func(name string) bool {
+		switch strings.ToLower(os.Getenv(name)) {
+		case "1", "true", "yes":
+			return true
+		}
+		return false
+	}
+	ttl := 60 * time.Minute
+	if v := os.Getenv("ARGON_DEMO_TTL_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ttl = time.Duration(n) * time.Minute
+		}
 	}
 	return Options{
 		CORSOrigins: os.Getenv("ARGON_CORS_ORIGINS"),
 		Token:       os.Getenv("ARGON_API_TOKEN"),
-		ReadOnly:    readOnly,
+		ReadOnly:    envBool("ARGON_READ_ONLY"),
 		Version:     Version,
+		DemoMode:    envBool("ARGON_DEMO_MODE"),
+		DemoTTL:     ttl,
 	}
 }
 
@@ -131,10 +150,15 @@ func intQuery(c *gin.Context, name string, def int64) (int64, error) {
 // --- meta / status ---
 
 func (r *Router) meta(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"version":   r.opts.Version,
 		"read_only": r.opts.ReadOnly,
-	})
+	}
+	if r.opts.DemoMode {
+		resp["demo"] = true
+		resp["demo_ttl_minutes"] = int(r.opts.DemoTTL / time.Minute)
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (r *Router) ingesterStatus(c *gin.Context) {

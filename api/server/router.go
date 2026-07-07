@@ -27,6 +27,7 @@ type Router struct {
 	*gin.Engine
 	services *walcli.Services
 	opts     Options
+	demo     *demoState
 
 	ingestMu sync.Mutex
 	ingest   map[string]context.CancelFunc
@@ -47,6 +48,17 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 	if opts.Version == "" {
 		opts.Version = Version
 	}
+	if opts.DemoMode {
+		if opts.DemoTTL <= 0 {
+			opts.DemoTTL = 60 * time.Minute
+		}
+		if opts.DemoWriteLimit <= 0 {
+			opts.DemoWriteLimit = 60
+		}
+		if opts.DemoMaxProjects <= 0 {
+			opts.DemoMaxProjects = 200
+		}
+	}
 	r := &Router{
 		Engine:   gin.New(),
 		services: services,
@@ -61,6 +73,10 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 	if opts.ReadOnly {
 		r.Use(readOnlyMiddleware())
 	}
+	if opts.DemoMode {
+		r.demo = &demoState{windows: make(map[string]*writeWindow)}
+		r.Use(r.demoGuard())
+	}
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -70,6 +86,11 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 	{
 		v1.GET("/meta", r.meta)
 		v1.GET("/status/ingesters", r.ingesterStatus)
+
+		if opts.DemoMode {
+			v1.POST("/demo/session", r.demoSession)
+			v1.POST("/demo/scenario", r.demoScenario)
+		}
 
 		v1.GET("/projects", r.listProjects)
 		v1.POST("/projects", r.createProject)
@@ -108,6 +129,9 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 	}
 	r.mountUI()
 	r.superviseLiveBranches()
+	if opts.DemoMode {
+		r.startDemoSweeper()
+	}
 	return r
 }
 
@@ -136,8 +160,11 @@ func (r *Router) superviseLiveBranches() {
 	}
 }
 
-// Shutdown stops every supervised ingester.
+// Shutdown stops every supervised ingester and the demo sweeper.
 func (r *Router) Shutdown() {
+	if r.demo != nil && r.demo.cancel != nil {
+		r.demo.cancel()
+	}
 	r.ingestMu.Lock()
 	defer r.ingestMu.Unlock()
 	for id, cancel := range r.ingest {
