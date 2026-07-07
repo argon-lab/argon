@@ -188,6 +188,17 @@ func (s *BranchService) GetBranchByIDAny(branchID string) (*wal.Branch, error) {
 	return &branch, nil
 }
 
+// SetExpiry stamps (or clears, with nil) a branch's sandbox TTL.
+func (s *BranchService) SetExpiry(branchID string, expiresAt *time.Time) error {
+	ctx := context.Background()
+	update := bson.M{"$unset": bson.M{"expires_at": ""}}
+	if expiresAt != nil {
+		update = bson.M{"$set": bson.M{"expires_at": *expiresAt}}
+	}
+	_, err := s.collection.UpdateOne(ctx, bson.M{"_id": branchID}, update)
+	return err
+}
+
 // SetCheckoutState records (or clears, with empty values) a branch's
 // physical-database checkout.
 func (s *BranchService) SetCheckoutState(branchID, physicalDB, state string, checkedOutLSN int64) error {
