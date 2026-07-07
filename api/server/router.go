@@ -107,7 +107,33 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 		v1.POST("/projects/:project/branches/:branch/snapshots", r.createSnapshot)
 	}
 	r.mountUI()
+	r.superviseLiveBranches()
 	return r
+}
+
+// superviseLiveBranches re-attaches an ingester to every branch that was
+// checked out when a previous process exited — supervision is in-memory,
+// so a restart would otherwise leave live branches capturing nothing.
+// Ingestion resumes from the persisted resume token, so writes made while
+// unsupervised are caught up (at-least-once), not lost.
+func (r *Router) superviseLiveBranches() {
+	projects, err := r.services.Projects.ListProjects()
+	if err != nil {
+		log.Printf("api: cannot list projects to re-attach ingesters: %v", err)
+		return
+	}
+	for _, p := range projects {
+		branches, err := r.services.Branches.ListBranches(p.ID)
+		if err != nil {
+			log.Printf("api: cannot list branches for project %s: %v", p.Name, err)
+			continue
+		}
+		for _, b := range branches {
+			if b.IsLive() {
+				r.startIngester(b.ID)
+			}
+		}
+	}
 }
 
 // Shutdown stops every supervised ingester.

@@ -110,6 +110,14 @@ func (s *Service) Run(ctx context.Context, branchID string, opts ...RunOption) e
 		close(cfg.ready)
 	}
 
+	// Checkpoint the stream position immediately. Without a persisted
+	// token a later restart would open the stream at "now" and silently
+	// skip whatever landed while unsupervised; with this checkpoint the
+	// capture gap closes at stream open instead of at the first event.
+	if err := s.flush(branch, nil, stream.ResumeToken()); err != nil {
+		return err
+	}
+
 	batch := make([]*wal.Entry, 0, maxBatch)
 	for {
 		if ctx.Err() != nil {

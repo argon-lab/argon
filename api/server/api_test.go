@@ -418,6 +418,71 @@ func TestAPI_TokenReadOnlyAndCORS(t *testing.T) {
 	assert.Contains(t, rec.Header().Get("Content-Type"), "application/json")
 }
 
+func TestAPI_RestartReattachesIngesters(t *testing.T) {
+	dbName := fmt.Sprintf("argon_api_restart_test_%d", time.Now().UnixNano())
+	services, err := walcli.NewServicesAt("mongodb://localhost:27017", dbName)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = services.Client.Database(dbName).Drop(context.Background())
+	})
+
+	router := NewRouter(services)
+	code, _ := do(t, router, "POST", "/api/v1/projects", map[string]string{"name": "restart-test"})
+	require.Equal(t, http.StatusCreated, code)
+	code, resp := do(t, router, "POST", "/api/v1/projects/restart-test/branches/main/checkout", nil)
+	require.Equal(t, http.StatusOK, code, "%v", resp)
+	connStr := resp["connection_string"].(string)
+	t.Cleanup(func() {
+		branch, err := services.Branches.GetBranch(mustProjectID(t, services, "restart-test"), "main")
+		if err == nil && branch.PhysicalDB != "" {
+			_ = services.Client.Database(branch.PhysicalDB).Drop(context.Background())
+		}
+	})
+
+	// Wait for the ingester to checkpoint its stream position, then the
+	// process "dies": supervision is gone, the branch stays live.
+	state := services.Client.Database(dbName).Collection("wal_ingest_state")
+	deadlineToken := time.Now().Add(10 * time.Second)
+	for {
+		n, err := state.CountDocuments(context.Background(), bson.M{})
+		require.NoError(t, err)
+		if n > 0 {
+			break
+		}
+		require.True(t, time.Now().Before(deadlineToken), "ingester never checkpointed")
+		time.Sleep(100 * time.Millisecond)
+	}
+	router.Shutdown()
+
+	// A write lands while nobody is watching.
+	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(connStr))
+	require.NoError(t, err)
+	defer func() { _ = client.Disconnect(context.Background()) }()
+	_, err = client.Database(dbFromURI(connStr)).Collection("notes").
+		InsertOne(context.Background(), bson.M{"_id": "orphan", "text": "written while down"})
+	require.NoError(t, err)
+
+	// A new router re-attaches and catches up from the resume token.
+	router2 := NewRouter(services)
+	t.Cleanup(router2.Shutdown)
+	projectID := mustProjectID(t, services, "restart-test")
+	branch, err := services.Branches.GetBranch(projectID, "main")
+	require.NoError(t, err)
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		b, err := services.Branches.GetBranchByID(branch.ID)
+		require.NoError(t, err)
+		entries, err := services.WAL.GetBranchEntries(branch.ID, "notes", 0, b.HeadLSN)
+		require.NoError(t, err)
+		if len(entries) >= 1 {
+			break
+		}
+		require.True(t, time.Now().Before(deadline),
+			"restarted router never caught up on the unsupervised write")
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func mustProjectID(t *testing.T, services *walcli.Services, name string) string {
 	t.Helper()
 	p, err := services.Projects.GetProjectByName(name)
