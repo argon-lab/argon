@@ -50,14 +50,21 @@ type Services struct {
 	Client *mongo.Client
 }
 
-// NewServices creates and returns all WAL services
+// NewServices creates all WAL services against the deployment named by
+// MONGODB_URI (default localhost) and the standard argon_wal metadata
+// database.
 func NewServices() (*Services, error) {
-	// Get MongoDB URI from environment or use default
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
 		mongoURI = "mongodb://localhost:27017"
 	}
+	return NewServicesAt(mongoURI, "argon_wal")
+}
 
+// NewServicesAt creates all WAL services against an explicit deployment and
+// metadata database — for embedding (REST server, tests) where the global
+// environment must not decide.
+func NewServicesAt(mongoURI, dbName string) (*Services, error) {
 	// Connect to MongoDB
 	ctx := context.Background()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
@@ -65,8 +72,7 @@ func NewServices() (*Services, error) {
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 
-	// Use argon_wal database for WAL data
-	db := client.Database("argon_wal")
+	db := client.Database(dbName)
 
 	// Create services
 	walService, err := wal.NewService(db)
