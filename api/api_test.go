@@ -21,7 +21,7 @@ import (
 // do drives one JSON request through the router.
 func do(t *testing.T, router http.Handler, method, path string, body interface{}) (int, map[string]interface{}) {
 	t.Helper()
-	var payload *bytes.Buffer = bytes.NewBuffer(nil)
+	payload := bytes.NewBuffer(nil)
 	if body != nil {
 		raw, err := json.Marshal(body)
 		require.NoError(t, err)
@@ -76,9 +76,7 @@ func TestAPI_ControlPlaneFlow(t *testing.T) {
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(connStr))
 	require.NoError(t, err)
 	defer func() { _ = client.Disconnect(context.Background()) }()
-	agentDB := client.Database(connStr[len(connStr)-len("argon_br_")-24:]) // fallback parse below
-	// Robust: use the default database from the URI.
-	agentDB = client.Database(dbFromURI(connStr))
+	agentDB := client.Database(dbFromURI(connStr))
 	_, err = agentDB.Collection("notes").InsertOne(context.Background(), bson.M{"_id": "n1", "text": "from-agent"})
 	require.NoError(t, err)
 

@@ -50,9 +50,9 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&output, "output", "o", "table", "Output format (json|yaml|table)")
 
 	// Bind flags to viper
-	viper.BindPFlag("api-key", rootCmd.PersistentFlags().Lookup("api-key"))
-	viper.BindPFlag("project-id", rootCmd.PersistentFlags().Lookup("project-id"))
-	viper.BindPFlag("output", rootCmd.PersistentFlags().Lookup("output"))
+	_ = viper.BindPFlag("api-key", rootCmd.PersistentFlags().Lookup("api-key"))
+	_ = viper.BindPFlag("project-id", rootCmd.PersistentFlags().Lookup("project-id"))
+	_ = viper.BindPFlag("output", rootCmd.PersistentFlags().Lookup("output"))
 }
 
 // initConfig reads in config file and ENV variables.

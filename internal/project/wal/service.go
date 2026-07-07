@@ -130,6 +130,16 @@ func (s *ProjectService) GetProjectByName(name string) (*wal.Project, error) {
 	return &project, nil
 }
 
+// GetProjectIDByName resolves a project name to its ID (the wire proxy's
+// alias lookup interface).
+func (s *ProjectService) GetProjectIDByName(name string) (string, error) {
+	project, err := s.GetProjectByName(name)
+	if err != nil {
+		return "", err
+	}
+	return project.ID, nil
+}
+
 // ListProjects lists all WAL-enabled projects
 func (s *ProjectService) ListProjects() ([]*wal.Project, error) {
 	ctx := context.Background()

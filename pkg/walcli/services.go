@@ -21,6 +21,7 @@ import (
 	"github.com/argon-lab/argon/internal/timetravel"
 	"github.com/argon-lab/argon/internal/undo"
 	"github.com/argon-lab/argon/internal/walwriter"
+	"github.com/argon-lab/argon/internal/wireproxy"
 	"github.com/argon-lab/argon/internal/wal"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -208,6 +209,12 @@ func (s *Services) ApplyUndoPlan(ctx context.Context, branchID string, plan *und
 		return 0, 0, err
 	}
 	return s.Undo.Apply(ctx, branch, plan)
+}
+
+// NewWireProxy builds the wire-protocol proxy over these services (the
+// cli module cannot import internal packages).
+func (s *Services) NewWireProxy(upstreamAddr string) *wireproxy.Proxy {
+	return wireproxy.New(upstreamAddr, s.Projects, s.Branches)
 }
 
 // BranchConnectionString renders the URI applications use to reach a
