@@ -36,6 +36,11 @@ func (r *Router) mountUI() {
 			st, statErr := f.Stat()
 			_ = f.Close()
 			if statErr == nil && !st.IsDir() {
+				// Asset filenames are content-hashed, so they're safe to
+				// cache hard and forever.
+				if strings.HasPrefix(p, "/assets/") {
+					c.Header("Cache-Control", "public, max-age=31536000, immutable")
+				}
 				fileServer.ServeHTTP(c.Writer, c.Request)
 				return
 			}
@@ -45,6 +50,10 @@ func (r *Router) mountUI() {
 			c.JSON(http.StatusNotFound, gin.H{"error": "console UI is not bundled in this build"})
 			return
 		}
+		// The SPA entry must always revalidate — otherwise a returning
+		// visitor keeps running a stale bundle (and pointing at asset
+		// hashes a newer deploy no longer serves).
+		c.Header("Cache-Control", "no-cache")
 		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
 	})
 }
