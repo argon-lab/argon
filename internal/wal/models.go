@@ -153,6 +153,24 @@ type Branch struct {
 	// necessarily higher than the discarded entries') would advance the head
 	// past the discarded window and resurrect it.
 	DiscardedRanges []LSNRange `bson:"discarded_ranges,omitempty" json:"discarded_ranges,omitempty"`
+
+	// Checkout state (mongod-as-compute). A checked-out ("live") branch is
+	// materialized into a real MongoDB database that applications connect
+	// to directly; the WAL is fed from its change stream instead of the
+	// SDK write path.
+	PhysicalDB     string `bson:"physical_db,omitempty" json:"physical_db,omitempty"`
+	State          string `bson:"state,omitempty" json:"state,omitempty"` // "" | BranchStateLive
+	CheckedOutLSN  int64  `bson:"checked_out_lsn,omitempty" json:"checked_out_lsn,omitempty"`
+}
+
+// BranchStateLive marks a branch as checked out into a physical database.
+const BranchStateLive = "live"
+
+// IsLive reports whether the branch is checked out into a physical
+// database (writes flow through mongod and the change-stream ingester, not
+// the SDK interceptor).
+func (b *Branch) IsLive() bool {
+	return b.State == BranchStateLive
 }
 
 // IsDiscardedForRead reports whether an LSN must be skipped when reading

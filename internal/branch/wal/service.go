@@ -188,6 +188,24 @@ func (s *BranchService) GetBranchByIDAny(branchID string) (*wal.Branch, error) {
 	return &branch, nil
 }
 
+// SetCheckoutState records (or clears, with empty values) a branch's
+// physical-database checkout.
+func (s *BranchService) SetCheckoutState(branchID, physicalDB, state string, checkedOutLSN int64) error {
+	ctx := context.Background()
+	update := bson.M{}
+	if physicalDB == "" && state == "" {
+		update["$unset"] = bson.M{"physical_db": "", "state": "", "checked_out_lsn": ""}
+	} else {
+		update["$set"] = bson.M{
+			"physical_db":     physicalDB,
+			"state":           state,
+			"checked_out_lsn": checkedOutLSN,
+		}
+	}
+	_, err := s.collection.UpdateOne(ctx, bson.M{"_id": branchID}, update)
+	return err
+}
+
 // AddDiscardedRange records an LSN window abandoned by a reset so that
 // materialization skips it. The entries themselves stay in the WAL for
 // audit and for time travel to points before the reset.
