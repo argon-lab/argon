@@ -165,6 +165,24 @@ without one, fall back to full replay unchanged.
   children) drops its WAL entries, its manifests and any chunks no other
   manifest references.
 
+## Agent sandboxes and the MCP server
+
+A sandbox is a branch forked from a parent, checked out into its own
+physical database and stamped with a TTL (`argon sandbox create -p proj
+--ttl 1h`): hand an agent the connection string, merge what you like,
+undo what you don't, and let `argon sandbox sweep` reclaim whatever is
+left when the TTL passes (deletion reclaims WAL entries, snapshots and
+chunks). `keep` removes the TTL; `extend` pushes it out.
+
+`argon mcp` serves this workflow to AI agents over the Model Context
+Protocol (stdio): `argon_sandbox_create` returns a connection string,
+`argon_diff` / `argon_merge_preview` / `argon_merge_apply` bring the work
+back, `argon_undo` reverts it, `argon_sandbox_discard` throws it away.
+The MCP server supervises a change-stream ingester for every sandbox it
+hands out, so agent writes become versioned history without anyone
+running `argon watch` by hand. Register with an MCP client, e.g.
+`claude mcp add argon -- argon mcp`.
+
 ## Garbage collection (retention window)
 
 `argon gc` (and `Services.RunGC`) deletes WAL entries that no reader can

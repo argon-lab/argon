@@ -165,6 +165,16 @@ type Branch struct {
 	PhysicalDB     string `bson:"physical_db,omitempty" json:"physical_db,omitempty"`
 	State          string `bson:"state,omitempty" json:"state,omitempty"` // "" | BranchStateLive
 	CheckedOutLSN  int64  `bson:"checked_out_lsn,omitempty" json:"checked_out_lsn,omitempty"`
+
+	// ExpiresAt marks an ephemeral sandbox branch: past this instant, a
+	// sweep releases and deletes it (storage reclaimed through the delete
+	// hook). Merge or discard it before then — or extend it.
+	ExpiresAt *time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
+}
+
+// IsExpired reports whether a sandbox branch has passed its TTL.
+func (b *Branch) IsExpired(now time.Time) bool {
+	return b.ExpiresAt != nil && now.After(*b.ExpiresAt)
 }
 
 // BranchStateLive marks a branch as checked out into a physical database.
