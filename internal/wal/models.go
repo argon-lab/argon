@@ -26,6 +26,10 @@ const (
 	OpDeleteBranch  OperationType = "delete_branch"
 	OpCreateProject OperationType = "create_project"
 	OpDeleteProject OperationType = "delete_project"
+	// OpMerge records that another branch's changes were merged in; the
+	// data itself arrives as ordinary puts/deletes, this entry is the
+	// audit marker carrying the plan metadata.
+	OpMerge OperationType = "merge"
 )
 
 // Legacy schema-v1 data operations. v1 update/delete entries stored the
@@ -111,7 +115,7 @@ func (e *Entry) ValidateForAppend() error {
 		if e.BranchID == "" || e.Collection == "" || e.DocumentID == "" {
 			return fmt.Errorf("delete entry requires branch, collection and document ID")
 		}
-	case OpCreateBranch, OpDeleteBranch, OpCreateProject, OpDeleteProject:
+	case OpCreateBranch, OpDeleteBranch, OpCreateProject, OpDeleteProject, OpMerge:
 		// Control entries carry their payload in Metadata.
 	case LegacyOpInsert, LegacyOpUpdate:
 		return fmt.Errorf("operation %q is a legacy schema-v1 operation and can no longer be written", e.Operation)
