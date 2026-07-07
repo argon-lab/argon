@@ -86,6 +86,10 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			assert.NoError(t, err)
 		}
 		checkpoints["noon"] = walService.GetCurrentLSN(project.ID)
+		// Captured after the noon writes completed, so their WAL
+		// timestamps are guaranteed at or before it regardless of how
+		// long the write round-trips took under load.
+		timestamps["noonDone"] = time.Now()
 
 		// Evening: Something went wrong
 		time.Sleep(10 * time.Millisecond)
@@ -118,7 +122,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			assert.Len(t, noonUsers, 6) // admin + 5 test users
 
 			// Query by time
-			noonState, err := timeTravelService.MaterializeAtTime(mainBranch, "config", timestamps["noon"].Add(5*time.Millisecond))
+			noonState, err := timeTravelService.MaterializeAtTime(mainBranch, "config", timestamps["noonDone"])
 			assert.NoError(t, err)
 			assert.Equal(t, "1.1.0", noonState["app"]["version"])
 		})
