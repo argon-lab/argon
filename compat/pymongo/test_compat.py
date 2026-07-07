@@ -100,13 +100,21 @@ def test_multi_document_transaction(db):
     ledger = db.ledger
     accounts.insert_one({"_id": "a", "balance": 100})
     accounts.insert_one({"_id": "b", "balance": 0})
+    # Creating a collection inside a transaction races the catalog on any
+    # MongoDB (TransientTransactionError: WriteConflict) — make sure the
+    # ledger collection exists before the transaction starts.
+    ledger.insert_one({"_id": "warmup"})
+    ledger.delete_one({"_id": "warmup"})
+
+    def txn(session):
+        accounts.update_one({"_id": "a"}, {"$inc": {"balance": -40}}, session=session)
+        accounts.update_one({"_id": "b"}, {"$inc": {"balance": 40}}, session=session)
+        ledger.insert_one({"_id": "t1", "amount": 40}, session=session)
 
     client = db.client
     with client.start_session() as session:
-        with session.start_transaction():
-            accounts.update_one({"_id": "a"}, {"$inc": {"balance": -40}}, session=session)
-            accounts.update_one({"_id": "b"}, {"$inc": {"balance": 40}}, session=session)
-            ledger.insert_one({"_id": "t1", "amount": 40}, session=session)
+        # with_transaction retries transient errors, as production code does
+        session.with_transaction(txn)
 
     assert accounts.find_one({"_id": "a"})["balance"] == 60
     assert accounts.find_one({"_id": "b"})["balance"] == 40

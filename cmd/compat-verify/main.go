@@ -21,6 +21,7 @@ func main() {
 	project := flag.String("project", "", "project name")
 	branch := flag.String("branch", "main", "branch name")
 	timeout := flag.Duration("timeout", 60*time.Second, "how long to wait for convergence")
+	mode := flag.String("mode", "match", "match: WAL ≡ physical · empty: physical has no documents · head: print head LSN")
 	flag.Parse()
 	if *project == "" {
 		fmt.Fprintln(os.Stderr, "--project is required")
@@ -43,17 +44,35 @@ func main() {
 		fatal("branch %q is not checked out", *branch)
 	}
 
+	if *mode == "head" {
+		fmt.Println(b.HeadLSN)
+		return
+	}
+
 	ctx := context.Background()
 	deadline := time.Now().Add(*timeout)
 	var lastDiff string
 	for {
-		diff, err := compare(ctx, services, b.ID)
+		var diff string
+		var err error
+		switch *mode {
+		case "match":
+			diff, err = compare(ctx, services, b.ID)
+		case "empty":
+			diff, err = physicalEmpty(ctx, services, b.ID)
+		default:
+			fatal("unknown --mode %q", *mode)
+		}
 		if err != nil {
-			fatal("compare: %v", err)
+			fatal("%s: %v", *mode, err)
 		}
 		if diff == "" {
 			fresh, _ := services.Branches.GetBranchByID(b.ID)
-			fmt.Printf("CONVERGED: WAL state equals the physical database (branch head LSN %d)\n", fresh.HeadLSN)
+			if *mode == "empty" {
+				fmt.Printf("CONVERGED: physical database is empty (branch head LSN %d)\n", fresh.HeadLSN)
+			} else {
+				fmt.Printf("CONVERGED: WAL state equals the physical database (branch head LSN %d)\n", fresh.HeadLSN)
+			}
 			return
 		}
 		lastDiff = diff
@@ -62,6 +81,31 @@ func main() {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// physicalEmpty returns "" when every collection in the branch's physical
+// database has zero documents — the expected end state after undoing an
+// entire driver session.
+func physicalEmpty(ctx context.Context, services *walcli.Services, branchID string) (string, error) {
+	branch, err := services.Branches.GetBranchByID(branchID)
+	if err != nil {
+		return "", err
+	}
+	physical := services.Client.Database(branch.PhysicalDB)
+	names, err := physical.ListCollectionNames(ctx, bson.M{})
+	if err != nil {
+		return "", err
+	}
+	for _, name := range names {
+		count, err := physical.Collection(name).CountDocuments(ctx, bson.M{})
+		if err != nil {
+			return "", err
+		}
+		if count != 0 {
+			return fmt.Sprintf("collection %s still has %d documents", name, count), nil
+		}
+	}
+	return "", nil
 }
 
 // compare returns "" when the WAL materialization equals the physical
