@@ -105,7 +105,10 @@ GET    /api/v1/status/ingesters
 Sandbox-creating endpoints start a supervised ingester; errors return
 `{"error": "..."}` with a meaningful status. Optional switches, all off
 by default: `ARGON_API_TOKEN` (Bearer auth on every `/api` endpoint
-except `/meta`), `ARGON_READ_ONLY=1`, `ARGON_CORS_ORIGINS`.
+except `/meta`), `ARGON_READ_ONLY=1`, `ARGON_CORS_ORIGINS`, and
+`ARGON_DEMO_MODE=1` — an anonymous hosted playground: one ephemeral
+seeded project per visitor, requests scoped to it, writes rate-limited,
+everything reclaimed after `ARGON_DEMO_TTL_MINUTES` (default 60).
 
 ## Python — argon-agents
 
