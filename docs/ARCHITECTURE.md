@@ -244,17 +244,23 @@ Current limitations (deliberate scope):
   options (sort/skip/limit/projection) not applied; results in canonical
   document-ID order.
 - No merge/diff commands yet (pre-images already carry the data they need).
-- WAL entries and snapshot chunks live in MongoDB; offload to object
-  storage (S3/GCS) is an optional cost optimization behind the ChunkStore
-  interface, not yet implemented.
+- WAL entries live in MongoDB and are reclaimed by retention-window GC once
+  snapshots cover them; snapshot chunks can additionally live in an
+  S3-compatible or filesystem chunk store (see "Chunk store backends"
+  above). GCS is not yet a backend.
+- No published performance numbers yet: the public, reproducible benchmark
+  suite is the remaining M2 deliverable, and numbers return only with it.
 
 Planned next (in order):
 
-1. **M3 — mongod as compute**: branches materialize into real MongoDB
+1. **M2 (remaining) — public benchmarks**: a reproducible benchmark repo
+   (`docker compose up`); every published performance number links to a
+   run you can reproduce.
+2. **M3 — mongod as compute**: branches materialize into real MongoDB
    databases (lazily), reads/writes run on mongod with change-stream
    capture into the WAL, per-branch connection strings — full query
    compatibility without reimplementing MongoDB.
-2. **M4 — merge and diff**: three-way document-level merge with reviewable
+3. **M4 — merge and diff**: three-way document-level merge with reviewable
    merge plans.
 
 ## Storage collections

@@ -101,15 +101,18 @@ reproduce. What we can say structurally today:
   structurally by running reads on real mongod.
 - No merge/diff commands yet (M4) — pre-images already record the data they
   will need.
-- All WAL entries live in MongoDB; cold-history offload to object storage is
-  the remainder of M2.
+- WAL entries live in MongoDB and are reclaimed by retention-window GC once
+  snapshots cover them; snapshot chunks can additionally live in an
+  S3-compatible or filesystem chunk store.
+- No published performance numbers yet: the public benchmark suite is the
+  remaining M2 deliverable, and numbers return only with it.
 
 ## 🔮 Roadmap
 
 | Milestone | Scope | Status |
 |---|---|---|
 | **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
-| **M2 · Bounded time travel** | Snapshots that bound replay depth (✅ merged), WAL segmentation + GC, **public reproducible benchmarks** | 🚧 In progress |
+| **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · **public reproducible benchmarks** 🚧 | Engine shipped · benchmarks in progress |
 | **M3 · True drop-in** | One physical MongoDB database per branch, change-stream capture, per-branch connection strings, `argon undo --session` | Planned |
 | **M4 · Merge & diff** | Document-level diff, three-way merge, reviewable data PRs | Planned |
 | **M5 · Agent ecosystem** | MCP server, LangGraph checkpointer, TTL sandboxes, eval pinning | Planned |
