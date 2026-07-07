@@ -293,7 +293,6 @@ convergence; CI runs it on every push.
 ### Recognition
 
 We value all contributions! Contributors will be:
-- Listed in our [CONTRIBUTORS.md](CONTRIBUTORS.md) file
 - Mentioned in release notes for significant contributions
 - Invited to our contributor recognition program
 
