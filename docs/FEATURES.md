@@ -120,7 +120,7 @@ reproduce on yours with `docker compose up`:
 |---|---|---|
 | **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
 | **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · [public reproducible benchmarks](https://github.com/argon-lab/benchmarks) ✅ | ✅ Shipped |
-| **M3 · True drop-in** | Physical MongoDB database per branch ✅ · change-stream write capture ✅ · per-branch connection strings 🚧 · `argon undo --session` 🚧 | 🚧 In progress |
+| **M3 · True drop-in** | Physical MongoDB database per branch (`argon checkout` → connection string) ✅ · change-stream write capture ✅ · `argon undo` with per-actor conflict detection ✅ · official driver test suites in CI 🚧 | Shipped · driver-suite validation pending |
 | **M4 · Merge & diff** | Document-level diff, three-way merge, reviewable data PRs | Planned |
 | **M5 · Agent ecosystem** | MCP server, LangGraph checkpointer, TTL sandboxes, eval pinning | Planned |
 
