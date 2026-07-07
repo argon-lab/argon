@@ -82,7 +82,7 @@ func TestWALService_EdgeCases(t *testing.T) {
 		}
 
 		// Get current LSN
-		currentLSN := walService.GetCurrentLSN()
+		currentLSN := walService.GetCurrentLSN("range-test")
 
 		// Query specific range
 		entries, err := walService.GetBranchEntries("test-branch", "items", currentLSN-5, currentLSN-2)
@@ -248,7 +248,7 @@ func TestWALService_TimestampOrdering(t *testing.T) {
 			lsn, _ := walService.Append(entry)
 
 			// Get the entry back
-			saved, err := walService.GetEntry(lsn)
+			saved, err := walService.GetEntry("time-test", lsn)
 			assert.NoError(t, err)
 
 			if i > 0 {
@@ -349,7 +349,7 @@ func TestWALService_Persistence(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Should continue from where it left off
-		assert.Equal(t, lastLSN, service2.GetCurrentLSN())
+		assert.Equal(t, lastLSN, service2.GetCurrentLSN("persist-test"))
 
 		// New entries should continue sequence
 		entry := &wal.Entry{

@@ -76,7 +76,7 @@ func (s *ImportService) PreviewImport(ctx context.Context, mongoURI, databaseNam
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", err)
 	}
-	defer client.Disconnect(ctx)
+	defer func() { _ = client.Disconnect(ctx) }()
 
 	// Check connection
 	if err := client.Ping(ctx, nil); err != nil {
@@ -174,7 +174,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", err)
 	}
-	defer sourceClient.Disconnect(ctx)
+	defer func() { _ = sourceClient.Disconnect(ctx) }()
 
 	if err := sourceClient.Ping(ctx, nil); err != nil {
 		return nil, fmt.Errorf("failed to ping source MongoDB: %w", err)
@@ -218,7 +218,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	if !opts.DryRun {
 		result.ProjectID = project.ID
 		result.BranchID = branch.ID
-		result.StartLSN = s.walService.GetCurrentLSN()
+		result.StartLSN = s.walService.GetCurrentLSN(project.ID)
 	}
 
 	// Import each collection
@@ -250,7 +250,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	}
 
 	if !opts.DryRun {
-		result.EndLSN = s.walService.GetCurrentLSN()
+		result.EndLSN = s.walService.GetCurrentLSN(project.ID)
 	}
 
 	result.Duration = time.Since(startTime)
@@ -269,13 +269,13 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to create cursor for collection %s: %w", collectionName, err)
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var importedCount int64
 	var walEntriesCount int64
 	documents := make([]interface{}, 0, batchSize)
 
-	startWALCount := s.walService.GetCurrentLSN()
+	startWALCount := s.walService.GetCurrentLSN(branch.ProjectID)
 
 	// Process documents in batches
 	for cursor.Next(ctx) {
@@ -308,7 +308,7 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 		return importedCount, walEntriesCount, fmt.Errorf("cursor error: %w", err)
 	}
 
-	endWALCount := s.walService.GetCurrentLSN()
+	endWALCount := s.walService.GetCurrentLSN(branch.ProjectID)
 	walEntriesCount = endWALCount - startWALCount
 
 	return importedCount, walEntriesCount, nil

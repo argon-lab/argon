@@ -45,7 +45,7 @@ func TestCompressor_Basic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			compressor, err := wal.NewCompressor(tt.config)
 			require.NoError(t, err)
-			defer compressor.Close()
+			defer func() { _ = compressor.Close() }()
 
 			// Test data that should be compressed
 			testData := bytes.Repeat([]byte("Hello World! "), 100)
@@ -77,7 +77,7 @@ func TestCompressor_SmallData(t *testing.T) {
 
 	compressor, err := wal.NewCompressor(config)
 	require.NoError(t, err)
-	defer compressor.Close()
+	defer func() { _ = compressor.Close() }()
 
 	// Small data should not be compressed
 	smallData := []byte("Small data")
@@ -96,7 +96,7 @@ func TestCompressor_SmallData(t *testing.T) {
 func TestCompressor_Entry(t *testing.T) {
 	compressor, err := wal.NewCompressor(nil) // Use default config
 	require.NoError(t, err)
-	defer compressor.Close()
+	defer func() { _ = compressor.Close() }()
 
 	// Create test entry with large documents
 	largeDoc := bson.M{
@@ -171,7 +171,7 @@ func TestCompressor_Entry(t *testing.T) {
 func TestCompressor_EdgeCases(t *testing.T) {
 	compressor, err := wal.NewCompressor(nil)
 	require.NoError(t, err)
-	defer compressor.Close()
+	defer func() { _ = compressor.Close() }()
 
 	t.Run("Empty data", func(t *testing.T) {
 		compressed, err := compressor.Compress([]byte{})
@@ -262,7 +262,7 @@ func TestCompressor_Performance(t *testing.T) {
 			
 			compressor, err := wal.NewCompressor(tc.config)
 			require.NoError(t, err)
-			defer compressor.Close()
+			defer func() { _ = compressor.Close() }()
 
 			// Measure compression
 			compressed, err := compressor.Compress(docBytes)
@@ -332,6 +332,6 @@ func BenchmarkCompression(b *testing.B) {
 			}
 		})
 		
-		compressor.Close()
+		_ = compressor.Close()
 	}
 }

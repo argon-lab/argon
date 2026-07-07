@@ -74,7 +74,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 
 			// Save checkpoints every 100 operations
 			if i%100 == 99 {
-				checkpoints = append(checkpoints, walService.GetCurrentLSN())
+				checkpoints = append(checkpoints, walService.GetCurrentLSN(project.ID))
 			}
 		}
 

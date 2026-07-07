@@ -67,8 +67,9 @@ func (s *Service) ResetBranchToLSN(branchID string, targetLSN int64) (*wal.Branc
 	// Update branch HEAD
 	branch.HeadLSN = targetLSN
 
-	// Save the updated branch
-	if err := s.branches.UpdateBranchHead(branchID, targetLSN); err != nil {
+	// Save the updated branch. Reset deliberately moves the head backwards,
+	// which the monotonic writer path (UpdateBranchHead) refuses to do.
+	if err := s.branches.SetBranchHead(branchID, targetLSN); err != nil {
 		return nil, fmt.Errorf("failed to update branch HEAD: %w", err)
 	}
 

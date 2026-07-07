@@ -26,7 +26,6 @@ var statusCmd = &cobra.Command{
 		}
 
 		fmt.Printf("   Database: ✅ Connected\n")
-		fmt.Printf("   Current LSN: %d\n", services.WAL.GetCurrentLSN())
 
 		// Get health and metrics
 		health := services.Monitor.GetHealthStatus()
