@@ -6,7 +6,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/materializer"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/restore"
@@ -40,19 +40,19 @@ func TestRestore_ResetBranchToLSN(t *testing.T) {
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
 
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Reset to previous LSN", func(t *testing.T) {
 		// Create some history
-		_, err := interceptor.InsertOne(ctx, "items", bson.M{"_id": "i1", "step": 1})
+		_, err := interceptor.Put(ctx, "items", bson.M{"_id": "i1", "step": 1})
 		assert.NoError(t, err)
 		lsn1 := walService.GetCurrentLSN(project.ID)
 
-		_, err = interceptor.InsertOne(ctx, "items", bson.M{"_id": "i2", "step": 2})
+		_, err = interceptor.Put(ctx, "items", bson.M{"_id": "i2", "step": 2})
 		assert.NoError(t, err)
 		lsn2 := walService.GetCurrentLSN(project.ID)
 
-		_, err = interceptor.InsertOne(ctx, "items", bson.M{"_id": "i3", "step": 3})
+		_, err = interceptor.Put(ctx, "items", bson.M{"_id": "i3", "step": 3})
 		assert.NoError(t, err)
 
 		// Update branch to get latest HEAD
@@ -117,18 +117,18 @@ func TestRestore_ResetBranchToTime(t *testing.T) {
 	project, _ := projectService.CreateProject("time-reset-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Reset to specific time", func(t *testing.T) {
 		// Create timed operations
 		startTime := time.Now()
 
-		_, err := interceptor.InsertOne(ctx, "events", bson.M{"_id": "e1", "time": "morning"})
+		_, err := interceptor.Put(ctx, "events", bson.M{"_id": "e1", "time": "morning"})
 		assert.NoError(t, err)
 
 		time.Sleep(50 * time.Millisecond)
 
-		_, err = interceptor.InsertOne(ctx, "events", bson.M{"_id": "e2", "time": "noon"})
+		_, err = interceptor.Put(ctx, "events", bson.M{"_id": "e2", "time": "noon"})
 		assert.NoError(t, err)
 		// Capture the reset target after e2's insert completed, so e2's WAL
 		// timestamp is at or before it no matter how long the insert
@@ -137,7 +137,7 @@ func TestRestore_ResetBranchToTime(t *testing.T) {
 
 		time.Sleep(50 * time.Millisecond)
 
-		_, err = interceptor.InsertOne(ctx, "events", bson.M{"_id": "e3", "time": "evening"})
+		_, err = interceptor.Put(ctx, "events", bson.M{"_id": "e3", "time": "evening"})
 		assert.NoError(t, err)
 
 		// Update branch
@@ -174,21 +174,19 @@ func TestRestore_CreateBranchAtLSN(t *testing.T) {
 	project, _ := projectService.CreateProject("branch-at-lsn-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	mainBranch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, mainBranch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, mainBranch)
 
 	t.Run("Create branch from historical point", func(t *testing.T) {
 		// Create history on main
-		_, err := interceptor.InsertOne(ctx, "docs", bson.M{"_id": "d1", "version": "v1"})
+		_, err := interceptor.Put(ctx, "docs", bson.M{"_id": "d1", "version": "v1"})
 		assert.NoError(t, err)
 		checkpoint1 := walService.GetCurrentLSN(project.ID)
 
-		_, err = interceptor.InsertOne(ctx, "docs", bson.M{"_id": "d2", "version": "v1"})
+		_, err = interceptor.Put(ctx, "docs", bson.M{"_id": "d2", "version": "v1"})
 		assert.NoError(t, err)
 		checkpoint2 := walService.GetCurrentLSN(project.ID)
 
-		_, err = interceptor.UpdateOne(ctx, "docs",
-			bson.M{"_id": "d1"},
-			bson.M{"$set": bson.M{"version": "v2"}}, false)
+		_, err = interceptor.Put(ctx, "docs", bson.M{"_id": "d1", "version": "v2"})
 		assert.NoError(t, err)
 
 		// Update main branch
@@ -236,13 +234,13 @@ func TestRestore_CreateBranchAtLSN(t *testing.T) {
 		branch2, _ := branchService.GetBranch(project.ID, "feature-v2")
 
 		// Add data to branch1
-		interceptor1 := driverwal.NewInterceptor(walService, branch1, branchService, materializerService)
-		_, err := interceptor1.InsertOne(ctx, "docs", bson.M{"_id": "d3", "branch": "feature-v1"})
+		interceptor1 := walwriter.New(walService, branchService, materializerService, branch1)
+		_, err := interceptor1.Put(ctx, "docs", bson.M{"_id": "d3", "branch": "feature-v1"})
 		assert.NoError(t, err)
 
 		// Add data to branch2
-		interceptor2 := driverwal.NewInterceptor(walService, branch2, branchService, materializerService)
-		_, err = interceptor2.InsertOne(ctx, "docs", bson.M{"_id": "d3", "branch": "feature-v2"})
+		interceptor2 := walwriter.New(walService, branchService, materializerService, branch2)
+		_, err = interceptor2.Put(ctx, "docs", bson.M{"_id": "d3", "branch": "feature-v2"})
 		assert.NoError(t, err)
 
 		// Update branches
@@ -271,22 +269,22 @@ func TestRestore_CreateBranchAtTime(t *testing.T) {
 	project, _ := projectService.CreateProject("branch-at-time-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	mainBranch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, mainBranch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, mainBranch)
 
 	t.Run("Create branch from timestamp", func(t *testing.T) {
 		// Create timed history
-		_, err := interceptor.InsertOne(ctx, "timeline", bson.M{"_id": "t1", "event": "past"})
+		_, err := interceptor.Put(ctx, "timeline", bson.M{"_id": "t1", "event": "past"})
 		assert.NoError(t, err)
 
 		time.Sleep(50 * time.Millisecond)
 		checkpoint := time.Now()
 
-		_, err = interceptor.InsertOne(ctx, "timeline", bson.M{"_id": "t2", "event": "present"})
+		_, err = interceptor.Put(ctx, "timeline", bson.M{"_id": "t2", "event": "present"})
 		assert.NoError(t, err)
 
 		time.Sleep(50 * time.Millisecond)
 
-		_, err = interceptor.InsertOne(ctx, "timeline", bson.M{"_id": "t3", "event": "future"})
+		_, err = interceptor.Put(ctx, "timeline", bson.M{"_id": "t3", "event": "future"})
 		assert.NoError(t, err)
 
 		// Update main branch
@@ -319,25 +317,25 @@ func TestRestore_GetRestorePreview(t *testing.T) {
 	project, _ := projectService.CreateProject("preview-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Preview restore operation", func(t *testing.T) {
 		// Create complex history
-		_, err := interceptor.InsertOne(ctx, "users", bson.M{"_id": "u1"})
+		_, err := interceptor.Put(ctx, "users", bson.M{"_id": "u1"})
 		assert.NoError(t, err)
-		_, err = interceptor.InsertOne(ctx, "products", bson.M{"_id": "p1"})
+		_, err = interceptor.Put(ctx, "products", bson.M{"_id": "p1"})
 		assert.NoError(t, err)
 
 		checkpoint := walService.GetCurrentLSN(project.ID)
 
 		// Operations after checkpoint
-		_, err = interceptor.UpdateOne(ctx, "users", bson.M{"_id": "u1"}, bson.M{"$set": bson.M{"active": true}}, false)
+		_, err = interceptor.Put(ctx, "users", bson.M{"_id": "u1", "active": true})
 		assert.NoError(t, err)
-		_, err = interceptor.InsertOne(ctx, "orders", bson.M{"_id": "o1"})
+		_, err = interceptor.Put(ctx, "orders", bson.M{"_id": "o1"})
 		assert.NoError(t, err)
-		_, err = interceptor.InsertOne(ctx, "orders", bson.M{"_id": "o2"})
+		_, err = interceptor.Put(ctx, "orders", bson.M{"_id": "o2"})
 		assert.NoError(t, err)
-		_, err = interceptor.DeleteOne(ctx, "products", bson.M{"_id": "p1"})
+		_, _, err = interceptor.Delete(ctx, "products", "p1")
 		assert.NoError(t, err)
 
 		// Update branch
@@ -381,20 +379,18 @@ func TestRestore_ComplexScenario(t *testing.T) {
 	mainBranch := branches[0]
 
 	t.Run("Development workflow with restore", func(t *testing.T) {
-		interceptor := driverwal.NewInterceptor(walService, mainBranch, branchService, materializerService)
+		interceptor := walwriter.New(walService, branchService, materializerService, mainBranch)
 
 		// Initial production state
-		_, err := interceptor.InsertOne(ctx, "config", bson.M{"_id": "app", "version": "1.0", "features": []string{"basic"}})
+		_, err := interceptor.Put(ctx, "config", bson.M{"_id": "app", "version": "1.0", "features": []string{"basic"}})
 		assert.NoError(t, err)
 		prodLSN := walService.GetCurrentLSN(project.ID)
 
 		// Development changes
-		_, err = interceptor.UpdateOne(ctx, "config",
-			bson.M{"_id": "app"},
-			bson.M{"$set": bson.M{"version": "2.0", "features": []string{"basic", "advanced"}}}, false)
+		_, err = interceptor.Put(ctx, "config", bson.M{"_id": "app", "version": "2.0", "features": []string{"basic", "advanced"}})
 		assert.NoError(t, err)
 
-		_, err = interceptor.InsertOne(ctx, "config", bson.M{"_id": "experimental", "enabled": true})
+		_, err = interceptor.Put(ctx, "config", bson.M{"_id": "experimental", "enabled": true})
 		assert.NoError(t, err)
 
 		// Update main branch
@@ -424,10 +420,8 @@ func TestRestore_ComplexScenario(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Develop on feature branch
-		featureInterceptor := driverwal.NewInterceptor(walService, feature, branchService, materializerService)
-		_, err = featureInterceptor.UpdateOne(ctx, "config",
-			bson.M{"_id": "app"},
-			bson.M{"$set": bson.M{"version": "2.0-beta"}}, false)
+		featureInterceptor := walwriter.New(walService, branchService, materializerService, feature)
+		_, err = featureInterceptor.Put(ctx, "config", bson.M{"_id": "app", "version": "2.0-beta"})
 		assert.NoError(t, err)
 
 		// Feature and main are independent

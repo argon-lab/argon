@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/argon-lab/argon/internal/checkout"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -39,17 +39,17 @@ func TestCheckout_MaterializesIntoRealMongo(t *testing.T) {
 	main, err := f.branches.CreateBranch("co-test", "main", "")
 	require.NoError(t, err)
 	dropPhysical(t, client, main.ID)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 
 	for i := 0; i < 50; i++ {
-		_, err := writer.InsertOne(ctx, "users", bson.M{
+		_, err := writer.Put(ctx, "users", bson.M{
 			"_id":   fmt.Sprintf("u%02d", i),
 			"score": int32(i),
 			"team":  []string{"red", "blue"}[i%2],
 		})
 		require.NoError(t, err)
 	}
-	_, err = writer.InsertOne(ctx, "orders", bson.M{"_id": "o1", "total": int32(99)})
+	_, err = writer.Put(ctx, "orders", bson.M{"_id": "o1", "total": int32(99)})
 	require.NoError(t, err)
 
 	info, err := svc.Checkout(ctx, main.ID)
@@ -105,9 +105,9 @@ func TestCheckout_RefreshAndRelease(t *testing.T) {
 	main, err := f.branches.CreateBranch("co-refresh", "main", "")
 	require.NoError(t, err)
 	dropPhysical(t, client, main.ID)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "a", "v": int32(1)})
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "a", "v": int32(1)})
 	require.NoError(t, err)
 
 	info, err := svc.Checkout(ctx, main.ID)
@@ -120,8 +120,8 @@ func TestCheckout_RefreshAndRelease(t *testing.T) {
 	branch, _ := f.branches.GetBranchByID(main.ID)
 	assert.False(t, branch.IsLive())
 
-	writer2 := driverwal.NewInterceptor(f.wal, branch, f.branches, f.mat)
-	_, err = writer2.InsertOne(ctx, "docs", bson.M{"_id": "b", "v": int32(2)})
+	writer2 := walwriter.New(f.wal, f.branches, f.mat, branch)
+	_, err = writer2.Put(ctx, "docs", bson.M{"_id": "b", "v": int32(2)})
 	require.NoError(t, err)
 
 	_, err = svc.Checkout(ctx, main.ID)
@@ -138,8 +138,8 @@ func TestCheckout_LiveBranchRejectsSDKWrites(t *testing.T) {
 	main, err := f.branches.CreateBranch("co-guard", "main", "")
 	require.NoError(t, err)
 	dropPhysical(t, client, main.ID)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "a"})
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "a"})
 	require.NoError(t, err)
 
 	_, err = svc.Checkout(ctx, main.ID)
@@ -149,28 +149,28 @@ func TestCheckout_LiveBranchRejectsSDKWrites(t *testing.T) {
 	live, err := f.branches.GetBranchByID(main.ID)
 	require.NoError(t, err)
 	require.True(t, live.IsLive())
-	liveWriter := driverwal.NewInterceptor(f.wal, live, f.branches, f.mat)
+	liveWriter := walwriter.New(f.wal, f.branches, f.mat, live)
 
-	_, err = liveWriter.InsertOne(ctx, "docs", bson.M{"_id": "b"})
+	_, err = liveWriter.Put(ctx, "docs", bson.M{"_id": "b"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checked out")
 
-	_, err = liveWriter.UpdateOne(ctx, "docs", bson.M{"_id": "a"}, bson.M{"$set": bson.M{"x": 1}}, false)
+	_, err = liveWriter.PutMany(ctx, "docs", []bson.M{{"_id": "b2"}})
 	require.Error(t, err)
 
-	_, err = liveWriter.DeleteMany(ctx, "docs", bson.M{})
+	_, _, err = liveWriter.Delete(ctx, "docs", "a")
 	require.Error(t, err)
 
 	// Reads still work (the WAL state remains queryable).
-	docs, err := liveWriter.FindMatches("docs", bson.M{}, false)
+	state, err := f.mat.MaterializeCollection(live, "docs")
 	require.NoError(t, err)
-	assert.Len(t, docs, 1)
+	assert.Len(t, state, 1)
 
 	// After release, SDK writes flow again.
 	require.NoError(t, svc.Release(ctx, main.ID))
 	released, _ := f.branches.GetBranchByID(main.ID)
-	releasedWriter := driverwal.NewInterceptor(f.wal, released, f.branches, f.mat)
-	_, err = releasedWriter.InsertOne(ctx, "docs", bson.M{"_id": "c"})
+	releasedWriter := walwriter.New(f.wal, f.branches, f.mat, released)
+	_, err = releasedWriter.Put(ctx, "docs", bson.M{"_id": "c"})
 	require.NoError(t, err)
 }
 

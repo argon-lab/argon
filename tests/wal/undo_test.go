@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/undo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,14 +20,14 @@ func TestUndo_RestoresPreRangeState(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("undo-test", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 
 	// Segment A: the baseline the undo must restore.
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "keep", "v": int32(1)})
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "keep", "v": int32(1)})
 	require.NoError(t, err)
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "victim", "v": int32(10)})
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "victim", "v": int32(10)})
 	require.NoError(t, err)
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "doomed", "v": int32(5)})
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "doomed", "v": int32(5)})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 	baselineLSN := main.HeadLSN
@@ -36,13 +36,13 @@ func TestUndo_RestoresPreRangeState(t *testing.T) {
 
 	// Segment B: the damage — an update, a delete, an insert, and a
 	// second update of the same victim (only the oldest pre-image counts).
-	_, err = writer.UpdateOne(ctx, "docs", bson.M{"_id": "victim"}, bson.M{"$set": bson.M{"v": int32(99)}}, false)
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "victim", "v": int32(99)})
 	require.NoError(t, err)
-	_, err = writer.DeleteOne(ctx, "docs", bson.M{"_id": "doomed"})
+	_, _, err = writer.Delete(ctx, "docs", "doomed")
 	require.NoError(t, err)
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "intruder", "v": int32(666)})
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "intruder", "v": int32(666)})
 	require.NoError(t, err)
-	_, err = writer.UpdateOne(ctx, "docs", bson.M{"_id": "victim"}, bson.M{"$inc": bson.M{"v": int32(1)}}, false)
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "victim", "v": int32(100)})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 
@@ -81,28 +81,28 @@ func TestUndo_ActorFilterAndConflicts(t *testing.T) {
 	main, err := f.branches.CreateBranch("undo-actor", "main", "")
 	require.NoError(t, err)
 
-	human := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	human := walwriter.New(f.wal, f.branches, f.mat, main)
 	human.SetActor("user:jake")
-	agent := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	agent := walwriter.New(f.wal, f.branches, f.mat, main)
 	agent.SetActor("agent:rogue")
 
 	// Baseline by the human.
-	_, err = human.InsertOne(ctx, "cfg", bson.M{"_id": "a", "v": "human"})
+	_, err = human.Put(ctx, "cfg", bson.M{"_id": "a", "v": "human"})
 	require.NoError(t, err)
-	_, err = human.InsertOne(ctx, "cfg", bson.M{"_id": "b", "v": "human"})
+	_, err = human.Put(ctx, "cfg", bson.M{"_id": "b", "v": "human"})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 	fromLSN := main.HeadLSN + 1
 
 	// The agent damages a and creates c; the human then edits a again
 	// (conflict) but leaves the agent's other damage alone.
-	_, err = agent.UpdateOne(ctx, "cfg", bson.M{"_id": "a"}, bson.M{"$set": bson.M{"v": "agent"}}, false)
+	_, err = agent.Put(ctx, "cfg", bson.M{"_id": "a", "v": "agent"})
 	require.NoError(t, err)
-	_, err = agent.InsertOne(ctx, "cfg", bson.M{"_id": "c", "v": "agent"})
+	_, err = agent.Put(ctx, "cfg", bson.M{"_id": "c", "v": "agent"})
 	require.NoError(t, err)
-	_, err = agent.UpdateOne(ctx, "cfg", bson.M{"_id": "b"}, bson.M{"$set": bson.M{"v": "agent"}}, false)
+	_, err = agent.Put(ctx, "cfg", bson.M{"_id": "b", "v": "agent"})
 	require.NoError(t, err)
-	_, err = human.UpdateOne(ctx, "cfg", bson.M{"_id": "a"}, bson.M{"$set": bson.M{"v": "human-again"}}, false)
+	_, err = human.Put(ctx, "cfg", bson.M{"_id": "a", "v": "human-again"})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 

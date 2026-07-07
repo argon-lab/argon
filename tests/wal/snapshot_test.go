@@ -8,7 +8,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/restore"
 	"github.com/argon-lab/argon/internal/snapshot"
@@ -75,7 +75,7 @@ func TestSnapshot_MatchesFullReplay(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("snap-test", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 
 	rng := rand.New(rand.NewSource(99))
 	applyRandomWorkload(t, rng, writer, 100)
@@ -108,7 +108,7 @@ func TestSnapshot_MatchesFullReplay(t *testing.T) {
 		main, _ = f.branches.GetBranchByID(main.ID)
 		child, err := f.branches.CreateBranch("snap-test", "child", main.ID)
 		require.NoError(t, err)
-		childWriter := driverwal.NewInterceptor(f.wal, child, f.branches, f.mat)
+		childWriter := walwriter.New(f.wal, f.branches, f.mat, child)
 		applyRandomWorkload(t, rng, childWriter, 40)
 		child, _ = f.branches.GetBranchByID(child.ID)
 
@@ -121,7 +121,7 @@ func TestSnapshot_MatchesFullReplay(t *testing.T) {
 		_, err = f.snapshots.CreateSnapshot(ctx, child.ID, child.HeadLSN)
 		require.NoError(t, err)
 
-		childWriter := driverwal.NewInterceptor(f.wal, child, f.branches, f.mat)
+		childWriter := walwriter.New(f.wal, f.branches, f.mat, child)
 		applyRandomWorkload(t, rng, childWriter, 30)
 		child, _ = f.branches.GetBranchByID(child.ID)
 
@@ -136,11 +136,11 @@ func TestSnapshot_ResetInvalidation(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("snap-reset", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 
 	// Build history and remember a mid point.
 	for i := 0; i < 20; i++ {
-		_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%02d", i), "n": int32(i)})
+		_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%02d", i), "n": int32(i)})
 		require.NoError(t, err)
 	}
 	main, _ = f.branches.GetBranchByID(main.ID)
@@ -155,7 +155,7 @@ func TestSnapshot_ResetInvalidation(t *testing.T) {
 	main, _ = f.branches.GetBranchByID(main.ID)
 
 	// New writes after the reset.
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "post-reset", "n": int32(100)})
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "post-reset", "n": int32(100)})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 
@@ -169,7 +169,7 @@ func TestSnapshot_ResetInvalidation(t *testing.T) {
 	// A snapshot taken after the reset is valid again and serves reads.
 	_, err = f.snapshots.CreateSnapshot(ctx, main.ID, main.HeadLSN)
 	require.NoError(t, err)
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "later", "n": int32(101)})
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "later", "n": int32(101)})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 	f.requireSnapshotMatchesFullReplay(t, main, "post-reset snapshot plus delta")
@@ -182,16 +182,16 @@ func TestSnapshot_IncrementalAndDeduplicated(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("snap-incr", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 
 	// A stable collection that never changes again, and a hot one.
-	stable := make([]interface{}, 200)
+	stable := make([]bson.M, 200)
 	for i := range stable {
 		stable[i] = bson.M{"_id": fmt.Sprintf("s%03d", i), "payload": fmt.Sprintf("stable-%d", i)}
 	}
-	_, err = writer.InsertMany(ctx, "stable", stable)
+	_, err = writer.PutMany(ctx, "stable", stable)
 	require.NoError(t, err)
-	_, err = writer.InsertOne(ctx, "hot", bson.M{"_id": "h1", "n": int32(0)})
+	_, err = writer.Put(ctx, "hot", bson.M{"_id": "h1", "n": int32(0)})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 
@@ -199,7 +199,7 @@ func TestSnapshot_IncrementalAndDeduplicated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Touch only the hot collection, snapshot again.
-	_, err = writer.UpdateOne(ctx, "hot", bson.M{"_id": "h1"}, bson.M{"$inc": bson.M{"n": int32(1)}}, false)
+	_, err = writer.Put(ctx, "hot", bson.M{"_id": "h1", "n": int32(1)})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 
@@ -270,9 +270,9 @@ func TestSnapshot_BoundsReplayDepth(t *testing.T) {
 	require.NoError(t, err)
 
 	// A small delta on top of the snapshot.
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 	for i := 0; i < 50; i++ {
-		_, err := writer.InsertOne(ctx, "big", bson.M{"_id": fmt.Sprintf("delta-%d", i)})
+		_, err := writer.Put(ctx, "big", bson.M{"_id": fmt.Sprintf("delta-%d", i)})
 		require.NoError(t, err)
 	}
 	main, _ = f.branches.GetBranchByID(main.ID)

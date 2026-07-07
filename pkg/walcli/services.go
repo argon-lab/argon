@@ -18,6 +18,7 @@ import (
 	"github.com/argon-lab/argon/internal/snapshot"
 	"github.com/argon-lab/argon/internal/timetravel"
 	"github.com/argon-lab/argon/internal/undo"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/wal"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -101,6 +102,13 @@ func NewServices() (*Services, error) {
 	checkoutService := checkout.NewService(client, db, branchService, materializerService)
 	ingestService := ingest.NewService(client, db, walService, branchService)
 	undoService := undo.NewService(walService, branchService, client)
+	// Snapshot immediately after imports: an imported history is otherwise
+	// pure linear replay until something trips the auto-snapshot threshold.
+	importerService.SetImportedHook(func(branch *wal.Branch) {
+		if _, err := snapshotService.CreateSnapshot(context.Background(), branch.ID, branch.HeadLSN); err != nil {
+			fmt.Printf("Warning: post-import snapshot failed for branch %s: %v\n", branch.ID, err)
+		}
+	})
 	// Reclaim a deleted branch's WAL entries and snapshots. Safe because
 	// regular deletion refuses branches with children.
 	branchService.SetDeleteHook(func(branchID string) {
@@ -142,6 +150,27 @@ func NewServices() (*Services, error) {
 		Monitor:      monitor,
 		MongoURI:     mongoURI,
 	}, nil
+}
+
+// WriterFor returns a programmatic writer for a branch — the public write
+// entry point for tools and benchmarks outside this module (which cannot
+// import internal packages but can call methods on the returned value).
+// Writers append explicit document states; see the walwriter package.
+func (s *Services) WriterFor(projectName, branchName string) (*walwriter.Writer, error) {
+	project, err := s.Projects.GetProjectByName(projectName)
+	if err != nil {
+		return nil, fmt.Errorf("project %q not found: %w", projectName, err)
+	}
+	if branchName == "" {
+		branchName = "main"
+	}
+	branch, err := s.Branches.GetBranch(project.ID, branchName)
+	if err != nil {
+		return nil, fmt.Errorf("branch %q not found: %w", branchName, err)
+	}
+	writer := walwriter.New(s.WAL, s.Branches, s.Materializer, branch)
+	writer.SetAutoSnapshotter(s.Snapshots)
+	return writer, nil
 }
 
 // BuildUndoPlan and ApplyUndoPlan wrap the undo service for CLI use (the

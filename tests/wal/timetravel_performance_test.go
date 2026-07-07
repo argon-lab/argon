@@ -7,7 +7,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/materializer"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/timetravel"
@@ -39,7 +39,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 	project, _ := projectService.CreateProject("perf-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Time travel query performance", func(t *testing.T) {
 		// Create a significant history
@@ -56,19 +56,17 @@ func TestTimeTravelPerformance(t *testing.T) {
 					"data":      fmt.Sprintf("Initial data for document %d", i/100),
 					"timestamp": time.Now(),
 				}
-				_, err := interceptor.InsertOne(ctx, "history", doc)
+				_, err := interceptor.Put(ctx, "history", doc)
 				assert.NoError(t, err)
 			} else {
-				// Update existing documents
+				// Revise the document with a fresh state
 				docID := fmt.Sprintf("doc%d", i/100)
-				update := bson.M{
-					"$set": bson.M{
-						"index":     i,
-						"data":      fmt.Sprintf("Updated data at operation %d", i),
-						"timestamp": time.Now(),
-					},
-				}
-				_, err := interceptor.UpdateOne(ctx, "history", bson.M{"_id": docID}, update, false)
+				_, err := interceptor.Put(ctx, "history", bson.M{
+					"_id":       docID,
+					"index":     i,
+					"data":      fmt.Sprintf("Updated data at operation %d", i),
+					"timestamp": time.Now(),
+				})
 				assert.NoError(t, err)
 			}
 
@@ -105,7 +103,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 				"_id":   fmt.Sprintf("concurrent%d", i),
 				"value": i,
 			}
-			_, err := interceptor.InsertOne(ctx, "concurrent", doc)
+			_, err := interceptor.Put(ctx, "concurrent", doc)
 			assert.NoError(t, err)
 		}
 
@@ -160,7 +158,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 				"created_at": timestamp,
 				"sequence":   i,
 			}
-			_, err := interceptor.InsertOne(ctx, "timed", doc)
+			_, err := interceptor.Put(ctx, "timed", doc)
 			assert.NoError(t, err)
 
 			if i%10 == 0 {
@@ -202,7 +200,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 					"index": i,
 					"data":  "Some test data for the document",
 				}
-				_, err := interceptor.InsertOne(ctx, "large", doc)
+				_, err := interceptor.Put(ctx, "large", doc)
 				assert.NoError(t, err)
 			}
 		}
@@ -238,12 +236,12 @@ func BenchmarkTimeTravel(b *testing.B) {
 	project, _ := projectService.CreateProject("bench")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	// Create test data
 	for i := 0; i < 1000; i++ {
 		doc := bson.M{"_id": fmt.Sprintf("bench%d", i), "value": i}
-		_, _ = interceptor.InsertOne(ctx, "bench", doc)
+		_, _ = interceptor.Put(ctx, "bench", doc)
 	}
 
 	branch, _ = branchService.GetBranchByID(branch.ID)

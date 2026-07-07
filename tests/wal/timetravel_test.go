@@ -6,7 +6,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/materializer"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/timetravel"
@@ -39,22 +39,20 @@ func TestTimeTravel_MaterializeAtLSN(t *testing.T) {
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
 
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Query at different LSNs", func(t *testing.T) {
 		// Insert documents at different LSNs
-		_, err := interceptor.InsertOne(ctx, "users", bson.M{"_id": "u1", "name": "Alice", "version": 1})
+		_, err := interceptor.Put(ctx, "users", bson.M{"_id": "u1", "name": "Alice", "version": 1})
 		assert.NoError(t, err)
 		lsn1 := walService.GetCurrentLSN(project.ID)
 
-		_, err = interceptor.InsertOne(ctx, "users", bson.M{"_id": "u2", "name": "Bob", "version": 1})
+		_, err = interceptor.Put(ctx, "users", bson.M{"_id": "u2", "name": "Bob", "version": 1})
 		assert.NoError(t, err)
 		lsn2 := walService.GetCurrentLSN(project.ID)
 
-		// Update first document
-		_, err = interceptor.UpdateOne(ctx, "users",
-			bson.M{"_id": "u1"},
-			bson.M{"$set": bson.M{"version": 2}}, false)
+		// Revise first document
+		_, err = interceptor.Put(ctx, "users", bson.M{"_id": "u1", "name": "Alice", "version": 2})
 		assert.NoError(t, err)
 		lsn3 := walService.GetCurrentLSN(project.ID)
 
@@ -107,25 +105,25 @@ func TestTimeTravel_MaterializeAtTime(t *testing.T) {
 	project, _ := projectService.CreateProject("time-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Query at different timestamps", func(t *testing.T) {
 		// Insert documents with delays
 		startTime := time.Now()
 
-		_, err := interceptor.InsertOne(ctx, "events", bson.M{"_id": "e1", "event": "start"})
+		_, err := interceptor.Put(ctx, "events", bson.M{"_id": "e1", "event": "start"})
 		assert.NoError(t, err)
 
 		// Small delay to ensure different timestamps
 		time.Sleep(10 * time.Millisecond)
 		midTime := time.Now()
 
-		_, err = interceptor.InsertOne(ctx, "events", bson.M{"_id": "e2", "event": "middle"})
+		_, err = interceptor.Put(ctx, "events", bson.M{"_id": "e2", "event": "middle"})
 		assert.NoError(t, err)
 
 		time.Sleep(10 * time.Millisecond)
 
-		_, err = interceptor.InsertOne(ctx, "events", bson.M{"_id": "e3", "event": "end"})
+		_, err = interceptor.Put(ctx, "events", bson.M{"_id": "e3", "event": "end"})
 		assert.NoError(t, err)
 
 		// Update branch
@@ -157,19 +155,19 @@ func TestTimeTravel_GetBranchStateAtLSN(t *testing.T) {
 	project, _ := projectService.CreateProject("multi-collection")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Multiple collections at LSN", func(t *testing.T) {
 		// Insert into different collections
-		_, err := interceptor.InsertOne(ctx, "users", bson.M{"_id": "u1", "name": "Alice"})
+		_, err := interceptor.Put(ctx, "users", bson.M{"_id": "u1", "name": "Alice"})
 		assert.NoError(t, err)
 
-		_, err = interceptor.InsertOne(ctx, "products", bson.M{"_id": "p1", "name": "Laptop"})
+		_, err = interceptor.Put(ctx, "products", bson.M{"_id": "p1", "name": "Laptop"})
 		assert.NoError(t, err)
 
 		checkpointLSN := walService.GetCurrentLSN(project.ID)
 
-		_, err = interceptor.InsertOne(ctx, "orders", bson.M{"_id": "o1", "user": "u1", "product": "p1"})
+		_, err = interceptor.Put(ctx, "orders", bson.M{"_id": "o1", "user": "u1", "product": "p1"})
 		assert.NoError(t, err)
 
 		// Update branch
@@ -203,13 +201,13 @@ func TestTimeTravel_DocumentHistory(t *testing.T) {
 	project, _ := projectService.CreateProject("doc-history")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Track document changes over time", func(t *testing.T) {
 		docID := primitive.NewObjectID()
 
 		// Create document
-		_, err := interceptor.InsertOne(ctx, "items", bson.M{
+		_, err := interceptor.Put(ctx, "items", bson.M{
 			"_id":     docID,
 			"name":    "Item",
 			"status":  "draft",
@@ -218,17 +216,13 @@ func TestTimeTravel_DocumentHistory(t *testing.T) {
 		assert.NoError(t, err)
 		lsn1 := walService.GetCurrentLSN(project.ID)
 
-		// Update 1
-		_, err = interceptor.UpdateOne(ctx, "items",
-			bson.M{"_id": docID},
-			bson.M{"$set": bson.M{"status": "review", "version": 2}}, false)
+		// Revision 2
+		_, err = interceptor.Put(ctx, "items", bson.M{"_id": docID, "status": "review", "version": 2})
 		assert.NoError(t, err)
 		lsn2 := walService.GetCurrentLSN(project.ID)
 
-		// Update 2
-		_, err = interceptor.UpdateOne(ctx, "items",
-			bson.M{"_id": docID},
-			bson.M{"$set": bson.M{"status": "published", "version": 3}}, false)
+		// Revision 3
+		_, err = interceptor.Put(ctx, "items", bson.M{"_id": docID, "status": "published", "version": 3})
 		assert.NoError(t, err)
 
 		// Update branch
@@ -261,22 +255,22 @@ func TestTimeTravel_ModifiedCollections(t *testing.T) {
 	project, _ := projectService.CreateProject("modified-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Find collections modified in range", func(t *testing.T) {
 		startLSN := walService.GetCurrentLSN(project.ID)
 
 		// Modify various collections
-		_, err := interceptor.InsertOne(ctx, "users", bson.M{"_id": "u1"})
+		_, err := interceptor.Put(ctx, "users", bson.M{"_id": "u1"})
 		assert.NoError(t, err)
 
-		_, err = interceptor.InsertOne(ctx, "products", bson.M{"_id": "p1"})
+		_, err = interceptor.Put(ctx, "products", bson.M{"_id": "p1"})
 		assert.NoError(t, err)
 
-		_, err = interceptor.UpdateOne(ctx, "users", bson.M{"_id": "u1"}, bson.M{"$set": bson.M{"updated": true}}, false)
+		_, err = interceptor.Put(ctx, "users", bson.M{"_id": "u1", "updated": true})
 		assert.NoError(t, err)
 
-		_, err = interceptor.InsertOne(ctx, "orders", bson.M{"_id": "o1"})
+		_, err = interceptor.Put(ctx, "orders", bson.M{"_id": "o1"})
 		assert.NoError(t, err)
 
 		endLSN := walService.GetCurrentLSN(project.ID)
@@ -312,7 +306,7 @@ func TestTimeTravel_Info(t *testing.T) {
 	project, _ := projectService.CreateProject("info-test")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("Get time travel info", func(t *testing.T) {
 		// Get info for empty branch
@@ -321,11 +315,11 @@ func TestTimeTravel_Info(t *testing.T) {
 		assert.Equal(t, 0, info.EntryCount)
 
 		// Add some data
-		_, err = interceptor.InsertOne(ctx, "test", bson.M{"_id": "1"})
+		_, err = interceptor.Put(ctx, "test", bson.M{"_id": "1"})
 		assert.NoError(t, err)
 		time.Sleep(10 * time.Millisecond)
 
-		_, err = interceptor.InsertOne(ctx, "test", bson.M{"_id": "2"})
+		_, err = interceptor.Put(ctx, "test", bson.M{"_id": "2"})
 		assert.NoError(t, err)
 
 		// Update branch
@@ -354,7 +348,7 @@ func TestTimeTravel_ComplexScenario(t *testing.T) {
 	project, _ := projectService.CreateProject("complex-scenario")
 	branches, _ := branchService.ListBranches(project.ID)
 	branch := branches[0]
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	interceptor := walwriter.New(walService, branchService, materializerService, branch)
 
 	t.Run("E-commerce order lifecycle", func(t *testing.T) {
 		// Checkpoint LSNs
@@ -367,13 +361,13 @@ func TestTimeTravel_ComplexScenario(t *testing.T) {
 		}
 
 		for _, p := range products {
-			_, err := interceptor.InsertOne(ctx, "products", p)
+			_, err := interceptor.Put(ctx, "products", p)
 			assert.NoError(t, err)
 		}
 		checkpoints["products_added"] = walService.GetCurrentLSN(project.ID)
 
 		// Customer places order
-		_, err := interceptor.InsertOne(ctx, "orders", bson.M{
+		_, err := interceptor.Put(ctx, "orders", bson.M{
 			"_id":      "order1",
 			"customer": "Alice",
 			"items": []bson.M{
@@ -387,21 +381,25 @@ func TestTimeTravel_ComplexScenario(t *testing.T) {
 		checkpoints["order_placed"] = walService.GetCurrentLSN(project.ID)
 
 		// Update stock
-		_, err = interceptor.UpdateOne(ctx, "products",
-			bson.M{"_id": "p1"},
-			bson.M{"$inc": bson.M{"stock": -1}}, false)
+		_, err = interceptor.Put(ctx, "products", bson.M{"_id": "p1", "name": "Laptop", "price": 1000, "stock": 9})
 		assert.NoError(t, err)
 
-		_, err = interceptor.UpdateOne(ctx, "products",
-			bson.M{"_id": "p2"},
-			bson.M{"$inc": bson.M{"stock": -2}}, false)
+		_, err = interceptor.Put(ctx, "products", bson.M{"_id": "p2", "name": "Mouse", "price": 50, "stock": 98})
 		assert.NoError(t, err)
 		checkpoints["stock_updated"] = walService.GetCurrentLSN(project.ID)
 
 		// Process order
-		_, err = interceptor.UpdateOne(ctx, "orders",
-			bson.M{"_id": "order1"},
-			bson.M{"$set": bson.M{"status": "processed", "processed_at": time.Now()}}, false)
+		_, err = interceptor.Put(ctx, "orders", bson.M{
+			"_id":      "order1",
+			"customer": "Alice",
+			"items": []bson.M{
+				{"product": "p1", "quantity": 1},
+				{"product": "p2", "quantity": 2},
+			},
+			"status":       "processed",
+			"total":        1100,
+			"processed_at": time.Now(),
+		})
 		assert.NoError(t, err)
 		checkpoints["order_processed"] = walService.GetCurrentLSN(project.ID)
 
@@ -426,7 +424,6 @@ func TestTimeTravel_ComplexScenario(t *testing.T) {
 		// 3. State after stock updated
 		state3, err := timeTravelService.GetBranchStateAtLSN(branch, checkpoints["stock_updated"])
 		assert.NoError(t, err)
-		// $inc now preserves integer types instead of coercing to float64.
 		assert.EqualValues(t, 9, state3["products"]["p1"]["stock"])  // After decrement
 		assert.EqualValues(t, 98, state3["products"]["p2"]["stock"]) // After decrement
 

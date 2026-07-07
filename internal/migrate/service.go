@@ -23,7 +23,7 @@ import (
 	"sort"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/mongoexpr"
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -226,7 +226,7 @@ func (s *Service) migrateEntry(ctx context.Context, entry *legacyEntry, collStat
 		if !found {
 			return false, true, s.removeEntry(ctx, entry)
 		}
-		newDoc, err := driverwal.ApplyUpdate(oldDoc, update, false)
+		newDoc, err := mongoexpr.ApplyUpdate(oldDoc, update, false)
 		if err != nil {
 			return false, false, err
 		}
@@ -384,7 +384,7 @@ func firstMatch(collState map[string]bson.M, filter bson.M) (string, bson.M, boo
 	sort.Strings(docIDs)
 
 	for _, docID := range docIDs {
-		matched, err := driverwal.MatchesFilter(collState[docID], filter)
+		matched, err := mongoexpr.MatchesFilter(collState[docID], filter)
 		if err != nil {
 			return "", nil, false, err
 		}

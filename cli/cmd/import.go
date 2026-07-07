@@ -166,17 +166,22 @@ Example:
 			BatchSize:    batchSize,
 		}
 
-		// Show confirmation unless dry run
-		if !dryRun {
+		// Show confirmation unless dry run or --yes.
+		assumeYes, _ := cmd.Flags().GetBool("yes")
+		if !dryRun && !assumeYes {
+			if stat, statErr := os.Stdin.Stat(); statErr == nil && (stat.Mode()&os.ModeCharDevice) == 0 {
+				// Non-interactive (container, CI, pipe): a silent zero-exit
+				// cancel here has bitten people; demand an explicit --yes.
+				return fmt.Errorf("stdin is not a terminal; pass --yes to confirm the import")
+			}
 			fmt.Printf("⚠️  About to import database '%s' into new project '%s'\n", databaseName, projectName)
 			fmt.Printf("   This will create WAL entries for all existing data.\n")
 			fmt.Printf("   Continue? (y/N): ")
-			
+
 			var response string
-			fmt.Scanln(&response)
+			_, _ = fmt.Scanln(&response)
 			if response != "y" && response != "Y" && response != "yes" {
-				fmt.Println("Import cancelled.")
-				return nil
+				return fmt.Errorf("import cancelled")
 			}
 		}
 
@@ -282,6 +287,7 @@ func init() {
 	importDatabaseCmd.Flags().StringP("database", "d", "", "Database name to import (required)")
 	importDatabaseCmd.Flags().StringP("project", "p", "", "Argon project name to create (required)")
 	importDatabaseCmd.Flags().Bool("dry-run", false, "Preview import without making changes")
+	importDatabaseCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
 	importDatabaseCmd.Flags().Int("batch-size", 1000, "Number of documents to process in each batch")
 	importDatabaseCmd.Flags().StringP("output", "o", "table", "Output format: table, json")
 	_ = importDatabaseCmd.MarkFlagRequired("uri")

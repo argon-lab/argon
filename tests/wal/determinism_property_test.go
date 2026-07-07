@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/restore"
 	"github.com/argon-lab/argon/internal/timetravel"
 	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -25,10 +25,11 @@ import (
 // reset, because those are exactly the code paths whose v1 versions were
 // nondeterministic.
 
-// applyRandomWorkload drives a seeded pseudo-random operation sequence
-// through an interceptor. Everything is derived from the seed, so two runs
-// with the same seed issue identical operations.
-func applyRandomWorkload(t *testing.T, rng *rand.Rand, interceptor *driverwal.Interceptor, numOps int) {
+// applyRandomWorkload drives a seeded pseudo-random sequence of puts and
+// deletes through a writer — nested documents, arrays, mixed numeric types,
+// overwrites of hot documents, batched puts. Everything derives from the
+// seed, so two runs with the same seed issue identical operations.
+func applyRandomWorkload(t *testing.T, rng *rand.Rand, writer *walwriter.Writer, numOps int) {
 	t.Helper()
 	ctx := context.Background()
 	collections := []string{"users", "orders", "items"}
@@ -38,42 +39,37 @@ func applyRandomWorkload(t *testing.T, rng *rand.Rand, interceptor *driverwal.In
 		docID := fmt.Sprintf("doc-%d", rng.Intn(30))
 
 		switch rng.Intn(10) {
-		case 0, 1, 2: // insert (may collide with an existing _id; ignore dup errors)
-			_, _ = interceptor.InsertOne(ctx, coll, bson.M{
+		case 0, 1, 2, 3: // put a fresh state (insert or overwrite)
+			_, err := writer.Put(ctx, coll, bson.M{
 				"_id":   docID,
 				"n":     int32(rng.Intn(1000)),
 				"group": rng.Intn(5),
 				"tags":  []interface{}{fmt.Sprintf("t%d", rng.Intn(3))},
 			})
-		case 3, 4: // update by _id with typed operators
-			_, err := interceptor.UpdateOne(ctx, coll,
-				bson.M{"_id": docID},
-				bson.M{
-					"$inc":  bson.M{"n": int32(rng.Intn(7) - 3)},
-					"$set":  bson.M{"touched": int64(i)},
-					"$push": bson.M{"tags": fmt.Sprintf("u%d", i%4)},
-				}, false)
 			require.NoError(t, err)
-		case 5: // update many by non-ID filter
-			_, err := interceptor.UpdateMany(ctx, coll,
-				bson.M{"group": rng.Intn(5)},
-				bson.M{"$inc": bson.M{"n": int32(1)}, "$unset": bson.M{"touched": ""}}, false)
+		case 4, 5: // put a nested revision of a hot document
+			_, err := writer.Put(ctx, coll, bson.M{
+				"_id":     docID,
+				"n":       int64(i),
+				"touched": int64(i),
+				"nested":  bson.M{"depth": bson.M{"v": rng.Intn(100)}},
+			})
 			require.NoError(t, err)
-		case 6: // upsert
-			_, err := interceptor.UpdateOne(ctx, coll,
-				bson.M{"_id": fmt.Sprintf("upsert-%d", rng.Intn(10))},
-				bson.M{"$set": bson.M{"n": int32(i)}, "$setOnInsert": bson.M{"origin": "upsert"}}, true)
+		case 6: // batched puts (one contiguous LSN range)
+			batch := make([]bson.M, 0, 3)
+			for j := 0; j < 3; j++ {
+				batch = append(batch, bson.M{
+					"_id": fmt.Sprintf("batch-%d", rng.Intn(15)),
+					"n":   float64(rng.Intn(50)),
+				})
+			}
+			_, err := writer.PutMany(ctx, coll, batch)
 			require.NoError(t, err)
-		case 7: // replace
-			_, err := interceptor.ReplaceOne(ctx, coll,
-				bson.M{"_id": docID},
-				bson.M{"replaced": true, "n": int32(i)}, false)
+		case 7, 8: // delete a document that may or may not exist
+			_, _, err := writer.Delete(ctx, coll, docID)
 			require.NoError(t, err)
-		case 8: // delete one by comparison filter
-			_, err := interceptor.DeleteOne(ctx, coll, bson.M{"n": bson.M{"$gt": int32(rng.Intn(900))}})
-			require.NoError(t, err)
-		case 9: // delete many in a group
-			_, err := interceptor.DeleteMany(ctx, coll, bson.M{"group": rng.Intn(5), "n": bson.M{"$lt": int32(rng.Intn(200))}})
+		case 9: // delete from the batch key space
+			_, _, err := writer.Delete(ctx, coll, fmt.Sprintf("batch-%d", rng.Intn(15)))
 			require.NoError(t, err)
 		}
 	}
@@ -104,7 +100,7 @@ func TestProperty_ReplayDeterminism(t *testing.T) {
 	// random single-branch workload.
 	main, err := branchService.CreateBranch("prop-test", "main", "")
 	require.NoError(t, err)
-	mainWriter := driverwal.NewInterceptor(walService, main, branchService, mat)
+	mainWriter := walwriter.New(walService, branchService, mat, main)
 
 	rng := rand.New(rand.NewSource(seed))
 	applyRandomWorkload(t, rng, mainWriter, 120)
@@ -114,7 +110,7 @@ func TestProperty_ReplayDeterminism(t *testing.T) {
 	require.NoError(t, err)
 	feature, err := branchService.CreateBranch("prop-test", "feature", main.ID)
 	require.NoError(t, err)
-	featureWriter := driverwal.NewInterceptor(walService, feature, branchService, mat)
+	featureWriter := walwriter.New(walService, branchService, mat, feature)
 	applyRandomWorkload(t, rng, featureWriter, 60)
 	applyRandomWorkload(t, rng, mainWriter, 60)
 
@@ -203,8 +199,8 @@ func TestProperty_ReplayDeterminism(t *testing.T) {
 		mainB, err := branchServiceB.CreateBranch("prop-replay", "main", "")
 		require.NoError(t, err)
 
-		writerA := driverwal.NewInterceptor(walService, mainA, branchService, mat)
-		writerB := driverwal.NewInterceptor(walServiceB, mainB, branchServiceB, matB)
+		writerA := walwriter.New(walService, branchService, mat, mainA)
+		writerB := walwriter.New(walServiceB, branchServiceB, matB, mainB)
 
 		rngA := rand.New(rand.NewSource(7))
 		rngB := rand.New(rand.NewSource(7))

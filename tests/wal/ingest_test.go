@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/argon-lab/argon/internal/checkout"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/ingest"
 	"github.com/argon-lab/argon/internal/wal"
 	"github.com/stretchr/testify/assert"
@@ -41,8 +41,8 @@ func newIngestFixture(t *testing.T, project string) *ingestFixture {
 	})
 
 	// Seed through the SDK so the checkout has content.
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
-	_, err = writer.InsertOne(context.Background(), "users", bson.M{"_id": "seed", "n": int32(0)})
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
+	_, err = writer.Put(context.Background(), "users", bson.M{"_id": "seed", "n": int32(0)})
 	require.NoError(t, err)
 
 	info, err := co.Checkout(context.Background(), main.ID)

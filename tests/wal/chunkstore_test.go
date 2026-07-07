@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/snapshot"
 	"github.com/argon-lab/argon/internal/wal"
@@ -151,9 +151,9 @@ func TestChunkStore_SnapshotsEndToEnd(t *testing.T) {
 			project := "e2e-" + name
 			main, err := branchService.CreateBranch(project, "main", "")
 			require.NoError(t, err)
-			writer := driverwal.NewInterceptor(walService, main, branchService, mat)
+			writer := walwriter.New(walService, branchService, mat, main)
 			for i := 0; i < 30; i++ {
-				_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%02d", i), "n": int32(i)})
+				_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%02d", i), "n": int32(i)})
 				require.NoError(t, err)
 			}
 			main, _ = branchService.GetBranchByID(main.ID)
@@ -162,7 +162,7 @@ func TestChunkStore_SnapshotsEndToEnd(t *testing.T) {
 			require.NoError(t, err)
 
 			// More writes, then compare snapshot path against full replay.
-			_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "extra"})
+			_, err = writer.Put(ctx, "docs", bson.M{"_id": "extra"})
 			require.NoError(t, err)
 			main, _ = branchService.GetBranchByID(main.ID)
 

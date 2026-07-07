@@ -8,9 +8,9 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -33,23 +33,21 @@ func TestWriteOperationPerformance(t *testing.T) {
 	branch, err := branchService.CreateBranch("perf-test", "main", "")
 	require.NoError(t, err)
 
-	materializerService := materializer.NewService(walService, branchService)
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	mat := materializer.NewService(walService, branchService)
+	writer := walwriter.New(walService, branchService, mat, branch)
 	ctx := context.Background()
 
-	t.Run("Sequential insert performance", func(t *testing.T) {
+	t.Run("Sequential put performance", func(t *testing.T) {
 		start := time.Now()
 		numDocs := 1000
 
 		for i := 0; i < numDocs; i++ {
-			doc := bson.M{
-				"index": i,
+			_, err := writer.Put(ctx, "users", bson.M{
+				"_id":   fmt.Sprintf("user-%d", i),
 				"name":  fmt.Sprintf("User %d", i),
 				"email": fmt.Sprintf("user%d@example.com", i),
 				"data":  "Some test data for performance testing",
-			}
-
-			_, err := interceptor.InsertOne(ctx, "users", doc)
+			})
 			assert.NoError(t, err)
 		}
 
@@ -57,20 +55,42 @@ func TestWriteOperationPerformance(t *testing.T) {
 		opsPerSec := float64(numDocs) / elapsed.Seconds()
 		avgLatency := elapsed / time.Duration(numDocs)
 
-		t.Logf("Sequential inserts: %d docs in %v", numDocs, elapsed)
+		t.Logf("Sequential puts: %d docs in %v", numDocs, elapsed)
 		t.Logf("Performance: %.0f ops/sec, avg latency: %v", opsPerSec, avgLatency)
 
 		// These floors are canaries against gross regressions, not
 		// benchmarks: absolute numbers here are dominated by driver
-		// round-trip latency (each write is a sequencer reservation, an
-		// entry insert and a branch-head update), which varies wildly
-		// between local Docker and CI.
+		// round-trip latency (each put is a pre-image lookup, a sequencer
+		// reservation, an entry insert and a branch-head update), which
+		// varies wildly between local Docker and CI.
 		assert.Greater(t, opsPerSec, 100.0)
-		// Average latency should be under 50ms
 		assert.Less(t, avgLatency, 50*time.Millisecond)
 	})
 
-	t.Run("Concurrent insert performance", func(t *testing.T) {
+	t.Run("Batched put performance", func(t *testing.T) {
+		start := time.Now()
+		numDocs := 5000
+		batchSize := 500
+
+		for b := 0; b < numDocs/batchSize; b++ {
+			batch := make([]bson.M, batchSize)
+			for i := range batch {
+				batch[i] = bson.M{
+					"_id":  fmt.Sprintf("batch-%d-%d", b, i),
+					"name": fmt.Sprintf("Batch user %d", i),
+				}
+			}
+			_, err := writer.PutMany(ctx, "batched", batch)
+			assert.NoError(t, err)
+		}
+
+		elapsed := time.Since(start)
+		opsPerSec := float64(numDocs) / elapsed.Seconds()
+		t.Logf("Batched puts: %d docs in %v (%.0f ops/sec)", numDocs, elapsed, opsPerSec)
+		assert.Greater(t, opsPerSec, 500.0, "batching amortizes the per-write round-trips")
+	})
+
+	t.Run("Concurrent put performance", func(t *testing.T) {
 		start := time.Now()
 		numGoroutines := 10
 		docsPerGoroutine := 100
@@ -82,15 +102,11 @@ func TestWriteOperationPerformance(t *testing.T) {
 			wg.Add(1)
 			go func(goroutineID int) {
 				defer wg.Done()
-
 				for i := 0; i < docsPerGoroutine; i++ {
-					doc := bson.M{
-						"goroutine": goroutineID,
-						"index":     i,
-						"name":      fmt.Sprintf("G%d-User%d", goroutineID, i),
-					}
-
-					_, err := interceptor.InsertOne(ctx, "concurrent_users", doc)
+					_, err := writer.Put(ctx, "concurrent_users", bson.M{
+						"_id":  fmt.Sprintf("g%d-user%d", goroutineID, i),
+						"name": fmt.Sprintf("G%d-User%d", goroutineID, i),
+					})
 					if err != nil {
 						errors <- err
 					}
@@ -101,87 +117,37 @@ func TestWriteOperationPerformance(t *testing.T) {
 		wg.Wait()
 		close(errors)
 
-		// Check for errors
 		var errCount int
 		for err := range errors {
-			t.Logf("Error during concurrent insert: %v", err)
+			t.Logf("Error during concurrent put: %v", err)
 			errCount++
 		}
-		assert.Equal(t, 0, errCount, "Should have no errors during concurrent inserts")
+		assert.Equal(t, 0, errCount, "Should have no errors during concurrent puts")
 
 		elapsed := time.Since(start)
 		totalDocs := numGoroutines * docsPerGoroutine
 		opsPerSec := float64(totalDocs) / elapsed.Seconds()
-
-		t.Logf("Concurrent inserts: %d docs in %v", totalDocs, elapsed)
-		t.Logf("Performance: %.0f ops/sec", opsPerSec)
-
+		t.Logf("Concurrent puts: %d docs in %v (%.0f ops/sec)", totalDocs, elapsed, opsPerSec)
 		// Regression canary; see the note on the sequential floor.
-		assert.Greater(t, opsPerSec, 800.0)
-	})
-
-	t.Run("Mixed operations performance", func(t *testing.T) {
-		start := time.Now()
-		numOps := 300 // 100 of each operation type
-
-		// Perform mixed operations
-		for i := 0; i < numOps/3; i++ {
-			// Insert
-			doc := bson.M{"_id": fmt.Sprintf("mixed-%d", i), "value": i}
-			_, err := interceptor.InsertOne(ctx, "mixed_ops", doc)
-			assert.NoError(t, err)
-
-			// Update
-			filter := bson.M{"_id": fmt.Sprintf("mixed-%d", i)}
-			update := bson.M{"$set": bson.M{"value": i * 2}}
-			_, err = interceptor.UpdateOne(ctx, "mixed_ops", filter, update, false)
-			assert.NoError(t, err)
-
-			// Delete every other document
-			if i%2 == 0 {
-				_, err = interceptor.DeleteOne(ctx, "mixed_ops", filter)
-				assert.NoError(t, err)
-			}
-		}
-
-		elapsed := time.Since(start)
-		opsPerSec := float64(numOps) / elapsed.Seconds()
-
-		t.Logf("Mixed operations: %d ops in %v", numOps, elapsed)
-		t.Logf("Performance: %.0f ops/sec", opsPerSec)
-
-		// Should handle at least 100 mixed operations per second. Every
-		// append now includes a sequencer round-trip (the price of
-		// multi-process safety), and this sequential loop cannot amortize
-		// it the way the concurrent tests do.
-		assert.Greater(t, opsPerSec, 100.0)
+		assert.Greater(t, opsPerSec, 500.0)
 	})
 
 	t.Run("Large document performance", func(t *testing.T) {
-		// Create a large document (1MB)
 		largeData := make([]byte, 1024*1024)
 		for i := range largeData {
 			largeData[i] = byte(i % 256)
 		}
 
-		largeDoc := bson.M{
+		start := time.Now()
+		_, err := writer.Put(ctx, "large_docs", bson.M{
+			"_id":  "large",
 			"name": "Large Document",
 			"data": largeData,
-			"metadata": bson.M{
-				"size":      len(largeData),
-				"timestamp": time.Now(),
-			},
-		}
-
-		start := time.Now()
-		result, err := interceptor.InsertOne(ctx, "large_docs", largeDoc)
+		})
 		elapsed := time.Since(start)
 
 		assert.NoError(t, err)
-		assert.NotNil(t, result.InsertedID)
-
-		t.Logf("Large document (1MB) insert took: %v", elapsed)
-		// Large document should still be inserted within 100ms
+		t.Logf("Large document (1MB) put took: %v", elapsed)
 		assert.Less(t, elapsed, 100*time.Millisecond)
 	})
 }
@@ -207,35 +173,29 @@ func BenchmarkWALWrites(b *testing.B) {
 	walService, _ := wal.NewService(db)
 	branchService, _ := branchwal.NewBranchService(db, walService)
 	branch, _ := branchService.CreateBranch("bench-test", "main", "")
-	materializerService := materializer.NewService(walService, branchService)
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
+	mat := materializer.NewService(walService, branchService)
+	writer := walwriter.New(walService, branchService, mat, branch)
 	ctx := context.Background()
 
-	b.Run("InsertOne", func(b *testing.B) {
+	b.Run("Put", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			doc := bson.M{
-				"index": i,
-				"name":  fmt.Sprintf("User %d", i),
-			}
-			_, _ = interceptor.InsertOne(ctx, "bench_users", doc)
+			_, _ = writer.Put(ctx, "bench_users", bson.M{
+				"_id":  fmt.Sprintf("user-%d", i),
+				"name": fmt.Sprintf("User %d", i),
+			})
 		}
 		b.StopTimer()
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")
 	})
 
-	b.Run("UpdateOne", func(b *testing.B) {
-		// Pre-insert documents
+	b.Run("Overwrite", func(b *testing.B) {
 		for i := 0; i < 100; i++ {
-			doc := bson.M{"_id": fmt.Sprintf("update-%d", i), "value": 0}
-			_, _ = interceptor.InsertOne(ctx, "bench_updates", doc)
+			_, _ = writer.Put(ctx, "bench_updates", bson.M{"_id": fmt.Sprintf("update-%d", i), "value": 0})
 		}
-
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			filter := bson.M{"_id": fmt.Sprintf("update-%d", i%100)}
-			update := bson.M{"$set": bson.M{"value": i}}
-			_, _ = interceptor.UpdateOne(ctx, "bench_updates", filter, update, false)
+			_, _ = writer.Put(ctx, "bench_updates", bson.M{"_id": fmt.Sprintf("update-%d", i%100), "value": i})
 		}
 		b.StopTimer()
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")
