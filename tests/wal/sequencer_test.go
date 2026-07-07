@@ -10,6 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// putEntry builds a minimal valid put entry for sequencer tests.
+func putEntry(projectID, branchID, collection, docID string) *wal.Entry {
+	return &wal.Entry{
+		ProjectID:  projectID,
+		BranchID:   branchID,
+		Operation:  wal.OpPut,
+		Collection: collection,
+		DocumentID: docID,
+		PostImage:  mustMarshalBSON(map[string]interface{}{"_id": docID}),
+	}
+}
+
 // TestSequencer_ConcurrentMultiInstance verifies that LSN allocation is safe
 // when multiple independent Service instances (simulating separate processes)
 // append to the same project concurrently. This is the scenario the old
@@ -40,12 +52,14 @@ func TestSequencer_ConcurrentMultiInstance(t *testing.T) {
 			go func(svc *wal.Service, instance, goroutine int) {
 				defer wg.Done()
 				for k := 0; k < numAppends; k++ {
+					docID := fmt.Sprintf("doc-%d-%d-%d", instance, goroutine, k)
 					entry := &wal.Entry{
 						ProjectID:  "multi-instance",
 						BranchID:   "main",
-						Operation:  wal.OpInsert,
+						Operation:  wal.OpPut,
 						Collection: "items",
-						DocumentID: fmt.Sprintf("doc-%d-%d-%d", instance, goroutine, k),
+						DocumentID: docID,
+						PostImage:  mustMarshalBSON(map[string]interface{}{"_id": docID}),
 					}
 					lsn, err := svc.Append(entry)
 					if err != nil {
@@ -94,28 +108,16 @@ func TestSequencer_PerProjectIsolation(t *testing.T) {
 	svc, err := wal.NewService(db)
 	require.NoError(t, err)
 
-	lsnA, err := svc.Append(&wal.Entry{
-		ProjectID: "project-a",
-		BranchID:  "main",
-		Operation: wal.OpInsert,
-	})
+	lsnA, err := svc.Append(putEntry("project-a", "main", "items", "a1"))
 	require.NoError(t, err)
 
-	lsnB, err := svc.Append(&wal.Entry{
-		ProjectID: "project-b",
-		BranchID:  "main",
-		Operation: wal.OpInsert,
-	})
+	lsnB, err := svc.Append(putEntry("project-b", "main", "items", "b1"))
 	require.NoError(t, err)
 
 	assert.Equal(t, int64(1), lsnA, "first LSN of project-a should be 1")
 	assert.Equal(t, int64(1), lsnB, "first LSN of project-b should be 1 regardless of other projects")
 
-	lsnA2, err := svc.Append(&wal.Entry{
-		ProjectID: "project-a",
-		BranchID:  "main",
-		Operation: wal.OpInsert,
-	})
+	lsnA2, err := svc.Append(putEntry("project-a", "main", "items", "a2"))
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), lsnA2, "project-a sequence should continue independently")
 
@@ -134,13 +136,7 @@ func TestSequencer_BatchAllocation(t *testing.T) {
 
 	entries := make([]*wal.Entry, 10)
 	for i := range entries {
-		entries[i] = &wal.Entry{
-			ProjectID:  "batch-test",
-			BranchID:   "main",
-			Operation:  wal.OpInsert,
-			Collection: "items",
-			DocumentID: fmt.Sprintf("doc-%d", i),
-		}
+		entries[i] = putEntry("batch-test", "main", "items", fmt.Sprintf("doc-%d", i))
 	}
 
 	lsns, err := svc.AppendBatch(entries)
@@ -153,8 +149,8 @@ func TestSequencer_BatchAllocation(t *testing.T) {
 	// A batch spanning two projects cannot be allocated a single contiguous
 	// per-project range and must be rejected.
 	mixed := []*wal.Entry{
-		{ProjectID: "batch-test", BranchID: "main", Operation: wal.OpInsert},
-		{ProjectID: "other-project", BranchID: "main", Operation: wal.OpInsert},
+		putEntry("batch-test", "main", "items", "m1"),
+		putEntry("other-project", "main", "items", "m2"),
 	}
 	_, err = svc.AppendBatch(mixed)
 	assert.Error(t, err, "mixed-project batches must be rejected")
@@ -168,9 +164,6 @@ func TestSequencer_EmptyProjectID(t *testing.T) {
 	svc, err := wal.NewService(db)
 	require.NoError(t, err)
 
-	_, err = svc.Append(&wal.Entry{
-		BranchID:  "main",
-		Operation: wal.OpInsert,
-	})
+	_, err = svc.Append(putEntry("", "main", "items", "x1"))
 	assert.Error(t, err, "append without project ID must fail")
 }

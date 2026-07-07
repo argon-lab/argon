@@ -9,6 +9,7 @@ import (
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
 	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/wal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,7 +33,8 @@ func TestWriteOperationPerformance(t *testing.T) {
 	branch, err := branchService.CreateBranch("perf-test", "main", "")
 	require.NoError(t, err)
 
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+	materializerService := materializer.NewService(walService, branchService)
+	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 	ctx := context.Background()
 
 	t.Run("Sequential insert performance", func(t *testing.T) {
@@ -132,7 +134,7 @@ func TestWriteOperationPerformance(t *testing.T) {
 			// Update
 			filter := bson.M{"_id": fmt.Sprintf("mixed-%d", i)}
 			update := bson.M{"$set": bson.M{"value": i * 2}}
-			_, err = interceptor.UpdateOne(ctx, "mixed_ops", filter, update)
+			_, err = interceptor.UpdateOne(ctx, "mixed_ops", filter, update, false)
 			assert.NoError(t, err)
 
 			// Delete every other document
@@ -205,7 +207,8 @@ func BenchmarkWALWrites(b *testing.B) {
 	walService, _ := wal.NewService(db)
 	branchService, _ := branchwal.NewBranchService(db, walService)
 	branch, _ := branchService.CreateBranch("bench-test", "main", "")
-	interceptor := driverwal.NewInterceptor(walService, branch, branchService)
+	materializerService := materializer.NewService(walService, branchService)
+	interceptor := driverwal.NewInterceptor(walService, branch, branchService, materializerService)
 	ctx := context.Background()
 
 	b.Run("InsertOne", func(b *testing.B) {
@@ -232,7 +235,7 @@ func BenchmarkWALWrites(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			filter := bson.M{"_id": fmt.Sprintf("update-%d", i%100)}
 			update := bson.M{"$set": bson.M{"value": i}}
-			_, _ = interceptor.UpdateOne(ctx, "bench_updates", filter, update)
+			_, _ = interceptor.UpdateOne(ctx, "bench_updates", filter, update, false)
 		}
 		b.StopTimer()
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")

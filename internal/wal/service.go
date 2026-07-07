@@ -65,6 +65,16 @@ func NewService(db *mongo.Database) (*Service, error) {
 			},
 		},
 		{
+			// Point lookups of a single document's history are the hot
+			// path for filter resolution on the write path.
+			Keys: bson.D{
+				{Key: "branch_id", Value: 1},
+				{Key: "collection", Value: 1},
+				{Key: "document_id", Value: 1},
+				{Key: "lsn", Value: 1},
+			},
+		},
+		{
 			Keys: bson.M{"timestamp": 1},
 		},
 	}
@@ -79,6 +89,11 @@ func NewService(db *mongo.Database) (*Service, error) {
 
 // Append adds a new entry to the WAL
 func (s *Service) Append(entry *Entry) (int64, error) {
+	if err := entry.ValidateForAppend(); err != nil {
+		return 0, err
+	}
+	entry.SchemaVersion = EntrySchemaVersion
+
 	lsn, err := s.sequencer.Reserve(entry.ProjectID, 1)
 	if err != nil {
 		return 0, err
@@ -116,6 +131,10 @@ func (s *Service) AppendBatch(entries []*Entry) ([]int64, error) {
 		if entry.ProjectID != projectID {
 			return nil, fmt.Errorf("batch entry %d belongs to project %q, expected %q: batches must be single-project", i, entry.ProjectID, projectID)
 		}
+		if err := entry.ValidateForAppend(); err != nil {
+			return nil, fmt.Errorf("batch entry %d is invalid: %w", i, err)
+		}
+		entry.SchemaVersion = EntrySchemaVersion
 	}
 
 	firstLSN, err := s.sequencer.Reserve(projectID, int64(len(entries)))

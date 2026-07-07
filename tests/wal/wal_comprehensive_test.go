@@ -21,14 +21,7 @@ func TestWALService_EdgeCases(t *testing.T) {
 		// Append multiple entries rapidly
 		lsns := make([]int64, 10)
 		for i := 0; i < 10; i++ {
-			entry := &wal.Entry{
-				ProjectID:  "test",
-				BranchID:   "main",
-				Operation:  wal.OpInsert,
-				Collection: "test",
-				DocumentID: fmt.Sprintf("doc-%d", i),
-			}
-			lsns[i], err = walService.Append(entry)
+			lsns[i], err = walService.Append(putEntry("test", "main", "test", fmt.Sprintf("doc-%d", i)))
 			require.NoError(t, err)
 		}
 
@@ -44,13 +37,7 @@ func TestWALService_EdgeCases(t *testing.T) {
 		// Launch concurrent appends
 		for i := 0; i < 100; i++ {
 			go func(id int) {
-				entry := &wal.Entry{
-					ProjectID:  "concurrent",
-					BranchID:   "main",
-					Operation:  wal.OpInsert,
-					DocumentID: fmt.Sprintf("doc-%d", id),
-				}
-				lsn, err := walService.Append(entry)
+				lsn, err := walService.Append(putEntry("concurrent", "main", "items", fmt.Sprintf("doc-%d", id)))
 				assert.NoError(t, err)
 				done <- lsn
 			}(i)
@@ -70,14 +57,7 @@ func TestWALService_EdgeCases(t *testing.T) {
 	t.Run("GetBranchEntries respects LSN range", func(t *testing.T) {
 		// Create entries
 		for i := 0; i < 10; i++ {
-			entry := &wal.Entry{
-				ProjectID:  "range-test",
-				BranchID:   "test-branch",
-				Operation:  wal.OpInsert,
-				Collection: "items",
-				DocumentID: fmt.Sprintf("item-%d", i),
-			}
-			_, err := walService.Append(entry)
+			_, err := walService.Append(putEntry("range-test", "test-branch", "items", fmt.Sprintf("item-%d", i)))
 			require.NoError(t, err)
 		}
 
@@ -158,13 +138,7 @@ func TestBranchService_ComplexScenarios(t *testing.T) {
 
 		// Simulate operations advancing the branch
 		for i := 0; i < 5; i++ {
-			entry := &wal.Entry{
-				ProjectID:  "proj-4",
-				BranchID:   branch.ID,
-				Operation:  wal.OpInsert,
-				Collection: "data",
-			}
-			lsn, _ := walService.Append(entry)
+			lsn, _ := walService.Append(putEntry("proj-4", branch.ID, "data", fmt.Sprintf("doc-%d", i)))
 
 			// Update branch head
 			err = branchService.UpdateBranchHead(branch.ID, lsn)
@@ -240,12 +214,7 @@ func TestWALService_TimestampOrdering(t *testing.T) {
 		var lastTimestamp time.Time
 
 		for i := 0; i < 10; i++ {
-			entry := &wal.Entry{
-				ProjectID: "time-test",
-				BranchID:  "main",
-				Operation: wal.OpInsert,
-			}
-			lsn, _ := walService.Append(entry)
+			lsn, _ := walService.Append(putEntry("time-test", "main", "docs", fmt.Sprintf("doc-%d", i)))
 
 			// Get the entry back
 			saved, err := walService.GetEntry("time-test", lsn)
@@ -265,12 +234,7 @@ func TestWALService_TimestampOrdering(t *testing.T) {
 		// Create entries with slight delays
 		var midTimestamp time.Time
 		for i := 0; i < 5; i++ {
-			entry := &wal.Entry{
-				ProjectID: projectID,
-				BranchID:  "main",
-				Operation: wal.OpInsert,
-			}
-			_, _ = walService.Append(entry)
+			_, _ = walService.Append(putEntry(projectID, "main", "docs", fmt.Sprintf("doc-%d", i)))
 
 			if i == 2 {
 				midTimestamp = time.Now()
@@ -302,13 +266,7 @@ func TestBranchService_LSNConsistency(t *testing.T) {
 
 		// Simulate some operations on main
 		for i := 0; i < 3; i++ {
-			entry := &wal.Entry{
-				ProjectID:  "lsn-test",
-				BranchID:   main.ID,
-				Operation:  wal.OpInsert,
-				Collection: "data",
-			}
-			lsn, _ := walService.Append(entry)
+			lsn, _ := walService.Append(putEntry("lsn-test", main.ID, "data", fmt.Sprintf("doc-%d", i)))
 			_ = branchService.UpdateBranchHead(main.ID, lsn)
 		}
 
@@ -336,12 +294,7 @@ func TestWALService_Persistence(t *testing.T) {
 		// Create some entries
 		var lastLSN int64
 		for i := 0; i < 5; i++ {
-			entry := &wal.Entry{
-				ProjectID: "persist-test",
-				BranchID:  "main",
-				Operation: wal.OpInsert,
-			}
-			lastLSN, _ = service1.Append(entry)
+			lastLSN, _ = service1.Append(putEntry("persist-test", "main", "docs", fmt.Sprintf("doc-%d", i)))
 		}
 
 		// Create new service instance (simulates restart)
@@ -352,12 +305,7 @@ func TestWALService_Persistence(t *testing.T) {
 		assert.Equal(t, lastLSN, service2.GetCurrentLSN("persist-test"))
 
 		// New entries should continue sequence
-		entry := &wal.Entry{
-			ProjectID: "persist-test",
-			BranchID:  "main",
-			Operation: wal.OpInsert,
-		}
-		newLSN, _ := service2.Append(entry)
+		newLSN, _ := service2.Append(putEntry("persist-test", "main", "docs", "final"))
 		assert.Equal(t, lastLSN+1, newLSN)
 	})
 }

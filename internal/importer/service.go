@@ -9,10 +9,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
-	"github.com/argon-lab/argon/internal/wal"
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
+	"github.com/argon-lab/argon/internal/wal"
 )
 
 // ImportService handles importing existing MongoDB databases into Argon WAL system
@@ -257,13 +256,14 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	return result, nil
 }
 
-// importCollection imports a single collection into the WAL system
+// importCollection imports a single collection into the WAL system.
+// Imports write put entries directly (one batched append per batch of
+// documents) instead of going through the interceptor: the target project
+// is freshly created, so per-document duplicate checks and filter
+// resolution would be pure overhead.
 func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Database, collectionName string, branch *wal.Branch, batchSize int) (int64, int64, error) {
 	collection := sourceDB.Collection(collectionName)
-	
-	// Create WAL interceptor for this branch
-	interceptor := driverwal.NewInterceptor(s.walService, branch, s.branchService)
-	
+
 	// Create a cursor to read all documents
 	cursor, err := collection.Find(ctx, bson.D{})
 	if err != nil {
@@ -273,9 +273,7 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 
 	var importedCount int64
 	var walEntriesCount int64
-	documents := make([]interface{}, 0, batchSize)
-
-	startWALCount := s.walService.GetCurrentLSN(branch.ProjectID)
+	entries := make([]*wal.Entry, 0, batchSize)
 
 	// Process documents in batches
 	for cursor.Next(ctx) {
@@ -284,44 +282,72 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 			return importedCount, walEntriesCount, fmt.Errorf("failed to decode document: %w", err)
 		}
 
-		documents = append(documents, doc)
+		entry, err := importEntry(branch, collectionName, doc)
+		if err != nil {
+			return importedCount, walEntriesCount, err
+		}
+		entries = append(entries, entry)
 
 		// Process batch when it's full
-		if len(documents) >= batchSize {
-			if err := s.processBatch(ctx, interceptor, collectionName, documents); err != nil {
+		if len(entries) >= batchSize {
+			if err := s.appendImportBatch(branch, entries); err != nil {
 				return importedCount, walEntriesCount, fmt.Errorf("failed to process batch: %w", err)
 			}
-			importedCount += int64(len(documents))
-			documents = documents[:0] // Reset batch
+			importedCount += int64(len(entries))
+			walEntriesCount += int64(len(entries))
+			entries = entries[:0] // Reset batch
 		}
 	}
 
 	// Process remaining documents
-	if len(documents) > 0 {
-		if err := s.processBatch(ctx, interceptor, collectionName, documents); err != nil {
+	if len(entries) > 0 {
+		if err := s.appendImportBatch(branch, entries); err != nil {
 			return importedCount, walEntriesCount, fmt.Errorf("failed to process final batch: %w", err)
 		}
-		importedCount += int64(len(documents))
+		importedCount += int64(len(entries))
+		walEntriesCount += int64(len(entries))
 	}
 
 	if err := cursor.Err(); err != nil {
 		return importedCount, walEntriesCount, fmt.Errorf("cursor error: %w", err)
 	}
 
-	endWALCount := s.walService.GetCurrentLSN(branch.ProjectID)
-	walEntriesCount = endWALCount - startWALCount
-
 	return importedCount, walEntriesCount, nil
 }
 
-// processBatch processes a batch of documents through the WAL interceptor
-func (s *ImportService) processBatch(ctx context.Context, interceptor *driverwal.Interceptor, collectionName string, documents []interface{}) error {
-	// Use the interceptor to insert documents, which will create WAL entries
-	for _, doc := range documents {
-		_, err := interceptor.InsertOne(ctx, collectionName, doc)
-		if err != nil {
-			return fmt.Errorf("failed to insert document via interceptor: %w", err)
-		}
+// importEntry builds a put entry for one imported document.
+func importEntry(branch *wal.Branch, collectionName string, doc bson.M) (*wal.Entry, error) {
+	id, exists := doc["_id"]
+	if !exists || id == nil {
+		return nil, fmt.Errorf("imported document in %s has no _id", collectionName)
+	}
+	postImage, err := bson.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal imported document: %w", err)
+	}
+	return &wal.Entry{
+		ProjectID:  branch.ProjectID,
+		BranchID:   branch.ID,
+		Operation:  wal.OpPut,
+		Collection: collectionName,
+		DocumentID: wal.DocumentIDString(id),
+		PostImage:  postImage,
+		Actor:      "importer",
+	}, nil
+}
+
+// appendImportBatch appends one batch of entries and advances the branch head.
+func (s *ImportService) appendImportBatch(branch *wal.Branch, entries []*wal.Entry) error {
+	lsns, err := s.walService.AppendBatch(entries)
+	if err != nil {
+		return err
+	}
+	last := lsns[len(lsns)-1]
+	if err := s.branchService.UpdateBranchHead(branch.ID, last); err != nil {
+		return fmt.Errorf("failed to update branch head: %w", err)
+	}
+	if last > branch.HeadLSN {
+		branch.HeadLSN = last
 	}
 	return nil
 }
