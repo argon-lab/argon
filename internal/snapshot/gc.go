@@ -70,9 +70,10 @@ func (s *Service) CleanupBranch(ctx context.Context, branchID string) (manifests
 	for id := range candidates {
 		orphaned = append(orphaned, id)
 	}
-	chunkRes, err := s.chunks.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": orphaned}})
-	if err != nil {
+	// Through the store interface, so filesystem and S3 backends reclaim
+	// their objects too — not just the MongoDB collection.
+	if err := s.store.Delete(ctx, orphaned); err != nil {
 		return manifestsRemoved, 0, fmt.Errorf("failed to delete orphaned chunks: %w", err)
 	}
-	return manifestsRemoved, chunkRes.DeletedCount, nil
+	return manifestsRemoved, int64(len(orphaned)), nil
 }

@@ -29,11 +29,18 @@ type Service struct {
 	autoBranches map[string]*autoState
 }
 
-// NewService creates a snapshot service. It registers itself as the
-// materializer's snapshot source, so materialization transparently starts
-// from the nearest usable snapshot instead of replaying from the branch
-// root.
+// NewService creates a snapshot service with the default (MongoDB) chunk
+// store. It registers itself as the materializer's snapshot source, so
+// materialization transparently starts from the nearest usable snapshot
+// instead of replaying from the branch root.
 func NewService(db *mongo.Database, branches *branchwal.BranchService, mat *materializer.Service) (*Service, error) {
+	return NewServiceWithStore(db, branches, mat, NewMongoChunkStore(db))
+}
+
+// NewServiceWithStore creates a snapshot service over a specific chunk
+// store backend (MongoDB, filesystem or S3 — see NewChunkStoreFromEnv).
+// Manifests always stay in MongoDB; only chunk data moves.
+func NewServiceWithStore(db *mongo.Database, branches *branchwal.BranchService, mat *materializer.Service, store ChunkStore) (*Service, error) {
 	compressor, err := wal.NewCompressor(nil)
 	if err != nil {
 		return nil, err
@@ -42,7 +49,7 @@ func NewService(db *mongo.Database, branches *branchwal.BranchService, mat *mate
 	s := &Service{
 		manifests:    db.Collection("wal_snapshots"),
 		chunks:       db.Collection("wal_snapshot_chunks"),
-		store:        NewMongoChunkStore(db),
+		store:        store,
 		branches:     branches,
 		materializer: mat,
 		compressor:   compressor,

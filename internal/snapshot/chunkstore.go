@@ -25,6 +25,9 @@ type ChunkStore interface {
 	Put(ctx context.Context, data []byte) (string, error)
 	// Get retrieves a chunk by content address.
 	Get(ctx context.Context, id string) ([]byte, error)
+	// Delete removes chunks by content address. Missing chunks are not an
+	// error — deletion must be idempotent for GC retries.
+	Delete(ctx context.Context, ids []string) error
 }
 
 // mongoChunkStore stores chunks in the wal_snapshot_chunks collection.
@@ -57,6 +60,14 @@ func (s *mongoChunkStore) Put(ctx context.Context, data []byte) (string, error) 
 		return "", fmt.Errorf("failed to store chunk %s: %w", id, err)
 	}
 	return id, nil
+}
+
+func (s *mongoChunkStore) Delete(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := s.chunks.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	return err
 }
 
 func (s *mongoChunkStore) Get(ctx context.Context, id string) ([]byte, error) {
