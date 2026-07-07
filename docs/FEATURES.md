@@ -31,8 +31,8 @@
 ### Audit trail
 - Every write is a WAL entry with **full pre/post document images** and an
   **actor** field (`user:...`, `agent:...`, `importer`)
-- Immutable, append-only log — the foundation for diff, undo, and compliance
-  (merge/diff commands land in M4)
+- Immutable, append-only log — the foundation for `argon diff`,
+  `argon merge` (reviewable data PRs), `argon undo`, and compliance
 - WAL entries are compressed per entry (zstd by default)
 
 ## 📊 Developer Experience
@@ -102,11 +102,9 @@ reproduce on yours with `docker compose up`:
 
 ## ⚠️ Current Limitations (deliberate scope)
 
-- Reads materialize in memory: no indexes, no aggregation pipeline; Find
-  options (sort/skip/limit/projection) are not applied yet. M3 fixes this
-  structurally by running reads on real mongod.
-- No merge/diff commands yet (M4) — pre-images already record the data they
-  will need.
+- Time-travel and metadata-only branch reads materialize in memory; live
+  branches checked out to a physical database get real mongod reads
+  (indexes, aggregation, everything).
 - WAL entries live in MongoDB and are reclaimed by retention-window GC once
   snapshots cover them; snapshot chunks can additionally live in an
   S3-compatible or filesystem chunk store.
@@ -121,8 +119,8 @@ reproduce on yours with `docker compose up`:
 | **M1 · Correctness** | Deterministic replay (property-tested), distributed LSN sequencer, branch ancestry isolation, truthful write results, WAL v2 migration | ✅ Shipped |
 | **M2 · Bounded time travel** | Snapshots that bound replay depth ✅ · retention-window WAL GC + full branch reclamation ✅ · S3/filesystem snapshot chunk stores ✅ · [public reproducible benchmarks](https://github.com/argon-lab/benchmarks) ✅ | ✅ Shipped |
 | **M3 · True drop-in** | Physical MongoDB database per branch (`argon checkout` → connection string) ✅ · change-stream write capture ✅ · `argon undo` with per-actor conflict detection ✅ · official driver test suites in CI 🚧 | Shipped · driver-suite validation pending |
-| **M4 · Merge & diff** | Document-level diff, three-way merge, reviewable data PRs | Planned |
-| **M5 · Agent ecosystem** | MCP server, LangGraph checkpointer, TTL sandboxes, eval pinning | Planned |
+| **M4 · Merge & diff** | `argon diff` ✅ · three-way merge with persisted, reviewable plans (`argon merge preview/apply`) ✅ · conflicts never resolved silently ✅ · merges undoable like any range ✅ | ✅ Shipped |
+| **M5 · Agent ecosystem** | MCP server (`argon mcp`, 9 tools, supervised ingesters) ✅ · TTL sandboxes (`argon sandbox`) ✅ · LangGraph checkpointer 🚧 · eval dataset pinning 🚧 | MCP + sandboxes shipped · integrations remaining |
 
 Full roadmap: https://www.argonlabs.tech/roadmap
 
