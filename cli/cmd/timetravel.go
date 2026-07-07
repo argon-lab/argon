@@ -121,16 +121,16 @@ func init() {
 	// Add flags
 	timeTravelInfoCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	timeTravelInfoCmd.Flags().StringP("branch", "b", "", "Branch name (required)")
-	timeTravelInfoCmd.MarkFlagRequired("project")
-	timeTravelInfoCmd.MarkFlagRequired("branch")
+	_ = timeTravelInfoCmd.MarkFlagRequired("project")
+	_ = timeTravelInfoCmd.MarkFlagRequired("branch")
 
 	timeTravelQueryCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	timeTravelQueryCmd.Flags().StringP("branch", "b", "", "Branch name (required)")
 	timeTravelQueryCmd.Flags().String("lsn", "", "LSN to query (required)")
 	timeTravelQueryCmd.Flags().StringP("collection", "c", "", "Collection name")
-	timeTravelQueryCmd.MarkFlagRequired("project")
-	timeTravelQueryCmd.MarkFlagRequired("branch")
-	timeTravelQueryCmd.MarkFlagRequired("lsn")
+	_ = timeTravelQueryCmd.MarkFlagRequired("project")
+	_ = timeTravelQueryCmd.MarkFlagRequired("branch")
+	_ = timeTravelQueryCmd.MarkFlagRequired("lsn")
 
 	// Add subcommands
 	timeTravelCmd.AddCommand(timeTravelInfoCmd)

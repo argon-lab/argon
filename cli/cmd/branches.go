@@ -132,13 +132,13 @@ func init() {
 	// Add flags
 	branchesCreateCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	branchesCreateCmd.Flags().String("from", "main", "Source branch to branch from")
-	branchesCreateCmd.MarkFlagRequired("project")
+	_ = branchesCreateCmd.MarkFlagRequired("project")
 
 	branchesListCmd.Flags().StringP("project", "p", "", "Project name (required)")
-	branchesListCmd.MarkFlagRequired("project")
+	_ = branchesListCmd.MarkFlagRequired("project")
 
 	branchesDeleteCmd.Flags().StringP("project", "p", "", "Project name (required)")
-	branchesDeleteCmd.MarkFlagRequired("project")
+	_ = branchesDeleteCmd.MarkFlagRequired("project")
 
 	// Add subcommands
 	branchesCmd.AddCommand(branchesCreateCmd)
