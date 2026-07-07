@@ -79,21 +79,38 @@ DELETE /api/v1/projects/:p/branches/:b
 POST   /api/v1/projects/:p/branches/:b/checkout
 POST   /api/v1/projects/:p/branches/:b/release
 POST   /api/v1/projects/:p/sandboxes                   {name?, from?, ttl_minutes?}
+GET    /api/v1/projects/:p/sandboxes
+DELETE /api/v1/projects/:p/sandboxes/:b
+POST   /api/v1/projects/:p/sandboxes/:b/extend         {ttl_minutes}
+POST   /api/v1/projects/:p/sandboxes/:b/keep
 GET    /api/v1/projects/:p/branches/:b/diff
 POST   /api/v1/projects/:p/branches/:b/merge-preview
+GET    /api/v1/merge-plans?project=:p
+GET    /api/v1/merge-plans/:id
 POST   /api/v1/merge-plans/:id/apply                   {strategy?}
 POST   /api/v1/projects/:p/branches/:b/undo            {from_lsn, to_lsn?, actor?, dry_run?}
+GET    /api/v1/projects/:p/branches/:b/entries         ?from_lsn&to_lsn&actor&collection&order&limit
 GET    /api/v1/projects/:p/branches/:b/time-travel
+GET    /api/v1/projects/:p/branches/:b/time-travel/query  ?lsn&collection&skip&limit
 POST   /api/v1/projects/:p/branches/:b/snapshots
 GET    /api/v1/projects/:p/pins
 POST   /api/v1/projects/:p/pins                        {name, branch?, lsn?, note?}
 DELETE /api/v1/projects/:p/pins/:name
 POST   /api/v1/projects/:p/pins/:name/branches         {name}
 POST   /api/v1/projects/:p/pins/:name/sandboxes        {name?, ttl_minutes?}
+GET    /api/v1/meta
+GET    /api/v1/status/ingesters
 ```
 
 Sandbox-creating endpoints start a supervised ingester; errors return
 `{"error": "..."}` with a meaningful status.
+
+Cross-cutting switches, all off by default: `ARGON_API_TOKEN` requires
+`Authorization: Bearer <token>` on every `/api` endpoint except `/meta`;
+`ARGON_READ_ONLY=1` rejects writes; `ARGON_CORS_ORIGINS` narrows browser
+origins (default: any). The server also serves the web console UI at `/`
+when one is bundled (`scripts/sync-ui.sh`) — `argon console` is the
+one-command local wrapper: it binds to localhost and opens the browser.
 
 ## Python: argon-agents
 

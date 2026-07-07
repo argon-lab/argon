@@ -4,7 +4,7 @@
 // plane stays native MongoDB — clients write to branch databases through
 // their own drivers; this server supervises a change-stream ingester for
 // every branch it checks out, so those writes become versioned history.
-package main
+package server
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -25,19 +26,41 @@ import (
 type Router struct {
 	*gin.Engine
 	services *walcli.Services
+	opts     Options
 
 	ingestMu sync.Mutex
 	ingest   map[string]context.CancelFunc
 }
 
-// NewRouter builds the API over the given services.
+// NewRouter builds the API over the given services, configured from the
+// environment (see OptionsFromEnv).
 func NewRouter(services *walcli.Services) *Router {
+	return NewRouterWith(services, OptionsFromEnv())
+}
+
+// NewRouterWith builds the API over the given services with explicit
+// options — for embedding and tests, where the environment must not decide.
+func NewRouterWith(services *walcli.Services, opts Options) *Router {
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	if opts.Version == "" {
+		opts.Version = Version
+	}
 	r := &Router{
 		Engine:   gin.New(),
 		services: services,
+		opts:     opts,
 		ingest:   make(map[string]context.CancelFunc),
 	}
 	r.Use(gin.Recovery())
+	r.Use(corsMiddleware(opts.CORSOrigins))
+	if opts.Token != "" {
+		r.Use(authMiddleware(opts.Token))
+	}
+	if opts.ReadOnly {
+		r.Use(readOnlyMiddleware())
+	}
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -45,6 +68,9 @@ func NewRouter(services *walcli.Services) *Router {
 
 	v1 := r.Group("/api/v1")
 	{
+		v1.GET("/meta", r.meta)
+		v1.GET("/status/ingesters", r.ingesterStatus)
+
 		v1.GET("/projects", r.listProjects)
 		v1.POST("/projects", r.createProject)
 
@@ -57,9 +83,15 @@ func NewRouter(services *walcli.Services) *Router {
 		v1.POST("/projects/:project/branches/:branch/release", r.releaseBranch)
 
 		v1.POST("/projects/:project/sandboxes", r.createSandbox)
+		v1.GET("/projects/:project/sandboxes", r.listSandboxes)
+		v1.DELETE("/projects/:project/sandboxes/:branch", r.discardSandbox)
+		v1.POST("/projects/:project/sandboxes/:branch/extend", r.extendSandbox)
+		v1.POST("/projects/:project/sandboxes/:branch/keep", r.keepSandbox)
 
 		v1.GET("/projects/:project/branches/:branch/diff", r.diffBranch)
 		v1.POST("/projects/:project/branches/:branch/merge-preview", r.mergePreview)
+		v1.GET("/merge-plans", r.listMergePlans)
+		v1.GET("/merge-plans/:id", r.getMergePlan)
 		v1.POST("/merge-plans/:id/apply", r.mergeApply)
 
 		v1.GET("/projects/:project/pins", r.listPins)
@@ -69,9 +101,12 @@ func NewRouter(services *walcli.Services) *Router {
 		v1.POST("/projects/:project/pins/:name/sandboxes", r.sandboxFromPin)
 
 		v1.POST("/projects/:project/branches/:branch/undo", r.undoRange)
+		v1.GET("/projects/:project/branches/:branch/entries", r.listEntries)
 		v1.GET("/projects/:project/branches/:branch/time-travel", r.timeTravelInfo)
+		v1.GET("/projects/:project/branches/:branch/time-travel/query", r.timeTravelQuery)
 		v1.POST("/projects/:project/branches/:branch/snapshots", r.createSnapshot)
 	}
+	r.mountUI()
 	return r
 }
 

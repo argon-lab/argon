@@ -124,6 +124,9 @@ pin. No snapshot → nothing is ever deleted.
 argon mcp                 Serve the sandbox/merge/undo/pin workflow over the
                           Model Context Protocol (stdio); supervises an
                           ingester for every sandbox it hands out
+argon console [--port 1818] [--host 127.0.0.1] [--no-browser]
+                          Serve the web console (REST API + UI) against your
+                          local engine and open it in a browser
 argon migrate-wal --project P [--dry-run]    v1 → v2 WAL schema migration
 argon status / metrics    Health and performance counters
 ```

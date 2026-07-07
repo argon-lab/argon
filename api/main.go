@@ -1,3 +1,12 @@
+// Package main serves Argon's REST API — the control plane for language
+// SDKs (the Python agent adapters foremost): projects, branches, sandboxes,
+// checkout/connection strings, diff/merge, undo and time travel. The data
+// plane stays native MongoDB — clients write to branch databases through
+// their own drivers; this server supervises a change-stream ingester for
+// every branch it checks out, so those writes become versioned history.
+//
+// The router itself lives in the server package so the CLI can embed it
+// (`argon console`); this binary is the standalone deployment.
 package main
 
 import (
@@ -9,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/argon-lab/argon/api/server"
 	"github.com/argon-lab/argon/pkg/walcli"
 )
 
@@ -18,7 +28,7 @@ func main() {
 		log.Fatalf("failed to initialize services: %v", err)
 	}
 
-	router := NewRouter(services)
+	router := server.NewRouter(services)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
