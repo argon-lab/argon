@@ -91,8 +91,22 @@ type match struct {
 	doc   bson.M
 }
 
+// guardNotLive rejects SDK writes to checked-out branches: their WAL is
+// fed from the physical database's change stream, and writing through both
+// paths would double-log. Handles created before a checkout can be stale;
+// recreate handles after checking a branch out.
+func (i *Interceptor) guardNotLive() error {
+	if i.branch.IsLive() {
+		return fmt.Errorf("branch %s is checked out as %s: connect with a MongoDB driver instead of the SDK write path", i.branch.Name, i.branch.PhysicalDB)
+	}
+	return nil
+}
+
 // InsertOne intercepts an insert operation and writes a put entry.
 func (i *Interceptor) InsertOne(ctx context.Context, collection string, document interface{}) (*InsertResult, error) {
+	if err := i.guardNotLive(); err != nil {
+		return nil, err
+	}
 	docID, doc, err := i.ensureDocumentID(document)
 	if err != nil {
 		return nil, err
@@ -120,6 +134,9 @@ func (i *Interceptor) InsertOne(ctx context.Context, collection string, document
 
 // InsertMany intercepts a bulk insert and writes one batched set of puts.
 func (i *Interceptor) InsertMany(ctx context.Context, collection string, documents []interface{}) ([]interface{}, error) {
+	if err := i.guardNotLive(); err != nil {
+		return nil, err
+	}
 	if len(documents) == 0 {
 		return nil, fmt.Errorf("insertMany requires at least one document")
 	}
@@ -185,6 +202,9 @@ func (i *Interceptor) ReplaceOne(ctx context.Context, collection string, filter,
 }
 
 func (i *Interceptor) applyUpdate(collection string, filter, update interface{}, upsert, limitOne bool) (*UpdateResult, error) {
+	if err := i.guardNotLive(); err != nil {
+		return nil, err
+	}
 	filterDoc, err := normalizeFilter(filter)
 	if err != nil {
 		return nil, err
@@ -256,6 +276,9 @@ func (i *Interceptor) DeleteMany(ctx context.Context, collection string, filter 
 }
 
 func (i *Interceptor) applyDelete(collection string, filter interface{}, limitOne bool) (*DeleteResult, error) {
+	if err := i.guardNotLive(); err != nil {
+		return nil, err
+	}
 	filterDoc, err := normalizeFilter(filter)
 	if err != nil {
 		return nil, err

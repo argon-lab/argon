@@ -7,6 +7,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
+	"github.com/argon-lab/argon/internal/checkout"
 	"github.com/argon-lab/argon/internal/gc"
 	"github.com/argon-lab/argon/internal/importer"
 	"github.com/argon-lab/argon/internal/materializer"
@@ -32,7 +33,9 @@ type Services struct {
 	Migrate      *migrate.Service
 	Snapshots    *snapshot.Service
 	GC           *gc.Service
+	Checkout     *checkout.Service
 	Monitor      *wal.Monitor
+	MongoURI     string
 }
 
 // NewServices creates and returns all WAL services
@@ -91,6 +94,7 @@ func NewServices() (*Services, error) {
 	}
 	snapshotService.EnableAuto(snapshot.DefaultAutoConfig())
 	gcService := gc.NewService(walService, branchService, snapshotService)
+	checkoutService := checkout.NewService(client, branchService, materializerService)
 	// Reclaim a deleted branch's WAL entries and snapshots. Safe because
 	// regular deletion refuses branches with children.
 	branchService.SetDeleteHook(func(branchID string) {
@@ -126,8 +130,16 @@ func NewServices() (*Services, error) {
 		Migrate:      migrateService,
 		Snapshots:    snapshotService,
 		GC:           gcService,
+		Checkout:     checkoutService,
 		Monitor:      monitor,
+		MongoURI:     mongoURI,
 	}, nil
+}
+
+// BranchConnectionString renders the URI applications use to reach a
+// checked-out branch's physical database.
+func (s *Services) BranchConnectionString(physicalDB string) string {
+	return checkout.ConnectionString(s.MongoURI, physicalDB)
 }
 
 // RunGC wraps garbage collection for CLI use: the cli module cannot import
