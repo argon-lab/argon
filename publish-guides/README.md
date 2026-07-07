@@ -8,7 +8,7 @@ This directory contains guides for publishing Argon to various package managers.
 |---------|----------|---------|----------------|
 | CLI | Homebrew | ✅ Ready | `brew install argon-lab/tap/argonctl` |
 | CLI | NPM | ✅ Ready | `npm install -g argonctl` |
-| Python (agents) | PyPI | Pending first release from [argon-agents](https://github.com/argon-lab/argon-agents) | — |
+| Python (agents) | PyPI | ✅ Ready | `pip install argon-agents` |
 | Go engine | Go Modules | ✅ Ready | `go get github.com/argon-lab/argon` |
 
 The legacy `argon-mongodb` PyPI package targeted the v1 engine and is

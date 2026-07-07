@@ -98,7 +98,8 @@ Sandbox-creating endpoints start a supervised ingester; errors return
 ## Python: argon-agents
 
 [argon-lab/argon-agents](https://github.com/argon-lab/argon-agents) wraps
-the REST API for agent frameworks:
+the REST API for agent frameworks
+(`pip install argon-agents` — add `[langgraph]` for the checkpointer):
 
 ```python
 from argon_agents import ArgonClient, ArgonCheckpointSaver
