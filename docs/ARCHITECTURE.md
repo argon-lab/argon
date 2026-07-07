@@ -256,10 +256,9 @@ entries removed). Migration is idempotent.
 
 Current limitations (deliberate scope):
 
-- Reads materialize in memory: no indexes, no aggregation pipeline, Find
-  options (sort/skip/limit/projection) not applied; results in canonical
-  document-ID order.
-- No merge/diff commands yet (pre-images already carry the data they need).
+- Time-travel and metadata-only branch reads materialize in memory (no
+  indexes or aggregation on that path); live branches checked out to a
+  physical database get real mongod reads with everything that implies.
 - WAL entries live in MongoDB and are reclaimed by retention-window GC once
   snapshots cover them; snapshot chunks can additionally live in an
   S3-compatible or filesystem chunk store (see "Chunk store backends"
@@ -273,14 +272,13 @@ https://github.com/argon-lab/benchmarks — reproducible with
 
 Planned next (in order):
 
-1. **M3 (last box) — driver-suite validation**: physical per-branch
-   databases (`argon checkout`), change-stream ingestion, and per-actor
-   `argon undo` are all merged. What remains is running the official
+1. **M3 (last box) — driver-suite validation**: running the official
    pymongo/mongoose test suites against branch databases in CI — until
    then, "any driver connects" is stated as an architectural fact, not an
    unqualified drop-in claim.
-2. **M4 — merge and diff**: three-way document-level merge with reviewable
-   merge plans.
+2. **M5 (remaining) — integrations**: LangGraph checkpointer with fork and
+   rewind; eval dataset pinning. The MCP server and TTL sandboxes shipped
+   in #23.
 
 ## Storage collections
 
