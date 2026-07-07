@@ -76,7 +76,7 @@ func (s *ImportService) PreviewImport(ctx context.Context, mongoURI, databaseNam
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", err)
 	}
-	defer client.Disconnect(ctx)
+	defer func() { _ = client.Disconnect(ctx) }()
 
 	// Check connection
 	if err := client.Ping(ctx, nil); err != nil {
@@ -174,7 +174,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", err)
 	}
-	defer sourceClient.Disconnect(ctx)
+	defer func() { _ = sourceClient.Disconnect(ctx) }()
 
 	if err := sourceClient.Ping(ctx, nil); err != nil {
 		return nil, fmt.Errorf("failed to ping source MongoDB: %w", err)
@@ -269,7 +269,7 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to create cursor for collection %s: %w", collectionName, err)
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var importedCount int64
 	var walEntriesCount int64

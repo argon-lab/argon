@@ -171,7 +171,7 @@ func (c *Compressor) compressGzip(data []byte) ([]byte, error) {
 	}
 
 	if _, err := writer.Write(data); err != nil {
-		writer.Close()
+		_ = writer.Close()
 		return nil, fmt.Errorf("failed to write gzip data: %w", err)
 	}
 
@@ -188,7 +188,7 @@ func (c *Compressor) decompressGzip(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	decompressed, err := io.ReadAll(reader)
 	if err != nil {
@@ -293,7 +293,7 @@ func (c *Compressor) GetCompressionRatio(original, compressed []byte) float64 {
 // Close cleans up any resources used by the compressor
 func (c *Compressor) Close() error {
 	if c.zstdWriter != nil {
-		c.zstdWriter.Close()
+		_ = c.zstdWriter.Close()
 	}
 	return nil
 }

@@ -329,11 +329,11 @@ func TestImportSystemCollections(t *testing.T) {
 	sourceDB := setupTestSourceDB(t, "test_source_import_system")
 
 	// Create test data including system-like collections
-	sourceDB.Collection("users").InsertOne(ctx, bson.M{"name": "user1"})
-	sourceDB.Collection("system.indexes").InsertOne(ctx, bson.M{"index": "test"})
-	sourceDB.Collection("admin.users").InsertOne(ctx, bson.M{"admin": "test"})
-	sourceDB.Collection("local.test").InsertOne(ctx, bson.M{"local": "test"})
-	sourceDB.Collection("argon_wal.test").InsertOne(ctx, bson.M{"wal": "test"})
+	_, _ = sourceDB.Collection("users").InsertOne(ctx, bson.M{"name": "user1"})
+	_, _ = sourceDB.Collection("system.indexes").InsertOne(ctx, bson.M{"index": "test"})
+	_, _ = sourceDB.Collection("admin.users").InsertOne(ctx, bson.M{"admin": "test"})
+	_, _ = sourceDB.Collection("local.test").InsertOne(ctx, bson.M{"local": "test"})
+	_, _ = sourceDB.Collection("argon_wal.test").InsertOne(ctx, bson.M{"wal": "test"})
 
 	// Setup services
 	walService, err := wal.NewService(walDB)
