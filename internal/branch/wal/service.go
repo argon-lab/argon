@@ -230,8 +230,24 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 	return err
 }
 
-// UpdateBranchHead updates the head LSN of a branch
+// UpdateBranchHead advances the head LSN of a branch. $max keeps the head
+// monotonic under concurrent writers: with $set, a writer holding a smaller
+// LSN could land after one holding a larger LSN and move the head backwards,
+// hiding already-written entries from materialization. To move a head
+// backwards deliberately (restore/reset), use SetBranchHead.
 func (s *BranchService) UpdateBranchHead(branchID string, newLSN int64) error {
+	ctx := context.Background()
+	_, err := s.collection.UpdateOne(ctx,
+		bson.M{"_id": branchID},
+		bson.M{"$max": bson.M{"head_lsn": newLSN}},
+	)
+	return err
+}
+
+// SetBranchHead sets the head LSN of a branch unconditionally. This is the
+// restore/reset path: unlike UpdateBranchHead it can move a head backwards,
+// so it must only be used when discarding history is the intent.
+func (s *BranchService) SetBranchHead(branchID string, newLSN int64) error {
 	ctx := context.Background()
 	_, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": branchID},

@@ -85,7 +85,7 @@ func TestWALService_Basic(t *testing.T) {
 	assert.Equal(t, int64(2), lsn2)
 
 	// Verify current LSN
-	assert.Equal(t, int64(2), walService.GetCurrentLSN())
+	assert.Equal(t, int64(2), walService.GetCurrentLSN("test-project"))
 
 	// Retrieve entries
 	entries, err := walService.GetBranchEntries("main", "users", 0, 10)
@@ -168,7 +168,7 @@ func TestBranchService_DeleteBranch(t *testing.T) {
 	assert.Error(t, err)
 
 	// Verify WAL entries still exist
-	currentLSN := walService.GetCurrentLSN()
+	currentLSN := walService.GetCurrentLSN("project-1")
 	assert.Greater(t, currentLSN, int64(0))
 }
 

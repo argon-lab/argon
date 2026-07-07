@@ -218,7 +218,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	if !opts.DryRun {
 		result.ProjectID = project.ID
 		result.BranchID = branch.ID
-		result.StartLSN = s.walService.GetCurrentLSN()
+		result.StartLSN = s.walService.GetCurrentLSN(project.ID)
 	}
 
 	// Import each collection
@@ -250,7 +250,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	}
 
 	if !opts.DryRun {
-		result.EndLSN = s.walService.GetCurrentLSN()
+		result.EndLSN = s.walService.GetCurrentLSN(project.ID)
 	}
 
 	result.Duration = time.Since(startTime)
@@ -275,7 +275,7 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 	var walEntriesCount int64
 	documents := make([]interface{}, 0, batchSize)
 
-	startWALCount := s.walService.GetCurrentLSN()
+	startWALCount := s.walService.GetCurrentLSN(branch.ProjectID)
 
 	// Process documents in batches
 	for cursor.Next(ctx) {
@@ -308,7 +308,7 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 		return importedCount, walEntriesCount, fmt.Errorf("cursor error: %w", err)
 	}
 
-	endWALCount := s.walService.GetCurrentLSN()
+	endWALCount := s.walService.GetCurrentLSN(branch.ProjectID)
 	walEntriesCount = endWALCount - startWALCount
 
 	return importedCount, walEntriesCount, nil

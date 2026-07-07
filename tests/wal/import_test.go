@@ -181,7 +181,7 @@ func TestImportDatabaseActual(t *testing.T) {
 	assert.Equal(t, branch.ID, result.BranchID)
 
 	// Verify WAL entries were created
-	finalLSN := walService.GetCurrentLSN()
+	finalLSN := walService.GetCurrentLSN(project.ID)
 	assert.Greater(t, finalLSN, result.StartLSN)
 
 	// Verify we can query the imported data via WAL

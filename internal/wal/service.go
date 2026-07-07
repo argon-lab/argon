@@ -3,7 +3,6 @@ package wal
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -15,10 +14,16 @@ import (
 type Service struct {
 	db         *mongo.Database
 	collection *mongo.Collection
-	lsnCounter atomic.Int64
+	sequencer  *Sequencer
 	metrics    *Metrics
 	compressor *Compressor
 }
+
+// legacyIndexNames are indexes from earlier releases whose keys or options
+// conflict with the current definitions and must be dropped before creating
+// the new ones. Creating an index whose name matches an existing one with
+// different options fails, so these are removed up front.
+var legacyIndexNames = []string{"lsn_1", "project_id_1_lsn_1"}
 
 // NewService creates a new WAL service
 func NewService(db *mongo.Database) (*Service, error) {
@@ -31,22 +36,26 @@ func NewService(db *mongo.Database) (*Service, error) {
 	s := &Service{
 		db:         db,
 		collection: db.Collection("wal_log"),
+		sequencer:  NewSequencer(db),
 		metrics:    GlobalMetrics,
 		compressor: compressor,
 	}
 
-	// Create indexes
 	ctx := context.Background()
+
+	// Earlier releases enforced a globally unique lsn; LSNs are now scoped
+	// per project, so the old definitions conflict and must be dropped.
+	for _, name := range legacyIndexNames {
+		_, _ = s.collection.Indexes().DropOne(ctx, name)
+	}
+
 	indexes := []mongo.IndexModel{
-		{
-			Keys:    bson.M{"lsn": 1},
-			Options: options.Index().SetUnique(true),
-		},
 		{
 			Keys: bson.D{
 				{Key: "project_id", Value: 1},
 				{Key: "lsn", Value: 1},
 			},
+			Options: options.Index().SetUnique(true),
 		},
 		{
 			Keys: bson.D{
@@ -61,115 +70,100 @@ func NewService(db *mongo.Database) (*Service, error) {
 	}
 
 	if _, err2 := s.collection.Indexes().CreateMany(ctx, indexes); err2 != nil {
+		_ = compressor.Close()
 		return nil, fmt.Errorf("failed to create indexes: %w", err2)
-	}
-
-	// Initialize LSN counter
-	if err := s.initializeLSN(); err != nil {
-		compressor.Close()
-		return nil, fmt.Errorf("failed to initialize LSN: %w", err)
 	}
 
 	return s, nil
 }
 
-// initializeLSN sets the LSN counter to the highest existing LSN
-func (s *Service) initializeLSN() error {
-	ctx := context.Background()
-	opts := options.FindOne().SetSort(bson.M{"lsn": -1})
-
-	var lastEntry Entry
-	err := s.collection.FindOne(ctx, bson.M{}, opts).Decode(&lastEntry)
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			// No entries yet, start at 0
-			s.lsnCounter.Store(0)
-			return nil
-		}
-		return err
-	}
-
-	s.lsnCounter.Store(lastEntry.LSN)
-	return nil
-}
-
 // Append adds a new entry to the WAL
 func (s *Service) Append(entry *Entry) (int64, error) {
-	// Generate LSN atomically
-	lsn := s.lsnCounter.Add(1)
+	lsn, err := s.sequencer.Reserve(entry.ProjectID, 1)
+	if err != nil {
+		return 0, err
+	}
 	entry.LSN = lsn
 	entry.Timestamp = time.Now()
 
 	// Compress entry before storing
 	if err := s.compressor.CompressEntry(entry); err != nil {
-		// Rollback LSN on error
-		s.lsnCounter.Add(-1)
 		return 0, fmt.Errorf("failed to compress WAL entry: %w", err)
 	}
 
 	ctx := context.Background()
-	_, err := s.collection.InsertOne(ctx, entry)
-	if err != nil {
-		// Rollback LSN on error
-		s.lsnCounter.Add(-1)
+	if _, err := s.collection.InsertOne(ctx, entry); err != nil {
+		// The reserved LSN becomes a gap in the sequence. Gaps are
+		// harmless: consumers rely on ordering, never on density, so
+		// reservations are never rolled back (a rollback under
+		// concurrency could hand an already-used LSN to a later writer).
 		return 0, fmt.Errorf("failed to append WAL entry: %w", err)
 	}
 
 	return lsn, nil
 }
 
-// AppendBatch adds multiple entries to the WAL in a single operation for optimal performance
+// AppendBatch adds multiple entries to the WAL in a single operation for
+// optimal performance. All entries must belong to the same project because
+// the batch is allocated one contiguous per-project LSN range.
 func (s *Service) AppendBatch(entries []*Entry) ([]int64, error) {
 	if len(entries) == 0 {
 		return []int64{}, nil
 	}
 
+	projectID := entries[0].ProjectID
+	for i, entry := range entries {
+		if entry.ProjectID != projectID {
+			return nil, fmt.Errorf("batch entry %d belongs to project %q, expected %q: batches must be single-project", i, entry.ProjectID, projectID)
+		}
+	}
+
+	firstLSN, err := s.sequencer.Reserve(projectID, int64(len(entries)))
+	if err != nil {
+		return nil, err
+	}
+
 	now := time.Now()
 	lsns := make([]int64, len(entries))
 	documents := make([]interface{}, len(entries))
-	
-	// Generate LSNs atomically for all entries and compress
+
 	for i, entry := range entries {
-		lsn := s.lsnCounter.Add(1)
-		entry.LSN = lsn
+		entry.LSN = firstLSN + int64(i)
 		entry.Timestamp = now
-		lsns[i] = lsn
-		
+		lsns[i] = entry.LSN
+
 		// Compress entry before storing
 		if err := s.compressor.CompressEntry(entry); err != nil {
-			// Rollback all LSNs on error
-			s.lsnCounter.Add(-int64(i + 1))
 			return nil, fmt.Errorf("failed to compress WAL entry %d: %w", i, err)
 		}
-		
+
 		documents[i] = entry
 	}
 
 	ctx := context.Background()
-	_, err := s.collection.InsertMany(ctx, documents, options.InsertMany().SetOrdered(true))
-	if err != nil {
-		// Rollback all LSNs on error
-		s.lsnCounter.Add(-int64(len(entries)))
+	if _, err := s.collection.InsertMany(ctx, documents, options.InsertMany().SetOrdered(true)); err != nil {
+		// Any unwritten reserved LSNs become gaps, which are harmless.
 		return nil, fmt.Errorf("failed to append WAL entries batch: %w", err)
 	}
 
 	return lsns, nil
 }
 
-// GetEntry retrieves a single WAL entry by LSN
-func (s *Service) GetEntry(lsn int64) (*Entry, error) {
+// GetEntry retrieves a single WAL entry by project and LSN. LSNs are unique
+// only within a project.
+func (s *Service) GetEntry(projectID string, lsn int64) (*Entry, error) {
 	ctx := context.Background()
 	var entry Entry
-	err := s.collection.FindOne(ctx, bson.M{"lsn": lsn}).Decode(&entry)
+	err := s.collection.FindOne(ctx, bson.M{"project_id": projectID, "lsn": lsn}).Decode(&entry)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Decompress entry after retrieval
 	if err := s.compressor.DecompressEntry(&entry); err != nil {
 		return nil, fmt.Errorf("failed to decompress WAL entry: %w", err)
 	}
-	
+
 	return &entry, nil
 }
 
@@ -226,9 +220,16 @@ func (s *Service) GetEntriesByTimestamp(projectID string, timestamp time.Time) (
 	return s.GetEntries(filter, opts)
 }
 
-// GetCurrentLSN returns the current LSN value
-func (s *Service) GetCurrentLSN() int64 {
-	return s.lsnCounter.Load()
+// GetCurrentLSN returns the most recently allocated LSN for a project, or 0
+// if the project has no entries yet. This is an upper bound on written LSNs:
+// the latest reservation may still be in flight, or may have failed and left
+// a gap.
+func (s *Service) GetCurrentLSN(projectID string) int64 {
+	lsn, err := s.sequencer.Current(projectID)
+	if err != nil {
+		return 0
+	}
+	return lsn
 }
 
 // GetDocumentHistory retrieves WAL entries for a specific document

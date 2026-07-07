@@ -352,7 +352,7 @@ func TestWeek2_ComprehensiveIntegration(t *testing.T) {
 
 		// Get document history
 		branch, _ = branchService.GetBranchByID(branch.ID)
-		entries, err := walService.GetDocumentHistory(branch.ID, "items", docID.Hex(), 0, walService.GetCurrentLSN())
+		entries, err := walService.GetDocumentHistory(branch.ID, "items", docID.Hex(), 0, walService.GetCurrentLSN(branch.ProjectID))
 		assert.NoError(t, err)
 		assert.Len(t, entries, 4) // 1 insert + 3 updates
 
@@ -435,7 +435,7 @@ func TestWeek2_EdgeCases(t *testing.T) {
 		assert.Equal(t, int64(1), result.DeletedCount)
 
 		// Verify WAL entry created without document ID
-		entries, _ := walService.GetBranchEntries(branch.ID, "test", 0, walService.GetCurrentLSN())
+		entries, _ := walService.GetBranchEntries(branch.ID, "test", 0, walService.GetCurrentLSN(branch.ProjectID))
 		var deleteEntry *wal.Entry
 		for _, entry := range entries {
 			if entry.Operation == wal.OpDelete {

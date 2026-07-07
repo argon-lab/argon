@@ -46,11 +46,11 @@ func TestRestore_ResetBranchToLSN(t *testing.T) {
 		// Create some history
 		_, err := interceptor.InsertOne(ctx, "items", bson.M{"_id": "i1", "step": 1})
 		assert.NoError(t, err)
-		lsn1 := walService.GetCurrentLSN()
+		lsn1 := walService.GetCurrentLSN(project.ID)
 
 		_, err = interceptor.InsertOne(ctx, "items", bson.M{"_id": "i2", "step": 2})
 		assert.NoError(t, err)
-		lsn2 := walService.GetCurrentLSN()
+		lsn2 := walService.GetCurrentLSN(project.ID)
 
 		_, err = interceptor.InsertOne(ctx, "items", bson.M{"_id": "i3", "step": 3})
 		assert.NoError(t, err)
@@ -177,11 +177,11 @@ func TestRestore_CreateBranchAtLSN(t *testing.T) {
 		// Create history on main
 		_, err := interceptor.InsertOne(ctx, "docs", bson.M{"_id": "d1", "version": "v1"})
 		assert.NoError(t, err)
-		checkpoint1 := walService.GetCurrentLSN()
+		checkpoint1 := walService.GetCurrentLSN(project.ID)
 
 		_, err = interceptor.InsertOne(ctx, "docs", bson.M{"_id": "d2", "version": "v1"})
 		assert.NoError(t, err)
-		checkpoint2 := walService.GetCurrentLSN()
+		checkpoint2 := walService.GetCurrentLSN(project.ID)
 
 		_, err = interceptor.UpdateOne(ctx, "docs",
 			bson.M{"_id": "d1"},
@@ -325,7 +325,7 @@ func TestRestore_GetRestorePreview(t *testing.T) {
 		_, err = interceptor.InsertOne(ctx, "products", bson.M{"_id": "p1"})
 		assert.NoError(t, err)
 
-		checkpoint := walService.GetCurrentLSN()
+		checkpoint := walService.GetCurrentLSN(project.ID)
 
 		// Operations after checkpoint
 		_, err = interceptor.UpdateOne(ctx, "users", bson.M{"_id": "u1"}, bson.M{"$set": bson.M{"active": true}})
@@ -383,7 +383,7 @@ func TestRestore_ComplexScenario(t *testing.T) {
 		// Initial production state
 		_, err := interceptor.InsertOne(ctx, "config", bson.M{"_id": "app", "version": "1.0", "features": []string{"basic"}})
 		assert.NoError(t, err)
-		prodLSN := walService.GetCurrentLSN()
+		prodLSN := walService.GetCurrentLSN(project.ID)
 
 		// Development changes
 		_, err = interceptor.UpdateOne(ctx, "config",

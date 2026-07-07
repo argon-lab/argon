@@ -142,7 +142,7 @@ func (h *Handlers) CreateBranch(c *gin.Context) {
 		return
 	}
 
-	branch, err := h.services.Branches.CreateBranch(project.ID, req.Name)
+	branch, err := h.services.Branches.CreateBranch(project.ID, req.Name, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -304,29 +304,23 @@ func (h *Handlers) QueryTimeTravel(c *gin.Context) {
 // GetWALMetrics returns WAL performance metrics
 func (h *Handlers) GetWALMetrics(c *gin.Context) {
 	metrics := wal.GlobalMetrics.GetSnapshot()
-	
+
+	totalOps := metrics.AppendOps + metrics.QueryOps + metrics.MaterialOps +
+		metrics.BranchOps + metrics.RestoreOps
+	totalErrors := metrics.AppendErrors + metrics.QueryErrors +
+		metrics.MaterialErrors + metrics.ConnectionErrors
+	successRate := 1.0
+	if totalOps > 0 {
+		successRate = 1.0 - float64(totalErrors)/float64(totalOps)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"operationsPerSecond": metrics.OpsPerSecond,
-		"totalEntries":       metrics.TotalOperations,
-		"successRate":        metrics.SuccessRate,
-		"walSize":           "45.2 MB",
-		"compressionRatio":  "3.2x",
-		"recentOperations": []gin.H{
-			{
-				"operation":  "INSERT",
-				"collection": "users",
-				"lsn":        12345,
-				"timestamp":  time.Now().Add(-1 * time.Minute).Format("15:04:05"),
-				"duration":   "2",
-			},
-			{
-				"operation":  "UPDATE",
-				"collection": "products",
-				"lsn":        12344,
-				"timestamp":  time.Now().Add(-2 * time.Minute).Format("15:04:05"),
-				"duration":   "3",
-			},
-		},
+		"totalOperations":  totalOps,
+		"totalErrors":      totalErrors,
+		"successRate":      successRate,
+		"avgAppendLatency": metrics.AvgAppendLatency.String(),
+		"avgQueryLatency":  metrics.AvgQueryLatency.String(),
+		"lastOperation":    metrics.LastOperationTime,
 	})
 }
 

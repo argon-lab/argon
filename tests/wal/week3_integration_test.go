@@ -61,7 +61,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			"created": timestamps["morning"],
 		})
 		assert.NoError(t, err)
-		checkpoints["morning"] = walService.GetCurrentLSN()
+		checkpoints["morning"] = walService.GetCurrentLSN(project.ID)
 
 		// Noon: Feature development
 		time.Sleep(10 * time.Millisecond)
@@ -85,7 +85,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			})
 			assert.NoError(t, err)
 		}
-		checkpoints["noon"] = walService.GetCurrentLSN()
+		checkpoints["noon"] = walService.GetCurrentLSN(project.ID)
 
 		// Evening: Something went wrong
 		time.Sleep(10 * time.Millisecond)
@@ -100,7 +100,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			bson.M{"_id": "app"},
 			bson.M{"$set": bson.M{"version": "2.0.0-broken"}})
 		assert.NoError(t, err)
-		checkpoints["evening"] = walService.GetCurrentLSN()
+		checkpoints["evening"] = walService.GetCurrentLSN(project.ID)
 
 		// Update branch
 		mainBranch, _ = branchService.GetBranchByID(mainBranch.ID)
@@ -336,7 +336,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 
 		_, err := interceptor.InsertOne(ctx, "complex", doc)
 		assert.NoError(t, err)
-		checkpoint1 := walService.GetCurrentLSN()
+		checkpoint1 := walService.GetCurrentLSN(project.ID)
 
 		// Update nested fields
 		_, err = interceptor.UpdateOne(ctx, "complex",
@@ -406,7 +406,7 @@ func TestWeek3_IntegrationTests(t *testing.T) {
 			assert.NoError(t, err)
 
 			if i%100 == 99 {
-				checkpoints = append(checkpoints, walService.GetCurrentLSN())
+				checkpoints = append(checkpoints, walService.GetCurrentLSN(project.ID))
 			}
 		}
 

@@ -36,7 +36,6 @@ func main() {
 		return
 	}
 	fmt.Printf("   Connection: OK\n")
-	fmt.Printf("   Current LSN: %d\n", services.WAL.GetCurrentLSN())
 
 	// Test 3: Project creation
 	fmt.Println("\n3. Creating demo project...")

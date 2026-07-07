@@ -39,7 +39,7 @@ func TestInterceptor_InsertOne(t *testing.T) {
 		assert.NotNil(t, result.InsertedID)
 
 		// Verify WAL entry was created
-		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN())
+		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN(branch.ProjectID))
 		assert.NoError(t, err)
 		assert.Len(t, entries, 1)
 		assert.Equal(t, wal.OpInsert, entries[0].Operation)
@@ -63,7 +63,7 @@ func TestInterceptor_InsertOne(t *testing.T) {
 		assert.Equal(t, docID, result.InsertedID)
 
 		// Verify document ID in WAL entry
-		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN())
+		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN(branch.ProjectID))
 		assert.NoError(t, err)
 
 		// Find the entry for Bob
@@ -102,7 +102,7 @@ func TestInterceptor_UpdateOne(t *testing.T) {
 		assert.Equal(t, int64(1), result.ModifiedCount)
 
 		// Verify WAL entry
-		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN())
+		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN(branch.ProjectID))
 		assert.NoError(t, err)
 
 		// Find update entry
@@ -141,7 +141,7 @@ func TestInterceptor_DeleteOne(t *testing.T) {
 		assert.Equal(t, int64(1), result.DeletedCount)
 
 		// Verify WAL entry
-		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN())
+		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN(branch.ProjectID))
 		assert.NoError(t, err)
 
 		// Find delete entry
@@ -185,7 +185,7 @@ func TestInterceptor_InsertMany(t *testing.T) {
 		}
 
 		// Verify WAL entries
-		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN())
+		entries, err := walService.GetBranchEntries(branch.ID, "users", 0, walService.GetCurrentLSN(branch.ProjectID))
 		assert.NoError(t, err)
 		assert.GreaterOrEqual(t, len(entries), 3)
 
@@ -224,12 +224,12 @@ func TestInterceptor_BranchIsolation(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Verify branch 1 entries
-		entries1, err := walService.GetBranchEntries(branch1.ID, "users", 0, walService.GetCurrentLSN())
+		entries1, err := walService.GetBranchEntries(branch1.ID, "users", 0, walService.GetCurrentLSN(branch1.ProjectID))
 		assert.NoError(t, err)
 		assert.Len(t, entries1, 1)
 
 		// Verify branch 2 entries
-		entries2, err := walService.GetBranchEntries(branch2.ID, "users", 0, walService.GetCurrentLSN())
+		entries2, err := walService.GetBranchEntries(branch2.ID, "users", 0, walService.GetCurrentLSN(branch2.ProjectID))
 		assert.NoError(t, err)
 		assert.Len(t, entries2, 1)
 
