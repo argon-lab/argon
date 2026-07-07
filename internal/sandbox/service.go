@@ -85,6 +85,43 @@ func (s *Service) Create(ctx context.Context, projectID, parentBranchID, name st
 	}, nil
 }
 
+// Adopt turns an existing, not-yet-live branch into a sandbox: stamps the
+// TTL and checks it out. This is how sandboxes are created from a
+// historical point (a pin) — the branch is forked at the pinned LSN by the
+// restore service first, then adopted here.
+func (s *Service) Adopt(ctx context.Context, branchID string, ttl time.Duration) (*Info, error) {
+	if ttl <= 0 {
+		ttl = DefaultTTL
+	}
+	branch, err := s.branches.GetBranchByID(branchID)
+	if err != nil {
+		return nil, fmt.Errorf("branch not found: %w", err)
+	}
+	forkedFrom := ""
+	if branch.ParentID != "" {
+		if parent, err := s.branches.GetBranchByID(branch.ParentID); err == nil {
+			forkedFrom = parent.Name
+		}
+	}
+
+	expires := time.Now().Add(ttl)
+	if err := s.branches.SetExpiry(branch.ID, &expires); err != nil {
+		return nil, fmt.Errorf("failed to stamp sandbox TTL: %w", err)
+	}
+	info, err := s.checkout.Checkout(ctx, branch.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check the sandbox out: %w", err)
+	}
+	return &Info{
+		BranchID:   branch.ID,
+		BranchName: branch.Name,
+		PhysicalDB: info.PhysicalDB,
+		ExpiresAt:  expires,
+		ForkedFrom: forkedFrom,
+		ForkLSN:    branch.BaseLSN,
+	}, nil
+}
+
 // Extend pushes a sandbox's expiry further out from now.
 func (s *Service) Extend(ctx context.Context, branchID string, ttl time.Duration) (time.Time, error) {
 	branch, err := s.branches.GetBranchByID(branchID)

@@ -14,6 +14,7 @@ import (
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/merge"
 	"github.com/argon-lab/argon/internal/migrate"
+	"github.com/argon-lab/argon/internal/pin"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/restore"
 	"github.com/argon-lab/argon/internal/sandbox"
@@ -44,6 +45,7 @@ type Services struct {
 	Undo         *undo.Service
 	Merge        *merge.Service
 	Sandbox      *sandbox.Service
+	Pins         *pin.Service
 	Monitor      *wal.Monitor
 	MongoURI     string
 	// Client is the deployment connection, exposed for tools that read
@@ -118,6 +120,14 @@ func NewServicesAt(mongoURI, dbName string) (*Services, error) {
 	undoService := undo.NewService(walService, branchService, client)
 	mergeService := merge.NewService(db, walService, branchService, materializerService, client)
 	sandboxService := sandbox.NewService(branchService, checkoutService)
+	pinService, err := pin.NewService(db, branchService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create pin service: %w", err)
+	}
+	// Pinned history must survive GC, and pinned branches must survive
+	// deletion.
+	gcService.SetPinLookup(pinService.LSNsForBranch)
+	branchService.SetDeleteGuard(pinService.RequireNoPins)
 	// Snapshot immediately after imports: an imported history is otherwise
 	// pure linear replay until something trips the auto-snapshot threshold.
 	importerService.SetImportedHook(func(branch *wal.Branch) {
@@ -165,6 +175,7 @@ func NewServicesAt(mongoURI, dbName string) (*Services, error) {
 		Undo:         undoService,
 		Merge:        mergeService,
 		Sandbox:      sandboxService,
+		Pins:         pinService,
 		Monitor:      monitor,
 		MongoURI:     mongoURI,
 		Client:       client,

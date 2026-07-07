@@ -138,6 +138,76 @@ func TestAPI_ControlPlaneFlow(t *testing.T) {
 	assert.Contains(t, resp["error"], "not found")
 }
 
+func TestAPI_PinFlow(t *testing.T) {
+	dbName := fmt.Sprintf("argon_api_pin_test_%d", time.Now().UnixNano())
+	services, err := walcli.NewServicesAt("mongodb://localhost:27017", dbName)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = services.Client.Database(dbName).Drop(context.Background())
+	})
+
+	router := NewRouter(services)
+	t.Cleanup(router.Shutdown)
+
+	code, _ := do(t, router, "POST", "/api/v1/projects", map[string]string{"name": "pin-api"})
+	require.Equal(t, http.StatusCreated, code)
+
+	// Seed main through the public write surface.
+	writer, err := services.WriterFor("pin-api", "main")
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, err := writer.Put(context.Background(), "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
+		require.NoError(t, err)
+	}
+
+	// Pin the current head.
+	code, resp := do(t, router, "POST", "/api/v1/projects/pin-api/pins",
+		map[string]interface{}{"name": "dataset-v1", "note": "eval suite"})
+	require.Equal(t, http.StatusCreated, code, "%v", resp)
+	pinnedLSN := resp["lsn"].(float64)
+	require.Positive(t, pinnedLSN)
+
+	// Duplicate names conflict.
+	code, _ = do(t, router, "POST", "/api/v1/projects/pin-api/pins",
+		map[string]interface{}{"name": "dataset-v1"})
+	require.Equal(t, http.StatusConflict, code)
+
+	// The branch moves on; the pin does not.
+	_, err = writer.Put(context.Background(), "docs", bson.M{"_id": "later"})
+	require.NoError(t, err)
+
+	code, resp = do(t, router, "GET", "/api/v1/projects/pin-api/pins", nil)
+	require.Equal(t, http.StatusOK, code)
+	require.Len(t, resp["pins"], 1)
+
+	// A sandbox forked from the pin starts at exactly the pinned state.
+	code, resp = do(t, router, "POST", "/api/v1/projects/pin-api/pins/dataset-v1/sandboxes",
+		map[string]interface{}{"ttl_minutes": 15})
+	require.Equal(t, http.StatusCreated, code, "%v", resp)
+	assert.EqualValues(t, pinnedLSN, resp["fork_lsn"])
+	sandboxName := resp["branch"].(string)
+	connStr := resp["connection_string"].(string)
+	t.Cleanup(func() {
+		branch, err := services.Branches.GetBranch(mustProjectID(t, services, "pin-api"), sandboxName)
+		if err == nil && branch.PhysicalDB != "" {
+			_ = services.Client.Database(branch.PhysicalDB).Drop(context.Background())
+		}
+	})
+
+	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(connStr))
+	require.NoError(t, err)
+	defer func() { _ = client.Disconnect(context.Background()) }()
+	count, err := client.Database(dbFromURI(connStr)).Collection("docs").CountDocuments(context.Background(), bson.M{})
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, count, "the sandbox sees the pinned state, not the later write")
+
+	// A pinned branch refuses deletion until the pin is gone.
+	code, resp = do(t, router, "DELETE", "/api/v1/projects/pin-api/pins/dataset-v1", nil)
+	require.Equal(t, http.StatusOK, code, "%v", resp)
+	code, _ = do(t, router, "DELETE", "/api/v1/projects/pin-api/pins/dataset-v1", nil)
+	require.Equal(t, http.StatusNotFound, code)
+}
+
 func mustProjectID(t *testing.T, services *walcli.Services, name string) string {
 	t.Helper()
 	p, err := services.Projects.GetProjectByName(name)

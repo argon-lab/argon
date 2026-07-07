@@ -23,6 +23,9 @@ var toolHandlers = map[string]toolHandler{
 	"argon_merge_apply":     toolMergeApply,
 	"argon_undo":            toolUndo,
 	"argon_snapshot_create": toolSnapshotCreate,
+	"argon_pin_create":      toolPinCreate,
+	"argon_pin_list":        toolPinList,
+	"argon_pin_sandbox":     toolPinSandbox,
 }
 
 // schema builds the JSON schema for a tool's arguments.
@@ -131,6 +134,37 @@ func toolDescriptors() []map[string]interface{} {
 				"to_lsn":   num("End of the range (default: branch head)"),
 				"actor":    str("Only revert writes by this actor"),
 				"dry_run":  boolean("Preview without applying"),
+			}),
+		},
+		{
+			"name": "argon_pin_create",
+			"description": "Pin a branch state under a name: a named, immutable dataset reference that " +
+				"survives garbage collection and resets forever. Pin an eval dataset once, then fork " +
+				"sandboxes from the pin for every run and get identical input state.",
+			"inputSchema": schema([]string{"project", "name"}, map[string]interface{}{
+				"project": str("Project name"),
+				"branch":  str("Branch to pin (default: main)"),
+				"name":    str("Pin name, unique per project"),
+				"lsn":     num("LSN to pin (default: current head)"),
+				"note":    str("Free-form note"),
+			}),
+		},
+		{
+			"name":        "argon_pin_list",
+			"description": "List a project's pins (name, branch, LSN, note).",
+			"inputSchema": schema([]string{"project"}, map[string]interface{}{
+				"project": str("Project name"),
+			}),
+		},
+		{
+			"name": "argon_pin_sandbox",
+			"description": "Fork a TTL sandbox from a pin and get a connection string. The sandbox starts " +
+				"at exactly the pinned state — the reproducible-eval workflow.",
+			"inputSchema": schema([]string{"project", "pin"}, map[string]interface{}{
+				"project":     str("Project name"),
+				"pin":         str("Pin name"),
+				"name":        str("Sandbox name (default: <pin>-run-<random>)"),
+				"ttl_minutes": num("Sandbox TTL in minutes (default: 60)"),
 			}),
 		},
 		{
@@ -388,4 +422,84 @@ func toolSnapshotCreate(ctx context.Context, s *Server, args map[string]interfac
 		return "", err
 	}
 	return fmt.Sprintf("Snapshotted %d collection(s) at LSN %d.", len(snaps), branch.HeadLSN), nil
+}
+
+func toolPinCreate(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {
+	projectID, branchID, err := s.resolveBranchID(argString(args, "project"), argString(args, "branch"))
+	if err != nil {
+		return "", err
+	}
+	var lsn int64
+	if v, ok := argNumber(args, "lsn"); ok {
+		lsn = int64(v)
+	}
+	pin, err := s.services.Pins.Create(projectID, branchID, argString(args, "name"), lsn, argString(args, "note"))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"Pinned branch %q at LSN %d as %q. This state survives GC and resets until the pin is deleted; "+
+			"fork reproducible sandboxes from it with argon_pin_sandbox.",
+		pin.BranchName, pin.LSN, pin.Name), nil
+}
+
+func toolPinList(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {
+	project, err := s.services.Projects.GetProjectByName(argString(args, "project"))
+	if err != nil {
+		return "", fmt.Errorf("project %q not found", argString(args, "project"))
+	}
+	pins, err := s.services.Pins.List(project.ID)
+	if err != nil {
+		return "", err
+	}
+	if len(pins) == 0 {
+		return "No pins.", nil
+	}
+	var sb strings.Builder
+	for _, p := range pins {
+		fmt.Fprintf(&sb, "%s: branch %s at LSN %d (created %s)", p.Name, p.BranchName, p.LSN,
+			p.CreatedAt.Format(time.RFC3339))
+		if p.Note != "" {
+			fmt.Fprintf(&sb, " — %s", p.Note)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String(), nil
+}
+
+func toolPinSandbox(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {
+	project, err := s.services.Projects.GetProjectByName(argString(args, "project"))
+	if err != nil {
+		return "", fmt.Errorf("project %q not found", argString(args, "project"))
+	}
+	pin, err := s.services.Pins.Get(project.ID, argString(args, "pin"))
+	if err != nil {
+		return "", err
+	}
+	name := argString(args, "name")
+	if name == "" {
+		name = fmt.Sprintf("%s-run-%s", pin.Name, primitive.NewObjectID().Hex()[18:])
+	}
+	branch, err := s.services.Restore.CreateBranchFromPin(project.ID, pin.BranchID, name, pin.LSN)
+	if err != nil {
+		return "", err
+	}
+	ttl := time.Hour
+	if minutes, ok := argNumber(args, "ttl_minutes"); ok && minutes > 0 {
+		ttl = time.Duration(minutes) * time.Minute
+	}
+	info, err := s.services.Sandbox.Adopt(ctx, branch.ID, ttl)
+	if err != nil {
+		return "", err
+	}
+	s.startIngester(info.BranchID)
+	return fmt.Sprintf(
+		"Sandbox %q forked from pin %q (LSN %d).\n"+
+			"Connection string: %s\n"+
+			"Expires: %s\n"+
+			"The sandbox starts at exactly the pinned state; writes are captured as versioned history.",
+		info.BranchName, pin.Name, pin.LSN,
+		s.services.BranchConnectionString(info.PhysicalDB),
+		info.ExpiresAt.Format(time.RFC3339),
+	), nil
 }

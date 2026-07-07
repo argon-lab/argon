@@ -183,6 +183,23 @@ hands out, so agent writes become versioned history without anyone
 running `argon watch` by hand. Register with an MCP client, e.g.
 `claude mcp add argon -- argon mcp`.
 
+### Dataset pins (reproducible evals)
+
+A pin is a named, immutable reference to a branch state — Argon's tag,
+with one addition Git doesn't need: pinned history survives garbage
+collection and resets forever. `argon pin create -p proj --name eval-v1`
+pins the current head (or `--lsn` / `--time`); `argon pin sandbox` forks
+a TTL sandbox that starts at exactly the pinned state; `argon pin branch`
+makes a durable branch instead. Pin an eval dataset once, fork a fresh
+sandbox from the pin for every run, and the input state is identical no
+matter what happened to the branch since — resets included, because
+discarded ranges only apply to readers whose bound lies beyond them, the
+same rule that keeps pre-reset backup branches intact. Deleting a branch
+with pins is refused (like deleting a branch with live children); deleting
+the pin releases its history to the next GC run. The MCP server exposes
+`argon_pin_create` / `argon_pin_list` / `argon_pin_sandbox`, the REST API
+`/projects/:p/pins`.
+
 ## Garbage collection (retention window)
 
 `argon gc` (and `Services.RunGC`) deletes WAL entries that no reader can
@@ -197,7 +214,10 @@ where `S` is the newest snapshot valid for every possible future reader
 the retention window (default 7 days), and `S_i` is the newest snapshot at
 or below each live child's fork point — children and all their descendants
 read the parent's segment with an upper bound pinned to the fork, so they
-can only be served by snapshots at or below it. Entries at or below the
+can only be served by snapshots at or below it. Dataset pins enter the
+same minimum as permanent readers at their LSN: a pin at `P` clamps the
+cutoff to the newest snapshot usable at bound `P`, and to zero — nothing
+reclaimed — while no such snapshot exists. Entries at or below the
 cutoff are deleted; control entries stay.
 
 Two consequences worth stating plainly: history without snapshot coverage
@@ -307,8 +327,8 @@ ingester, plus WAL-convergence verification), and the LangGraph
 checkpointer / Mem0 factory ship as the `argon-agents` Python package on
 top of the REST API.
 
-Planned next: eval dataset pinning; GCS chunk-store backend; synchronous
-capture in the wire proxy.
+Planned next: GCS chunk-store backend; synchronous capture in the wire
+proxy.
 
 ## Storage collections
 
@@ -319,6 +339,7 @@ capture in the wire proxy.
 | `wal_projects` | Project metadata |
 | `wal_counters` | Per-project LSN counters |
 | `wal_snapshots` | Snapshot manifests |
+| `wal_pins` | Dataset pins (named immutable branch states) |
 | `wal_snapshot_chunks` | Content-addressed snapshot data |
 
 Indexes on `wal_log`: unique `(project_id, lsn)`;

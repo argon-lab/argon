@@ -24,6 +24,16 @@ type BranchService struct {
 	// may still anchor descendants' history). Used to reclaim snapshots
 	// without this package depending on the snapshot package.
 	onDelete func(branchID string)
+
+	// deleteGuard runs before DeleteBranch commits; a non-nil error
+	// refuses the deletion. Used to keep pinned branches alive without
+	// this package depending on the pin package.
+	deleteGuard func(branchID string) error
+}
+
+// SetDeleteGuard registers a check that can refuse DeleteBranch.
+func (s *BranchService) SetDeleteGuard(guard func(branchID string) error) {
+	s.deleteGuard = guard
 }
 
 // SetDeleteHook registers a callback invoked after a successful
@@ -297,6 +307,12 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 	}
 	if childCount > 0 {
 		return errors.New("cannot delete branch with active children")
+	}
+
+	if s.deleteGuard != nil {
+		if err := s.deleteGuard(branch.ID); err != nil {
+			return fmt.Errorf("cannot delete branch: %w", err)
+		}
 	}
 
 	// Create WAL entry for deletion
