@@ -9,6 +9,7 @@ import (
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
 	"github.com/argon-lab/argon/internal/importer"
 	"github.com/argon-lab/argon/internal/materializer"
+	"github.com/argon-lab/argon/internal/migrate"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/restore"
 	"github.com/argon-lab/argon/internal/timetravel"
@@ -26,6 +27,7 @@ type Services struct {
 	TimeTravel   *timetravel.Service
 	Restore      *restore.Service
 	Importer     *importer.ImportService
+	Migrate      *migrate.Service
 	Monitor      *wal.Monitor
 }
 
@@ -67,6 +69,10 @@ func NewServices() (*Services, error) {
 	timeTravelService := timetravel.NewService(walService, materializerService)
 	restoreService := restore.NewService(walService, branchService, materializerService, timeTravelService)
 	importerService := importer.NewImportService(walService, projectService, branchService)
+	migrateService, err := migrate.NewService(db, branchService, materializerService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create migration service: %w", err)
+	}
 
 	// Create monitor with production-ready configuration
 	monitorConfig := wal.MonitorConfig{
@@ -92,6 +98,7 @@ func NewServices() (*Services, error) {
 		TimeTravel:   timeTravelService,
 		Restore:      restoreService,
 		Importer:     importerService,
+		Migrate:      migrateService,
 		Monitor:      monitor,
 	}, nil
 }

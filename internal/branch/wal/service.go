@@ -211,6 +211,25 @@ func (s *BranchService) ListBranches(projectID string) ([]*wal.Branch, error) {
 	return branches, nil
 }
 
+// ListBranchesAny lists all branches for a project including deleted ones.
+// Deleted branches can still anchor live descendants' history, so tools
+// that walk every timeline (e.g. WAL migration) must see them.
+func (s *BranchService) ListBranchesAny(projectID string) ([]*wal.Branch, error) {
+	ctx := context.Background()
+	cursor, err := s.collection.Find(ctx, bson.M{"project_id": projectID})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	var branches []*wal.Branch
+	if err := cursor.All(ctx, &branches); err != nil {
+		return nil, err
+	}
+
+	return branches, nil
+}
+
 // DeleteBranch deletes a branch (simple version - just removes the pointer)
 func (s *BranchService) DeleteBranch(projectID, name string) error {
 	ctx := context.Background()

@@ -2,452 +2,197 @@
 
 ## Overview
 
-Argon is a Git-like version control system for MongoDB, designed specifically for ML/AI workflows. It provides instant branching, efficient storage, and seamless integration with ML tools.
+Argon is a Git-like version control layer for MongoDB: branch, time-travel,
+diff and restore your data the way you manage code. It is built on a
+write-ahead log (WAL) whose replay is **deterministic by construction**, with
+branches implemented as pointers into that log.
 
-## Table of Contents
+This document describes the system as implemented today. Where a capability
+is planned but not built, it says so explicitly.
 
-1. [System Architecture](#system-architecture)
-2. [Core Components](#core-components)
-3. [Data Flow](#data-flow)
-4. [Storage Architecture](#storage-architecture)
-5. [Branching Mechanism](#branching-mechanism)
-6. [Performance Design](#performance-design)
-7. [Security Architecture](#security-architecture)
-8. [Scaling Strategy](#scaling-strategy)
+## Design principles
 
-## System Architecture
+1. **Determinism first.** Replaying the same WAL prefix any number of times
+   yields the same state. Every consumer (time travel, branching, restore,
+   diff) is built on this property, so it is enforced structurally, not by
+   convention.
+2. **Physical log, not logical log.** The WAL records outcomes (full
+   document images), never expressions (filters / update operators).
+   Expressions are resolved exactly once, at write time.
+3. **Branches are pointers.** Creating a branch writes one metadata document
+   — O(1), no data copying. State is reconstructed on demand by replaying
+   the branch's ancestry chain.
+4. **Ordering, never density.** LSN sequences may contain gaps (failed
+   writes, migrated no-ops). Consumers rely only on order.
 
-### High-Level Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Client Layer                             │
-├─────────────────┬──────────────────┬────────────────────────────┤
-│   CLI (Go)      │   REST API       │   SDKs                     │
-│   argonctl      │   (Python)       │   Python/JS/Go            │
-└────────┬────────┴────────┬─────────┴──────────┬─────────────────┘
-         │                 │                     │
-         └─────────────────┴─────────────────────┘
-                           │
-┌──────────────────────────┴──────────────────────────────────────┐
-│                      Service Layer                               │
-├─────────────────┬──────────────────┬────────────────────────────┤
-│  Branch Engine  │  Storage Engine  │   Worker Pool              │
-│     (Go)        │      (Go)        │      (Go)                  │
-├─────────────────┼──────────────────┼────────────────────────────┤
-│ • Branch ops    │ • Compression    │ • Change processing        │
-│ • Merge logic   │ • Deduplication  │ • Background tasks         │
-│ • Isolation     │ • Cloud storage  │ • Garbage collection       │
-└────────┬────────┴────────┬─────────┴──────────┬─────────────────┘
-         │                 │                     │
-┌────────┴─────────────────┴─────────────────────┴────────────────┐
-│                       Data Layer                                 │
-├─────────────────────────┬───────────────────────────────────────┤
-│      MongoDB            │         Object Storage                │
-├─────────────────────────┼───────────────────────────────────────┤
-│ • Change streams        │ • S3 / GCS / Azure                    │
-│ • Metadata storage      │ • Local filesystem                    │
-│ • Branch tracking       │ • Compressed objects                  │
-└─────────────────────────┴───────────────────────────────────────┘
-```
-
-### Technology Stack
-
-- **Performance Layer (Go)**
-  - Branch engine
-  - Storage engine
-  - Worker pool
-  - CLI tool
-
-- **Productivity Layer (Python)**
-  - REST API (FastAPI)
-  - ML integrations
-  - Web dashboard (planned)
-
-- **Data Layer**
-  - MongoDB 4.4+ (change streams)
-  - Object storage (S3/GCS/Azure/Local)
-
-## Core Components
-
-### 1. Branch Engine (Go)
-
-Handles all branch-related operations with sub-500ms performance target.
-
-```go
-// Key interfaces
-type BranchEngine interface {
-    CreateBranch(name string, from string) (*Branch, error)
-    MergeBranch(source, target string, strategy MergeStrategy) error
-    DeleteBranch(name string) error
-    ListBranches() ([]*Branch, error)
-}
-
-type Branch struct {
-    ID           string
-    Name         string
-    Parent       string
-    CreatedAt    time.Time
-    LastActivity time.Time
-    Status       BranchStatus
-}
-```
-
-**Responsibilities:**
-- Branch creation and deletion
-- Merge operations
-- Conflict resolution
-- Branch metadata management
-
-### 2. Storage Engine (Go)
-
-Manages efficient storage with copy-on-write and compression.
-
-```go
-type StorageEngine interface {
-    Store(key string, data []byte) error
-    Retrieve(key string) ([]byte, error)
-    Delete(key string) error
-    Exists(key string) bool
-}
-
-type StorageBackend interface {
-    Put(ctx context.Context, key string, data []byte) error
-    Get(ctx context.Context, key string) ([]byte, error)
-    Delete(ctx context.Context, key string) error
-    List(ctx context.Context, prefix string) ([]string, error)
-}
-```
-
-**Features:**
-- ZSTD compression (42%+ savings)
-- Content-addressable storage
-- Deduplication
-- Multi-backend support
-
-### 3. Worker Pool (Go)
-
-Processes MongoDB change streams and background tasks.
-
-```go
-type WorkerPool struct {
-    workers    []*Worker
-    jobQueue   chan Job
-    resultChan chan Result
-    config     WorkerConfig
-}
-
-type Job interface {
-    Execute(ctx context.Context) (Result, error)
-    GetPriority() int
-    GetTimeout() time.Duration
-}
-```
-
-**Responsibilities:**
-- Change stream processing
-- Asynchronous operations
-- Batch processing
-- Garbage collection
-
-### 4. REST API (Python)
-
-Provides HTTP interface for all operations.
-
-```python
-# FastAPI application structure
-app = FastAPI(title="Argon API", version="1.0.0")
-
-@app.post("/branches")
-async def create_branch(branch: BranchCreate) -> BranchResponse:
-    """Create a new branch from source"""
-    pass
-
-@app.get("/branches/{branch_id}/changes")
-async def get_changes(
-    branch_id: str, 
-    limit: int = 100,
-    offset: int = 0
-) -> ChangesResponse:
-    """Get change history for a branch"""
-    pass
-```
-
-## Data Flow
-
-### Branch Creation Flow
+## System components
 
 ```
-1. Client Request
-   └─> API validates request
-       └─> Branch Engine checks permissions
-           └─> Create branch metadata in MongoDB
-               └─> Initialize change stream listener
-                   └─> Worker pool starts processing
-                       └─> Return success to client
-
-2. Background Processing
-   └─> Worker captures changes
-       └─> Storage engine compresses data
-           └─> Store in object storage
-               └─> Update branch statistics
+┌────────────────────────────────────────────────────────────┐
+│  Clients: CLI (argonctl) · Go SDK · Python SDK · REST API  │
+└──────────────────────────────┬─────────────────────────────┘
+                               │
+┌──────────────────────────────▼─────────────────────────────┐
+│  Core services (Go, internal/)                             │
+│  ├─ wal.Service          append/query the log              │
+│  ├─ wal.Sequencer        distributed LSN allocation        │
+│  ├─ branch.Service       branch metadata & ancestry        │
+│  ├─ materializer         deterministic replay              │
+│  ├─ timetravel           historical state queries          │
+│  ├─ restore              reset / branch-from-history       │
+│  ├─ driver (interceptor) write-time filter resolution      │
+│  ├─ importer             bulk import into put entries      │
+│  └─ migrate              v1 → v2 WAL migration             │
+└──────────────────────────────┬─────────────────────────────┘
+                               │
+┌──────────────────────────────▼─────────────────────────────┐
+│  MongoDB (storage)                                         │
+│  wal_log · wal_branches · wal_projects · wal_counters      │
+└────────────────────────────────────────────────────────────┘
 ```
 
-### Data Write Flow
+## The WAL
 
-```
-1. Application writes to MongoDB
-   └─> Change stream captures operation
-       └─> Worker pool receives change
-           └─> Determine affected branches
-               └─> Apply branch isolation rules
-                   └─> Compress and store change
-                       └─> Update branch metadata
-```
+### Entry format (schema v2)
 
-### Data Read Flow
+Every data entry is a self-contained physical record about exactly one
+document:
 
-```
-1. Application queries MongoDB
-   └─> Branch context determines data visibility
-       └─> Apply branch-specific filters
-           └─> Merge with base data if needed
-               └─> Return filtered results
-```
+| Field | Meaning |
+|---|---|
+| `lsn` | Position in the project's sequence (unique per project) |
+| `project_id`, `branch_id` | Ownership; branch IDs everywhere, including control entries |
+| `operation` | `put` \| `delete` \| control ops (`create_branch`, ...) |
+| `collection`, `document_id` | The document the entry is about |
+| `post` | Compressed full post-image (required on every put) |
+| `pre` | Compressed pre-image (puts over existing docs, deletes) — powers diff, undo, audit |
+| `txn_id` | Reserved: atomic-visibility grouping |
+| `actor` | Who wrote it (`user:...`, `agent:...`, `importer`) |
+| `v` | Schema version (2) |
 
-## Storage Architecture
+Replay is a pure fold: `put` ⇒ `state[document_id] = post`, `delete` ⇒
+`delete(state, document_id)`. No filter or update operator is ever
+re-executed during replay — that is what makes materialization
+deterministic. `Append` validates these invariants at the write boundary.
 
-### Object Storage Layout
+Post/pre-images are compressed per entry (zstd by default, with gzip/snappy
+variants and a "don't compress if it doesn't help" floor).
 
-```
-/argon-storage/
-├── branches/
-│   ├── main/
-│   │   ├── metadata.json
-│   │   └── collections/
-│   │       ├── users/
-│   │       │   ├── chunk-00001.zst
-│   │       │   └── chunk-00002.zst
-│   │       └── products/
-│   │           └── chunk-00001.zst
-│   └── feature-branch/
-│       ├── metadata.json
-│       └── changes/
-│           ├── 2025-07-18-00001.zst
-│           └── 2025-07-18-00002.zst
-├── snapshots/
-│   └── snap-123456/
-│       └── full-backup.zst
-└── temp/
-    └── merge-ops/
-```
+### LSN allocation
 
-### Compression Strategy
+LSNs are reserved through an atomic `findOneAndUpdate($inc)` on a per-project
+counter document (`wal_counters`), so any number of Argon processes can write
+concurrently without collisions. Failed writes leave gaps; reservations are
+never rolled back (a rollback under concurrency could hand a used LSN to a
+later writer). Batches reserve one contiguous range and must be
+single-project.
 
-```go
-type CompressionConfig struct {
-    Algorithm string // "zstd", "gzip", "none"
-    Level     int    // 1-9 for gzip, 1-22 for zstd
-    MinSize   int    // Minimum size to compress
-}
+## Branches and ancestry
 
-// Achieved compression ratios:
-// - JSON documents: 60-80% reduction
-// - Binary data: 20-40% reduction
-// - Already compressed: 0-5% reduction
-```
+A branch is `(id, parent_id, base_lsn, head_lsn, discarded_ranges)`:
 
-### Storage Optimization
+- `base_lsn` — the fork point: the parent-chain LSN this branch started from.
+- `head_lsn` — the newest entry belonging to this branch. Writers advance it
+  with `$max` (monotonic under concurrency); only restore may lower it.
+- A branch's own entries live in `(base_lsn, head_lsn]`. Everything at or
+  below `base_lsn` is inherited from the ancestry chain via `parent_id`.
 
-1. **Deduplication**: Content-addressable storage with SHA-256
-2. **Chunking**: Large collections split into manageable chunks
-3. **Tiering**: Hot/cold data separation
-4. **Caching**: LRU cache for frequently accessed objects
+**Materialization** walks the chain root-first: each ancestor contributes
+only its own entries up to the next fork point. Sibling branches never
+appear in each other's chains — isolation falls out of the traversal.
+Deleted parents still anchor their descendants' history (branch metadata is
+soft-deleted).
 
-## Branching Mechanism
+### Reset and discarded ranges
 
-### Current Architecture (v1.0) - Collection Prefixing
+`reset --to-lsn T` records the abandoned window `[T+1, old_head]` in the
+branch's `discarded_ranges` and lowers the head. The entries stay in the WAL
+for audit; materialization skips them.
 
-Each branch maintains isolated data through collection prefixing:
+The skip rule is `segment upper bound > range end`: because the sequencer
+never rewinds, any post-reset write or fork lands strictly above the
+discarded window, while a branch forked *before* the reset has its fork
+point at or below it. Pre-reset forks therefore keep the history they
+legitimately captured, and post-reset readers never resurrect it.
 
-```javascript
-// Original collection: "users"
-// Branch "feature-x": "branch_feature_x_users"
+## Write path (SDK / interceptor)
 
-db.users.insert({name: "John"})        // Goes to main
-db.branch_feature_x_users.insert(...)  // Goes to feature-x
-```
+Applications write through the Argon driver wrapper, which resolves each
+operation against current branch state and logs the outcome:
 
-### Future Architecture (v2.0) - WAL-Based Branching
+1. Resolve the filter. `_id` equality takes a point-lookup fast path over
+   the `(branch, collection, document, lsn)` index; other filters
+   materialize the collection and scan in **sorted document-ID order**, so
+   "first match" is deterministic.
+2. Apply update operators to produce the post-image (`$set`, `$unset`,
+   `$inc`, `$mul`, `$min`, `$max`, `$rename`, `$push`, `$addToSet`, `$pull`,
+   `$pop`, `$setOnInsert`, `$currentDate`; integer types are preserved).
+3. Append put/delete entries (batched operations reserve one LSN range) and
+   advance the branch head.
 
-We're implementing a Write-Ahead Log (WAL) architecture for the open-source version:
+Real results are returned (matched/modified/deleted/upserted counts,
+duplicate-key errors on insert). Unsupported query or update operators fail
+loudly rather than being silently ignored.
 
-```javascript
-// All operations go through WAL
-// Branches are just pointers to LSN (Log Sequence Number)
-branch: {
-  name: "feature-x",
-  headLSN: 12345,  // Points to position in WAL
-  baseLSN: 12000   // Where branch was created
-}
-```
+The filter matcher supports implicit equality, `$eq/$ne/$gt/$gte/$lt/$lte`,
+`$in/$nin`, `$exists`, `$regex`, `$size`, `$all`, `$elemMatch`,
+`$and/$or/$nor/$not`, dotted paths and array-any-element semantics, with
+BSON-aware cross-type numeric comparison.
 
-**Benefits of WAL approach:**
-- Branch creation: 500ms → 10ms (50x faster)
-- Storage: 10GB → 1.3GB for 10 branches (87% reduction)
-- True time-travel capabilities
-- Complete audit trail
+## Migration from schema v1
 
-[See detailed WAL implementation plan →](5_WEEK_WAL_IMPLEMENTATION_PLAN.md)
+v1 logged updates/deletes as expressions and re-executed them on replay —
+which was not deterministic (Go map iteration order). The materializer
+refuses v1 data entries with an error; `argon migrate-wal --project <name>`
+rewrites them in place (parents before children, LSNs preserved, no-op
+entries removed). Migration is idempotent.
 
-### Copy-on-Write Implementation
+## Consistency model (current, honest)
 
-```go
-type CopyOnWrite struct {
-    baseData   map[string][]byte
-    branchData map[string][]byte
-    tombstones map[string]bool
-}
+- **Deterministic replay** — the same WAL prefix always materializes to the
+  same state; verified by property tests (repeated replay, cross-instance,
+  historical LSNs, same-seed cross-database convergence).
+- **Read-your-writes per handle** — an interceptor advances its in-memory
+  head after each append.
+- **Resolve-then-append is not atomic** — concurrent writers to the same
+  branch are last-writer-wins at document level. The WAL itself stays
+  consistent because every entry is self-contained.
+- **Capture is driver-level** — only writes through the Argon SDK/driver are
+  logged today. Writes made directly to MongoDB bypass the WAL.
 
-func (c *CopyOnWrite) Read(key string) ([]byte, error) {
-    // Check tombstones first
-    if c.tombstones[key] {
-        return nil, ErrDeleted
-    }
-    
-    // Check branch data
-    if data, ok := c.branchData[key]; ok {
-        return data, nil
-    }
-    
-    // Fall back to base data
-    return c.baseData[key], nil
-}
-```
+## Known limitations and roadmap
 
-### Merge Strategies
+Current limitations (deliberate M1 scope):
 
-1. **Fast-forward**: Direct pointer update
-2. **Three-way merge**: Automatic conflict resolution
-3. **Manual merge**: User-guided conflict resolution
+- Reads materialize in memory: no indexes, no aggregation pipeline, Find
+  options (sort/skip/limit/projection) not applied; results in canonical
+  document-ID order.
+- Materialization replays from the branch root every time — cost grows with
+  history length.
+- No merge/diff commands yet (pre-images already carry the data they need).
 
-## Performance Design
+Planned next (in order):
 
-### Optimization Techniques
+1. **M2 — snapshot layer**: periodic collection snapshots at an LSN
+   (image layers), so materialization = nearest snapshot + bounded delta
+   replay; WAL segmentation, object-storage offload and GC with a PITR
+   retention window.
+2. **M3 — mongod as compute**: branches materialize into real MongoDB
+   databases (lazily), reads/writes run on mongod with change-stream
+   capture into the WAL, per-branch connection strings — full query
+   compatibility without reimplementing MongoDB.
+3. **M4 — merge and diff**: three-way document-level merge with reviewable
+   merge plans.
 
-1. **Parallel Processing**
-   ```go
-   func ProcessChanges(changes []Change) {
-       var wg sync.WaitGroup
-       sem := make(chan struct{}, runtime.NumCPU())
-       
-       for _, change := range changes {
-           sem <- struct{}{}
-           wg.Add(1)
-           go func(c Change) {
-               defer wg.Done()
-               defer func() { <-sem }()
-               processChange(c)
-           }(change)
-       }
-       wg.Wait()
-   }
-   ```
+## Storage collections
 
-2. **Batch Operations**
-   - Group small changes
-   - Bulk storage operations
-   - Aggregated statistics updates
+| Collection | Contents |
+|---|---|
+| `wal_log` | The log itself (entries as above) |
+| `wal_branches` | Branch metadata: pointers, ancestry, discarded ranges |
+| `wal_projects` | Project metadata |
+| `wal_counters` | Per-project LSN counters |
 
-3. **Caching Layers**
-   - Memory cache (LRU)
-   - Redis cache (optional)
-   - CDN for read-heavy workloads
-
-### Performance Metrics
-
-| Operation | Target | Achieved |
-|-----------|--------|----------|
-| Branch creation | < 500ms | **1ms** |
-| WAL write throughput | 10k ops/s | **37,905+ ops/s** |
-| Time travel query | < 100ms | **< 50ms** |
-| System startup | < 5s | **< 2s** |
-| Memory usage | < 100MB | **30-50MB** |
-
-## Security Architecture
-
-### Authentication & Authorization
-
-```python
-# API key authentication
-@app.middleware("http")
-async def authenticate(request: Request, call_next):
-    api_key = request.headers.get("X-API-Key")
-    if not verify_api_key(api_key):
-        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-    return await call_next(request)
-```
-
-### Data Encryption
-
-1. **At Rest**: Object storage encryption (SSE-S3, etc.)
-2. **In Transit**: TLS 1.3 for all connections
-3. **Key Management**: AWS KMS / Azure Key Vault / HashiCorp Vault
-
-### Access Control
-
-```yaml
-# Role-based access control
-roles:
-  viewer:
-    - branches:read
-    - changes:read
-  developer:
-    - branches:*
-    - changes:*
-    - snapshots:create
-  admin:
-    - "*"
-```
-
-## Scaling Strategy
-
-### Horizontal Scaling
-
-1. **API Servers**: Stateless, behind load balancer
-2. **Workers**: Distributed processing with partition assignment
-3. **Storage**: Sharded by branch ID
-
-### Vertical Scaling
-
-1. **MongoDB**: Larger instances for metadata
-2. **Workers**: More CPU cores for compression
-3. **Cache**: Increased memory for hot data
-
-### Multi-Region Deployment
-
-```yaml
-regions:
-  us-east-1:
-    primary: true
-    mongodb: "mongodb+srv://us-east-1.cluster.mongodb.net"
-    storage: "s3://argon-us-east-1"
-  eu-west-1:
-    primary: false
-    mongodb: "mongodb+srv://eu-west-1.cluster.mongodb.net"
-    storage: "s3://argon-eu-west-1"
-    
-replication:
-  mode: "async"
-  lag_threshold: "5m"
-```
-
-### Capacity Planning
-
-| Component | Small | Medium | Large |
-|-----------|-------|--------|-------|
-| API Servers | 2 × 2CPU/4GB | 4 × 4CPU/8GB | 8 × 8CPU/16GB |
-| Workers | 2 × 4CPU/8GB | 4 × 8CPU/16GB | 8 × 16CPU/32GB |
-| MongoDB | M10 | M30 | M60 |
-| Storage | 1TB | 10TB | 100TB |
-| Throughput | 1K ops/s | 10K ops/s | 100K ops/s |
+Indexes on `wal_log`: unique `(project_id, lsn)`;
+`(branch_id, collection, lsn)`; `(branch_id, collection, document_id, lsn)`;
+`timestamp`.
