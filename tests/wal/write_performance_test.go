@@ -191,7 +191,7 @@ func setupBenchDB(b *testing.B) *mongo.Database {
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 	require.NoError(b, err)
 
-	dbName := "argon_wal_bench_" + time.Now().Format("20060102150405")
+	dbName := fmt.Sprintf("argon_wal_bench_%d", time.Now().UnixNano())
 	db := client.Database(dbName)
 
 	b.Cleanup(func() {
