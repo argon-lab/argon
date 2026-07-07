@@ -270,13 +270,21 @@ Performance characteristics are measured by the public benchmark suite at
 https://github.com/argon-lab/benchmarks — reproducible with
 `docker compose up`, results recorded with pinned engine refs.
 
+Driver compatibility is validated in CI (`compat/`): real pymongo and
+mongoose workloads — CRUD, bulk writes, indexes, aggregation, rich BSON
+types, multi-document transactions — run against checked-out branch
+databases while the ingester captures them; `compat-verify` then requires
+the WAL materialization to reproduce the physical state canonical-byte-
+exactly, and the harness undoes each entire driver session and requires
+convergence back to empty. (The drivers' own test suites are deliberately
+not run verbatim: they validate driver/mongod behavior — which branches
+inherit by being real mongod databases — and need server fixtures a branch
+is not meant to provide. What they cannot check, and this harness does, is
+that Argon's history stays truthful underneath the traffic.)
+
 Planned next (in order):
 
-1. **M3 (last box) — driver-suite validation**: running the official
-   pymongo/mongoose test suites against branch databases in CI — until
-   then, "any driver connects" is stated as an architectural fact, not an
-   unqualified drop-in claim.
-2. **M5 (remaining) — integrations**: LangGraph checkpointer with fork and
+1. **M5 (remaining) — integrations**: LangGraph checkpointer with fork and
    rewind; eval dataset pinning. The MCP server and TTL sandboxes shipped
    in #23.
 
