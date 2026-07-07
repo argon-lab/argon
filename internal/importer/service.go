@@ -16,9 +16,21 @@ import (
 
 // ImportService handles importing existing MongoDB databases into Argon WAL system
 type ImportService struct {
-	walService      *wal.Service
-	projectService  *projectwal.ProjectService
-	branchService   *branchwal.BranchService
+	walService     *wal.Service
+	projectService *projectwal.ProjectService
+	branchService  *branchwal.BranchService
+
+	// onImported runs after a successful import with the freshly loaded
+	// branch. Wired to snapshot creation: an imported project starts with
+	// its entire history in raw entries, so without an immediate snapshot
+	// every read replays the whole import until some other write trips the
+	// auto-snapshot threshold.
+	onImported func(branch *wal.Branch)
+}
+
+// SetImportedHook registers a callback invoked after each successful import.
+func (s *ImportService) SetImportedHook(hook func(branch *wal.Branch)) {
+	s.onImported = hook
 }
 
 // ImportPreview contains information about what would be imported
@@ -250,6 +262,12 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 
 	if !opts.DryRun {
 		result.EndLSN = s.walService.GetCurrentLSN(project.ID)
+		if s.onImported != nil {
+			branch, err := s.branchService.GetBranchByID(branch.ID)
+			if err == nil {
+				s.onImported(branch)
+			}
+		}
 	}
 
 	result.Duration = time.Since(startTime)

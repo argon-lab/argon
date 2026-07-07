@@ -191,29 +191,27 @@ Together with snapshots this gives storage an upper bound: state size plus
 the retention window of history, instead of the full write history
 forever.
 
-## Write path (SDK / interceptor)
+## Write paths
 
-Applications write through the Argon driver wrapper, which resolves each
-operation against current branch state and logs the outcome:
+There are exactly two ways state enters the WAL, and neither reimplements
+MongoDB:
 
-1. Resolve the filter. `_id` equality takes a point-lookup fast path over
-   the `(branch, collection, document, lsn)` index; other filters
-   materialize the collection and scan in **sorted document-ID order**, so
-   "first match" is deterministic.
-2. Apply update operators to produce the post-image (`$set`, `$unset`,
-   `$inc`, `$mul`, `$min`, `$max`, `$rename`, `$push`, `$addToSet`, `$pull`,
-   `$pop`, `$setOnInsert`, `$currentDate`; integer types are preserved).
-3. Append put/delete entries (batched operations reserve one LSN range) and
-   advance the branch head.
+1. **Checked-out branches (applications)** — writes go to the physical
+   database through any MongoDB driver; the change stream feeds the WAL
+   (see the ingest package). mongod evaluates every filter, update
+   operator, index and pipeline.
+2. **Programmatic writes (`walwriter`)** — imports, merges, undos, seeding
+   and tests append explicit document states: `Put(collection, document)`
+   and `Delete(collection, id)`. Pre-images are captured automatically via
+   point lookups, puts batch into contiguous LSN ranges, and writes to
+   live branches are rejected (their WAL is fed by the change stream).
 
-Real results are returned (matched/modified/deleted/upserted counts,
-duplicate-key errors on insert). Unsupported query or update operators fail
-loudly rather than being silently ignored.
-
-The filter matcher supports implicit equality, `$eq/$ne/$gt/$gte/$lt/$lte`,
-`$in/$nin`, `$exists`, `$regex`, `$size`, `$all`, `$elemMatch`,
-`$and/$or/$nor/$not`, dotted paths and array-any-element semantics, with
-BSON-aware cross-type numeric comparison.
+The in-process Mongo emulation that once backed an SDK write path — filter
+matching, update-operator application, a mongo-like Collection surface —
+is gone. Expression evaluation survives only as a migration artifact
+(`internal/mongoexpr`): the v1→v2 WAL migration must resolve legacy
+expression entries one final time, and canonical BSON
+comparison/serialization lives there for snapshots and diffs.
 
 ## Migration from schema v1
 

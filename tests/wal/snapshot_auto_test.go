@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/snapshot"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,12 +28,12 @@ func TestSnapshot_AutoTrigger(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("auto-snap", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 	writer.SetAutoSnapshotter(f.snapshots)
 
 	// Below the threshold: no snapshot yet.
 	for i := 0; i < 5; i++ {
-		_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("a%d", i)})
+		_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("a%d", i)})
 		require.NoError(t, err)
 	}
 	snaps, err := f.snapshots.ListSnapshots(ctx, main.ID)
@@ -42,7 +42,7 @@ func TestSnapshot_AutoTrigger(t *testing.T) {
 
 	// Cross the threshold.
 	for i := 5; i < 15; i++ {
-		_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("a%d", i)})
+		_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("a%d", i)})
 		require.NoError(t, err)
 	}
 	snaps, err = f.snapshots.ListSnapshots(ctx, main.ID)
@@ -52,7 +52,7 @@ func TestSnapshot_AutoTrigger(t *testing.T) {
 
 	// Immediately after, the head is close to the snapshot again — more
 	// writes below the threshold must not snapshot again.
-	_, err = writer.InsertOne(ctx, "docs", bson.M{"_id": "extra"})
+	_, err = writer.Put(ctx, "docs", bson.M{"_id": "extra"})
 	require.NoError(t, err)
 	snaps, err = f.snapshots.ListSnapshots(ctx, main.ID)
 	require.NoError(t, err)
@@ -76,15 +76,15 @@ func TestSnapshot_CleanupOnBranchDelete(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("gc-test", "main", "")
 	require.NoError(t, err)
-	mainWriter := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	mainWriter := walwriter.New(f.wal, f.branches, f.mat, main)
 
 	// Shared content: main and the doomed branch snapshot identical
 	// "shared" collections, so their chunks are deduplicated across both.
-	docs := make([]interface{}, 50)
+	docs := make([]bson.M, 50)
 	for i := range docs {
 		docs[i] = bson.M{"_id": fmt.Sprintf("s%02d", i), "payload": "shared"}
 	}
-	_, err = mainWriter.InsertMany(ctx, "shared", docs)
+	_, err = mainWriter.PutMany(ctx, "shared", docs)
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 	_, err = f.snapshots.CreateSnapshot(ctx, main.ID, main.HeadLSN)
@@ -93,8 +93,8 @@ func TestSnapshot_CleanupOnBranchDelete(t *testing.T) {
 	// The doomed branch: inherits "shared" (same chunks) plus its own data.
 	doomed, err := f.branches.CreateBranch("gc-test", "doomed", main.ID)
 	require.NoError(t, err)
-	doomedWriter := driverwal.NewInterceptor(f.wal, doomed, f.branches, f.mat)
-	_, err = doomedWriter.InsertOne(ctx, "own", bson.M{"_id": "only-here", "payload": "doomed"})
+	doomedWriter := walwriter.New(f.wal, f.branches, f.mat, doomed)
+	_, err = doomedWriter.Put(ctx, "own", bson.M{"_id": "only-here", "payload": "doomed"})
 	require.NoError(t, err)
 	doomed, _ = f.branches.GetBranchByID(doomed.ID)
 	_, err = f.snapshots.CreateSnapshot(ctx, doomed.ID, doomed.HeadLSN)

@@ -1,4 +1,4 @@
-package wal
+package mongoexpr
 
 import (
 	"bytes"
@@ -12,14 +12,17 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// This file implements MongoDB query filter matching for the SDK write and
-// read paths. It is only ever executed once, at operation time — the outcome
-// (which documents were touched, and their post-images) is what gets logged
-// to the WAL, so replay correctness never depends on this code.
+// Package mongoexpr evaluates MongoDB filter and update expressions in
+// process. Live traffic never runs through it — applications query and
+// write checked-out branches on real mongod. It survives for exactly two
+// consumers: the v1→v2 WAL migration, which must resolve legacy expression
+// entries one final time, and canonical BSON comparison/serialization
+// (canonical.go) used by snapshots and diffs. Replay correctness never
+// depends on this code.
 //
-// Supported: implicit equality, $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin,
-// $exists, $regex, $size, $all, $elemMatch, $and, $or, $nor, $not, dotted
-// field paths, and match-any-element semantics for arrays. Unsupported
+// Filter support: implicit equality, $eq, $ne, $gt, $gte, $lt, $lte, $in,
+// $nin, $exists, $regex, $size, $all, $elemMatch, $and, $or, $nor, $not,
+// dotted paths, and match-any-element semantics for arrays. Unsupported
 // operators fail loudly instead of being silently skipped.
 
 // MatchesFilter reports whether a document matches a MongoDB query filter.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/mongoexpr"
 	"github.com/argon-lab/argon/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -53,7 +53,7 @@ func encodeState(state map[string]bson.M, compressor *wal.Compressor) (chunks []
 		// marshalling a map serializes keys in randomized order, which
 		// would give identical states different bytes — and different
 		// chunk hashes — on every run, defeating deduplication.
-		canonical, err := driverwal.Canonicalize(state[k])
+		canonical, err := mongoexpr.Canonicalize(state[k])
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to canonicalize document %s: %w", k, err)
 		}

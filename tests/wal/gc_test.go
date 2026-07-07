@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	driverwal "github.com/argon-lab/argon/internal/driver/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/gc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,9 +32,9 @@ func TestGC_RequiresSnapshotCoverage(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("gc-cover", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 	for i := 0; i < 10; i++ {
-		_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
+		_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
 		require.NoError(t, err)
 	}
 
@@ -74,9 +74,9 @@ func TestGC_RetentionWindowKeepsRecentHistory(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("gc-window", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 	for i := 0; i < 5; i++ {
-		_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
+		_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
 		require.NoError(t, err)
 	}
 	main, _ = f.branches.GetBranchByID(main.ID)
@@ -97,9 +97,9 @@ func TestGC_LiveChildForkPinsHistory(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("gc-fork", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 	for i := 0; i < 8; i++ {
-		_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
+		_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
 		require.NoError(t, err)
 	}
 	main, _ = f.branches.GetBranchByID(main.ID)
@@ -109,7 +109,7 @@ func TestGC_LiveChildForkPinsHistory(t *testing.T) {
 	child, err := f.branches.CreateBranch("gc-fork", "child", main.ID)
 	require.NoError(t, err)
 	for i := 8; i < 12; i++ {
-		_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
+		_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
 		require.NoError(t, err)
 	}
 	main, _ = f.branches.GetBranchByID(main.ID)
@@ -148,9 +148,9 @@ func TestGC_SnapshotBeforeForkAllowsReclaim(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("gc-fork2", "main", "")
 	require.NoError(t, err)
-	writer := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
 	for i := 0; i < 6; i++ {
-		_, err := writer.InsertOne(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
+		_, err := writer.Put(ctx, "docs", bson.M{"_id": fmt.Sprintf("d%d", i)})
 		require.NoError(t, err)
 	}
 	main, _ = f.branches.GetBranchByID(main.ID)
@@ -188,16 +188,16 @@ func TestGC_DeletedBranchReclaimsEverything(t *testing.T) {
 
 	main, err := f.branches.CreateBranch("gc-del", "main", "")
 	require.NoError(t, err)
-	mainWriter := driverwal.NewInterceptor(f.wal, main, f.branches, f.mat)
-	_, err = mainWriter.InsertOne(ctx, "docs", bson.M{"_id": "keep"})
+	mainWriter := walwriter.New(f.wal, f.branches, f.mat, main)
+	_, err = mainWriter.Put(ctx, "docs", bson.M{"_id": "keep"})
 	require.NoError(t, err)
 	main, _ = f.branches.GetBranchByID(main.ID)
 
 	doomed, err := f.branches.CreateBranch("gc-del", "doomed", main.ID)
 	require.NoError(t, err)
-	doomedWriter := driverwal.NewInterceptor(f.wal, doomed, f.branches, f.mat)
+	doomedWriter := walwriter.New(f.wal, f.branches, f.mat, doomed)
 	for i := 0; i < 20; i++ {
-		_, err := doomedWriter.InsertOne(ctx, "scratch", bson.M{"_id": fmt.Sprintf("s%d", i)})
+		_, err := doomedWriter.Put(ctx, "scratch", bson.M{"_id": fmt.Sprintf("s%d", i)})
 		require.NoError(t, err)
 	}
 	doomed, _ = f.branches.GetBranchByID(doomed.ID)
