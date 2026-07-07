@@ -108,6 +108,30 @@ func (c *Collection) DeleteMany(ctx context.Context, filter interface{}, opts ..
 	return &mongo.DeleteResult{DeletedCount: result.DeletedCount}, nil
 }
 
+// BulkWrite executes a sequence of write models. Models run sequentially so
+// each resolves against the state its predecessors produced; the ordered
+// option (default true) controls whether the bulk stops at the first error.
+func (c *Collection) BulkWrite(ctx context.Context, models []mongo.WriteModel, opts ...*options.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
+	ordered := true
+	for _, o := range opts {
+		if o != nil && o.Ordered != nil {
+			ordered = *o.Ordered
+		}
+	}
+	result, err := c.interceptor.BulkWrite(ctx, c.name, models, ordered)
+	if result == nil {
+		return nil, err
+	}
+	return &mongo.BulkWriteResult{
+		InsertedCount: result.InsertedCount,
+		MatchedCount:  result.MatchedCount,
+		ModifiedCount: result.ModifiedCount,
+		DeletedCount:  result.DeletedCount,
+		UpsertedCount: result.UpsertedCount,
+		UpsertedIDs:   result.UpsertedIDs,
+	}, err
+}
+
 // Find executes a query and returns a real cursor over the matching
 // documents in canonical document-ID order.
 func (c *Collection) Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error) {
