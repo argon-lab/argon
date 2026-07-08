@@ -1,0 +1,53 @@
+name: Publish to MCP Registry
+
+# Registers io.github.argon-lab/argon in the official MCP Registry.
+# Auth is GitHub OIDC (no tokens): the registry trusts that this workflow runs
+# in the argon-lab org, which grants the io.github.argon-lab/* namespace.
+#
+# Prerequisite each publish: argonctl must already be on npm at the target
+# version WITH the "mcpName" field (npm publish is manual — see runbook), because
+# the registry verifies the published package's mcpName matches server.json.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 2.0.1 (defaults to the release tag)"
+        required: false
+
+permissions:
+  contents: read
+  id-token: write # required for github-oidc login to the registry
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          v="${{ github.event.inputs.version }}"
+          [ -z "$v" ] && v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp version into server.json
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          tmp=$(mktemp)
+          jq --arg v "$v" '.version=$v | .packages[0].version=$v' server.json > "$tmp" && mv "$tmp" server.json
+          cat server.json
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+
+      - name: Authenticate (GitHub OIDC)
+        run: mcp-publisher login github-oidc
+
+      - name: Publish
+        run: mcp-publisher publish
