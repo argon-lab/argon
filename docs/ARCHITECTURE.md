@@ -275,8 +275,12 @@ explicit because the URI database is the alias. Aliases that don't resolve
 (unknown project/branch, or a branch that isn't checked out) get a
 synthesized `{ok: 0}` command error naming the proxy, not a dropped
 connection. Capture stays asynchronous through the change-stream ingester
-— the proxy is deliberately only the routing layer, though it is the
-natural place synchronous capture would live one day.
+— the proxy is deliberately only the routing layer. It is the natural
+place to one day close the ingest-lag window (see the roadmap), but not
+by parsing writes: the change stream already hands the ingester
+before/after images, transaction resolution and mongod's commit order for
+free, and re-deriving those in the proxy would mean reimplementing
+MongoDB write semantics — the one thing this design refuses to do.
 
 ## Migration from schema v1
 
@@ -327,8 +331,21 @@ ingester, plus WAL-convergence verification), and the LangGraph
 checkpointer / Mem0 factory ship as the `argon-agents` Python package on
 top of the REST API.
 
-Planned next: GCS chunk-store backend; synchronous capture in the wire
-proxy.
+Planned next:
+
+- **GCS chunk-store backend** — a third cloud object store alongside
+  S3-compatible and filesystem.
+- **A read-your-writes barrier in the wire proxy** — an opt-in mode where
+  the proxy holds a write's acknowledgement until the change-stream
+  ingester confirms the entry has landed in the WAL, giving callers zero
+  effective ingest lag (immediate `diff`/materialize after a write) and
+  strict "no write exists that isn't logged" semantics. This is
+  deliberately a *synchronization barrier*, not synchronous capture: the
+  proxy still never parses writes or owns images — the ingester remains
+  the single capture path — so it stays cheap and keeps mongod as the only
+  query engine. It does not remove the replica-set requirement (change
+  streams still do the capturing); dropping that would require true
+  in-proxy capture, which we are not planning.
 
 ## Storage collections
 

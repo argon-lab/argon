@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Planned: GCS chunk-store backend; synchronous capture in the wire proxy.
+Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
+the wire proxy (hold a write's ack until the ingester confirms the WAL
+entry — a synchronization barrier, not in-proxy capture).
 
 ## [2.0.0] - 2026-07-07
 
