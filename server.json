@@ -1,0 +1,26 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.argon-lab/argon",
+  "description": "Versioned MongoDB sandboxes for AI agents — branch, time-travel, diff/merge, and undo a MongoDB database over MCP.",
+  "repository": {
+    "url": "https://github.com/argon-lab/argon",
+    "source": "github"
+  },
+  "version": "2.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "argonctl",
+      "version": "2.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}
