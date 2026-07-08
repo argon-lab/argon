@@ -22,8 +22,12 @@
 //     is the URI database, which is the alias, and SCRAM must run against
 //     a real database.
 //   - Capture stays asynchronous (the change-stream ingester); the proxy
-//     does not intercept writes. Synchronous capture would live here one
-//     day — this is deliberately only the routing layer.
+//     does not intercept writes and never will — the change stream hands
+//     the ingester before/after images and mongod's commit order for free,
+//     and re-deriving those here would mean reimplementing MongoDB write
+//     semantics. A planned opt-in mode would hold a write's ack until the
+//     ingester confirms the WAL entry (a synchronization barrier for
+//     read-your-writes), which needs none of that parsing.
 package wireproxy
 
 import (
