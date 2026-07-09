@@ -1,7 +1,7 @@
 # Argon — Git for MongoDB
 
 <p align="center">
-  <a href="https://www.argonlabs.tech">
+  <a href="https://argonlabs.tech">
     <img src=".github/assets/hero.png" alt="Argon — Git for MongoDB, built for AI agents: branch off prod, run an agent, undo the session" width="100%">
   </a>
 </p>
@@ -122,7 +122,8 @@ The full agent workflow: [docs/AGENTS.md](docs/AGENTS.md).
 [Issues](https://github.com/argon-lab/argon/issues) ·
 [Discussions](https://github.com/argon-lab/argon/discussions) ·
 [Contributing](CONTRIBUTING.md) ·
-[argonlabs.tech](https://www.argonlabs.tech)
+[argonlabs.tech](https://argonlabs.tech) ·
+[Blog](https://argonlabs.tech/blog)
 
 ---
 
