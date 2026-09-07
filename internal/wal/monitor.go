@@ -194,6 +194,11 @@ func (m *Monitor) AddHealthCheck(check HealthCheck) {
 func (m *Monitor) TriggerAlert(level AlertLevel, title, message string, data map[string]interface{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.triggerAlertLocked(level, title, message, data)
+}
+
+// triggerAlertLocked requires m.mu to be held by the caller.
+func (m *Monitor) triggerAlertLocked(level AlertLevel, title, message string, data map[string]interface{}) {
 
 	alert := Alert{
 		Level:     level,
@@ -215,6 +220,11 @@ func (m *Monitor) TriggerAlert(level AlertLevel, title, message string, data map
 func (m *Monitor) ResolveAlert(title string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.resolveAlertLocked(title)
+}
+
+// resolveAlertLocked requires m.mu to be held by the caller.
+func (m *Monitor) resolveAlertLocked(title string) {
 
 	for i := range m.alerts {
 		if m.alerts[i].Title == title && !m.alerts[i].Resolved {
@@ -314,7 +324,7 @@ func (m *Monitor) runHealthChecks() {
 			m.triggerHealthCheckAlert(check, err)
 		} else {
 			// Resolve any existing alerts for this check
-			m.ResolveAlert(fmt.Sprintf("health_check_%s", check.Name))
+			m.resolveAlertLocked(fmt.Sprintf("health_check_%s", check.Name))
 		}
 	}
 
@@ -322,13 +332,13 @@ func (m *Monitor) runHealthChecks() {
 		m.consecutiveFails = 0
 		if !m.isHealthy {
 			m.isHealthy = true
-			m.ResolveAlert("system_unhealthy")
+			m.resolveAlertLocked("system_unhealthy")
 		}
 	} else {
 		m.consecutiveFails++
 		if m.consecutiveFails >= m.config.AlertThresholds.MaxConsecutiveFailures {
 			m.isHealthy = false
-			m.TriggerAlert(AlertLevelCritical, "system_unhealthy",
+			m.triggerAlertLocked(AlertLevelCritical, "system_unhealthy",
 				fmt.Sprintf("System unhealthy after %d consecutive failures", m.consecutiveFails),
 				map[string]interface{}{
 					"consecutive_failures": m.consecutiveFails,

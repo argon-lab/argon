@@ -1,8 +1,16 @@
 # Argon 2.1: correctness and workflow hardening
 
-This release candidate addresses the September 2026 project review. The version
-in `VERSION`, CLI, API, npm metadata and MCP manifest is 2.1.0. A prepared version
-does not mean that a GitHub release, npm package or hosted deployment is live.
+Argon 2.1.0 was published on September 7, 2026 to address the project review.
+Its [GitHub release](https://github.com/argon-lab/argon/releases/tag/v2.1.0), npm
+package and MCP registry entry are available. Hosted deployment status is tracked
+separately from package publication.
+
+The 2.1.1 patch fixes a monitor mutex deadlock discovered during post-release
+shutdown verification. After the first health-check tick, alert resolution could
+try to acquire the mutex already held by the health loop; `argon console` then
+waited indefinitely in `Monitor.Stop`. Internal alert helpers now reuse the held
+lock. Regressions cover actual ticker shutdown, successful checks, repeated
+failures and alert recovery. The 2.1.0 tag and assets remain unchanged.
 
 ## Changes
 
