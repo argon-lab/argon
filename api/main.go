@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,20 +24,28 @@ import (
 )
 
 func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	host := os.Getenv("ARGON_API_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	addr := net.JoinHostPort(host, port)
+	opts := server.OptionsFromEnv()
+	if err := server.ValidateListenAddress(addr, opts); err != nil {
+		log.Fatal(err)
+	}
 	services, err := walcli.NewServices()
 	if err != nil {
 		log.Fatalf("failed to initialize services: %v", err)
 	}
 
-	router := server.NewRouter(services)
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	srv := &http.Server{Addr: ":" + port, Handler: router}
+	router := server.NewRouterWith(services, opts)
+	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
-		log.Printf("Argon API listening on :%s", port)
+		log.Printf("Argon API listening on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
@@ -47,8 +56,11 @@ func main() {
 	<-quit
 
 	log.Println("shutting down...")
-	router.Shutdown() // stop supervised ingesters first
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(ctx)
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("api: HTTP shutdown: %v", err)
+		_ = srv.Close()
+	}
+	router.Shutdown() // producers have stopped; drain capture and snapshots last
 }

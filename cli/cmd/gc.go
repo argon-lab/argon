@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +26,7 @@ that is what a retention window means. Use --dry-run to preview.`,
 		retention, _ := cmd.Flags().GetDuration("retention")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}

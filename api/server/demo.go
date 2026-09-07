@@ -118,6 +118,12 @@ func (r *Router) demoGuard() gin.HandlerFunc {
 				gin.H{"error": "no demo session; POST /api/v1/demo/session first"})
 			return
 		}
+		// Anonymous visitors use only metadata/WAL workflows. Native Mongo
+		// access would bypass HTTP project isolation and expose service credentials.
+		if c.Request.Method == http.MethodPost && (strings.HasSuffix(p, "/checkout") || strings.HasSuffix(p, "/sandboxes")) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "native database connections are disabled in the hosted demo; run Argon locally for driver access"})
+			return
+		}
 
 		switch {
 		// The project list is the visitor's project, nothing else.
@@ -248,7 +254,8 @@ func (r *Router) demoSession(c *gin.Context) {
 
 	maxAge := int(r.opts.DemoTTL / time.Second)
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(demoCookie, name, maxAge, "/", "", false, true)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(demoCookie, name, maxAge, "/", "", c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https", true)
 	c.JSON(http.StatusCreated, gin.H{
 		"project":    name,
 		"expires_at": project.CreatedAt.Add(r.opts.DemoTTL),
@@ -270,7 +277,7 @@ func (r *Router) seedDemo(ctx context.Context, project string) error {
 		{"products", bson.M{"_id": "keyboard", "name": "Keyboard MX", "price": 89, "stock": 40}},
 		{"products", bson.M{"_id": "mouse", "name": "Mouse S1", "price": 49, "stock": 65}},
 		{"products", bson.M{"_id": "monitor", "name": "Monitor 27q", "price": 329, "stock": 12}},
-		{"orders", bson.M{"_id": "o1", "product": "keyboard", "qty": 2, "status": "pending"}},
+		{"orders", bson.M{"_id": "o1", "product": "keyboard", "qty": 2, "price": 49, "status": "pending"}},
 		{"orders", bson.M{"_id": "o2", "product": "monitor", "qty": 1, "status": "paid"}},
 		{"orders", bson.M{"_id": "o3", "product": "mouse", "qty": 3, "status": "shipped"}},
 	}
@@ -295,24 +302,23 @@ func (r *Router) seedDemo(ctx context.Context, project string) error {
 
 // --- the scripted agent session ---
 
-// demoScenario plays a short two-actor agent session on a fresh branch
-// and a conflicting human edit on main — one click, and diff, merge
-// conflicts and per-actor undo all have something real to show.
+// demoScenario runs two scripted proposals from the exact same pinned input.
+// It adopts the planner's reviewed proposal; the executor remains a conflicting
+// branch visitors can inspect, undo or discard. All data is this session's own.
 func (r *Router) demoScenario(c *gin.Context) {
 	project := r.demoProject(c)
 	if project == "" {
-		c.AbortWithStatusJSON(http.StatusUnauthorized,
-			gin.H{"error": "no demo session; POST /api/v1/demo/session first"})
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "no demo session"})
 		return
 	}
 	proj, err := r.services.Projects.GetProjectByName(project)
 	if err != nil {
-		abortErr(c, http.StatusNotFound, err)
+		abortErr(c, 404, err)
 		return
 	}
 	branches, err := r.services.Branches.ListBranches(proj.ID)
 	if err != nil {
-		abortErr(c, http.StatusInternalServerError, err)
+		abortErr(c, 500, err)
 		return
 	}
 	runs := 0
@@ -321,74 +327,90 @@ func (r *Router) demoScenario(c *gin.Context) {
 			runs++
 		}
 	}
-	name := fmt.Sprintf("agent-run-%d", runs+1)
-
+	// A random suffix avoids name reuse after visitors discard previous runs.
+	suffix := make([]byte, 4)
+	if _, err = rand.Read(suffix); err != nil {
+		abortErr(c, 500, err)
+		return
+	}
+	run := fmt.Sprintf("%d-%s", runs+1, hex.EncodeToString(suffix))
+	plannerName, executorName, pinName := "planner-"+run, "agent-run-"+run, "run-input-"+run
 	main, err := r.services.Branches.GetBranch(proj.ID, "main")
 	if err != nil {
-		abortErr(c, http.StatusInternalServerError, err)
+		abortErr(c, 500, err)
 		return
 	}
-	if _, err := r.services.Branches.CreateBranch(proj.ID, name, main.ID); err != nil {
-		abortErr(c, http.StatusConflict, err)
-		return
-	}
-
+	// Each scripted run starts from the advertised $49 input, including
+	// repeated runs after a visitor has merged or undone an earlier proposal.
+	// This setup write is retained in this visitor's private demo history.
 	ctx := c.Request.Context()
-	agent, err := r.services.WriterFor(project, name)
+	setup, err := r.services.WriterFor(project, "main")
 	if err != nil {
-		abortErr(c, http.StatusInternalServerError, err)
+		abortErr(c, 500, err)
 		return
 	}
-	// The planner drafts new work…
-	agent.SetActor("agent:planner")
-	steps := []struct {
+	setup.SetActor("demo:setup")
+	inputLSN, err := setup.Put(ctx, "orders", bson.M{"_id": "o1", "product": "keyboard", "qty": 2, "price": 49, "status": "pending"})
+	if err != nil {
+		abortErr(c, 500, err)
+		return
+	}
+	input, err := r.services.Pins.Create(proj.ID, main.ID, pinName, inputLSN, "Identical $49 input for two scripted agent proposals")
+	if err != nil {
+		abortErr(c, 500, err)
+		return
+	}
+	for _, name := range []string{plannerName, executorName} {
+		if _, err = r.services.Restore.CreateBranchFromPin(proj.ID, input.BranchID, name, input.LSN); err != nil {
+			abortErr(c, 500, err)
+			return
+		}
+	}
+	planner, err := r.services.WriterFor(project, plannerName)
+	if err != nil {
+		abortErr(c, 500, err)
+		return
+	}
+	planner.SetActor("agent:planner")
+	if _, err = planner.Put(ctx, "orders", bson.M{"_id": "o1", "product": "keyboard", "qty": 2, "price": 44, "status": "approved", "run": run}); err != nil {
+		abortErr(c, 500, err)
+		return
+	}
+	executor, err := r.services.WriterFor(project, executorName)
+	if err != nil {
+		abortErr(c, 500, err)
+		return
+	}
+	executor.SetActor("agent:executor")
+	for _, step := range []struct {
 		collection string
 		doc        bson.M
 	}{
+		{"orders", bson.M{"_id": "o1", "product": "keyboard", "qty": 2, "price": 1, "status": "refunded", "run": run}},
 		{"orders", bson.M{"_id": "o4", "product": "monitor", "qty": 2, "status": "draft"}},
-		{"notes", bson.M{"_id": "plan-1", "text": "restock monitors before the o4 order ships", "order": "o4"}},
-	}
-	// …and the executor updates existing state, touching o1.
-	execSteps := []struct {
-		collection string
-		doc        bson.M
-	}{
-		{"orders", bson.M{"_id": "o1", "product": "keyboard", "qty": 2, "status": "refunded"}},
+		{"notes", bson.M{"_id": "plan-1", "text": "Review this proposal before accepting", "order": "o4"}},
 		{"products", bson.M{"_id": "monitor", "name": "Monitor 27q", "price": 329, "stock": 10}},
-	}
-	for _, s := range steps {
-		if _, err := agent.Put(ctx, s.collection, s.doc); err != nil {
-			abortErr(c, http.StatusInternalServerError, err)
+	} {
+		if _, err = executor.Put(ctx, step.collection, step.doc); err != nil {
+			abortErr(c, 500, err)
 			return
 		}
 	}
-	agent.SetActor("agent:executor")
-	for _, s := range execSteps {
-		if _, err := agent.Put(ctx, s.collection, s.doc); err != nil {
-			abortErr(c, http.StatusInternalServerError, err)
-			return
-		}
-	}
-
-	// Meanwhile a human touches the same order on main — the merge
-	// preview will surface this as a conflict, never silently.
-	human, err := r.services.WriterFor(project, "main")
+	plannerBranch, err := r.services.Branches.GetBranch(proj.ID, plannerName)
 	if err != nil {
-		abortErr(c, http.StatusInternalServerError, err)
+		abortErr(c, 500, err)
 		return
 	}
-	human.SetActor("user:demo")
-	if _, err := human.Put(ctx, "orders",
-		bson.M{"_id": "o1", "product": "keyboard", "qty": 2, "status": "expedited"}); err != nil {
-		abortErr(c, http.StatusInternalServerError, err)
+	plan, err := r.services.Merge.Preview(ctx, plannerBranch.ID)
+	if err != nil {
+		abortErr(c, 500, err)
 		return
 	}
-
-	c.JSON(http.StatusCreated, gin.H{
-		"branch": name,
-		"actors": []string{"agent:planner", "agent:executor"},
-		"hint":   "diff the branch, preview the merge (one conflict on orders/o1), or undo a single actor",
-	})
+	if _, err = r.services.Merge.Apply(ctx, plan.ID, ""); err != nil {
+		abortErr(c, 500, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"branch": executorName, "branches": []string{plannerName, executorName}, "accepted_branch": plannerName, "accepted_plan": plan.ID.Hex(), "pin": pinName, "actors": []string{"agent:planner", "agent:executor"}, "hint": "Both proposals started at the same pin. The planner was adopted; inspect the executor conflict, discard it, or undo the adopted merge on main."})
 }
 
 // --- sweeping ---

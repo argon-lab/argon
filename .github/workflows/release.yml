@@ -2,15 +2,40 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Resolve the authoritative tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(node scripts/release-version.js "$RELEASE_TAG")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          node scripts/release-version.js --check
+      - name: Check release tooling
+        run: node --test scripts/release-version.test.js npm/scripts/install.test.js
+
   build:
     name: Build binaries
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -19,75 +44,90 @@ jobs:
         exclude:
           - goos: windows
             goarch: arm64
-
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.21'
-
-    - name: Build binary
-      working-directory: ./cli
-      env:
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-      run: |
-        mkdir -p ../dist
-        if [ "$GOOS" = "windows" ]; then
-          go build -ldflags="-s -w" -o ../dist/argon-${{ matrix.goos }}-${{ matrix.goarch }}.exe .
-        else
-          go build -ldflags="-s -w" -o ../dist/argon-${{ matrix.goos }}-${{ matrix.goarch }} .
-        fi
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
-        path: dist/
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            cli/go.sum
+            api/go.sum
+      - name: Build binary
+        working-directory: cli
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p ../dist
+          asset="argon-${GOOS}-${GOARCH}"
+          if [ "$GOOS" = windows ]; then asset="$asset.exe"; fi
+          go build -trimpath -ldflags="-s -w -X github.com/argon-lab/argon/pkg/version.Build=$RELEASE_VERSION" -o "../dist/$asset" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          if-no-files-found: error
 
   release:
     name: Create release
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        pattern: binaries-*
-        path: dist/
-        merge-multiple: true
-
-    - name: Create release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: dist/*
-        generate_release_notes: true
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: dist/
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum argon-* > SHA256SUMS
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.prepare.outputs.version, '-') }}
 
   publish-npm:
     name: Publish to npm
-    needs: release
+    needs: [prepare, release]
     runs-on: ubuntu-latest
-    # Requires an NPM_TOKEN repo secret — an npm "Automation" (or granular,
-    # 2FA-bypass) token that owns argonctl, so CI can publish without an OTP.
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - name: Stamp package from release tag
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/release-version.js "$RELEASE_VERSION"
+      - name: Check package contents
+        working-directory: npm
+        run: npm pack --dry-run
+      - name: Publish to npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          dist_tag=latest
+          if [[ "$RELEASE_VERSION" == *-* ]]; then dist_tag=next; fi
+          npm publish --access public --tag "$dist_tag"
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '18'
-        registry-url: 'https://registry.npmjs.org'
-
-    - name: Publish to npm
-      working-directory: ./npm
-      run: npm publish --access public
-      env:
-        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  publish-mcp:
+    name: Publish to MCP Registry
+    needs: [prepare, publish-npm]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-mcp.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}

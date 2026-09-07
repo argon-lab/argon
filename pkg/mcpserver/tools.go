@@ -65,6 +65,7 @@ func toolDescriptors() []map[string]interface{} {
 				"from":        str("Parent branch to fork (default: main)"),
 				"name":        str("Sandbox name (default: generated)"),
 				"ttl_minutes": num("Minutes until the sandbox is reclaimed (default: 60)"),
+				"actor":       str("Label for all native writes on this branch/run; not individual writer identity"),
 			}),
 		},
 		{
@@ -97,6 +98,7 @@ func toolDescriptors() []map[string]interface{} {
 			"inputSchema": schema([]string{"project", "branch"}, map[string]interface{}{
 				"project": str("Project name"),
 				"branch":  str("Branch name"),
+				"actor":   str("Label for all native writes on this branch/run; cannot change while capture is running"),
 			}),
 		},
 		{
@@ -165,6 +167,7 @@ func toolDescriptors() []map[string]interface{} {
 				"pin":         str("Pin name"),
 				"name":        str("Sandbox name (default: <pin>-run-<random>)"),
 				"ttl_minutes": num("Sandbox TTL in minutes (default: 60)"),
+				"actor":       str("Label for all native writes on this branch/run"),
 			}),
 		},
 		{
@@ -223,14 +226,19 @@ func toolSandboxCreate(ctx context.Context, s *Server, args map[string]interface
 
 	ttl := time.Hour
 	if minutes, ok := argNumber(args, "ttl_minutes"); ok && minutes > 0 {
-		ttl = time.Duration(minutes) * time.Minute
+		ttl = time.Duration(minutes * float64(time.Minute))
 	}
 
+	if err := s.services.SyncBranch(ctx, parentID); err != nil {
+		return "", err
+	}
 	info, err := s.services.Sandbox.Create(ctx, projectID, parentID, argString(args, "name"), ttl)
 	if err != nil {
 		return "", fmt.Errorf("sandbox creation failed: %w", err)
 	}
-	s.startIngester(info.BranchID)
+	if err := s.startIngester(info.BranchID, argString(args, "actor")); err != nil {
+		return "", err
+	}
 
 	return fmt.Sprintf(
 		"Sandbox %q created (forked from %s at LSN %d).\n"+
@@ -249,7 +257,6 @@ func toolSandboxDiscard(ctx context.Context, s *Server, args map[string]interfac
 	if err != nil {
 		return "", err
 	}
-	s.stopIngester(branchID)
 	if err := s.services.Sandbox.Discard(ctx, branchID); err != nil {
 		return "", fmt.Errorf("discard failed: %w", err)
 	}
@@ -307,7 +314,9 @@ func toolConnect(ctx context.Context, s *Server, args map[string]interface{}) (s
 		}
 		branch.PhysicalDB = info.PhysicalDB
 	}
-	s.startIngester(branchID)
+	if err := s.startIngester(branchID, argString(args, "actor")); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("Connection string: %s\nWrites through this connection are captured as versioned history.",
 		s.services.BranchConnectionString(branch.PhysicalDB)), nil
 }
@@ -319,6 +328,9 @@ func formatPlanSummary(sb *strings.Builder, changes, conflicts int) {
 func toolDiff(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {
 	_, branchID, err := s.resolveBranchID(argString(args, "project"), argString(args, "branch"))
 	if err != nil {
+		return "", err
+	}
+	if err := s.services.SyncBranch(ctx, branchID); err != nil {
 		return "", err
 	}
 	plan, err := s.services.Merge.Compute(branchID)
@@ -347,6 +359,9 @@ func toolMergePreview(ctx context.Context, s *Server, args map[string]interface{
 	if err != nil {
 		return "", err
 	}
+	if err := s.services.SyncBranch(ctx, branchID); err != nil {
+		return "", err
+	}
 	plan, err := s.services.Merge.Preview(ctx, branchID)
 	if err != nil {
 		return "", err
@@ -367,6 +382,13 @@ func toolMergeApply(ctx context.Context, s *Server, args map[string]interface{})
 	planID, err := primitive.ObjectIDFromHex(argString(args, "plan_id"))
 	if err != nil {
 		return "", fmt.Errorf("invalid plan_id")
+	}
+	plan, err := s.services.Merge.GetPlan(ctx, planID)
+	if err != nil {
+		return "", err
+	}
+	if err := s.services.SyncBranch(ctx, plan.SourceBranchID); err != nil {
+		return "", err
 	}
 	result, err := s.services.Merge.Apply(ctx, planID, argString(args, "strategy"))
 	if err != nil {
@@ -413,6 +435,9 @@ func toolSnapshotCreate(ctx context.Context, s *Server, args map[string]interfac
 	if err != nil {
 		return "", err
 	}
+	if err := s.services.SyncBranch(ctx, branchID); err != nil {
+		return "", err
+	}
 	branch, err := s.services.Branches.GetBranchByID(branchID)
 	if err != nil {
 		return "", err
@@ -427,6 +452,9 @@ func toolSnapshotCreate(ctx context.Context, s *Server, args map[string]interfac
 func toolPinCreate(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {
 	projectID, branchID, err := s.resolveBranchID(argString(args, "project"), argString(args, "branch"))
 	if err != nil {
+		return "", err
+	}
+	if err := s.services.SyncBranch(ctx, branchID); err != nil {
 		return "", err
 	}
 	var lsn int64
@@ -486,13 +514,15 @@ func toolPinSandbox(ctx context.Context, s *Server, args map[string]interface{})
 	}
 	ttl := time.Hour
 	if minutes, ok := argNumber(args, "ttl_minutes"); ok && minutes > 0 {
-		ttl = time.Duration(minutes) * time.Minute
+		ttl = time.Duration(minutes * float64(time.Minute))
 	}
 	info, err := s.services.Sandbox.Adopt(ctx, branch.ID, ttl)
 	if err != nil {
 		return "", err
 	}
-	s.startIngester(info.BranchID)
+	if err := s.startIngester(info.BranchID, argString(args, "actor")); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf(
 		"Sandbox %q forked from pin %q (LSN %d).\n"+
 			"Connection string: %s\n"+

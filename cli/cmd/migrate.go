@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +23,7 @@ The migration is idempotent: running it again finds nothing to rewrite.`,
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}

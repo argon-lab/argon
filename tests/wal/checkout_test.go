@@ -179,6 +179,8 @@ func TestCheckout_ConnectionString(t *testing.T) {
 		{"mongodb://localhost:27017", "argon_br_x", "mongodb://localhost:27017/argon_br_x"},
 		{"mongodb://localhost:27017/", "argon_br_x", "mongodb://localhost:27017/argon_br_x"},
 		{"mongodb://user:pw@host:27017/admin?authSource=admin", "argon_br_x", "mongodb://user:pw@host:27017/argon_br_x?authSource=admin"},
+		{"mongodb://user:pw@host:27017/admin", "argon_br_x", "mongodb://user:pw@host:27017/argon_br_x?authSource=admin"},
+		{"mongodb://user:pw@host:27017/accounts?retryWrites=true", "argon_br_x", "mongodb://user:pw@host:27017/argon_br_x?authSource=accounts&retryWrites=true"},
 		{"mongodb+srv://cluster.example.net/?retryWrites=true", "argon_br_x", "mongodb+srv://cluster.example.net/argon_br_x?retryWrites=true"},
 		{"", "argon_br_x", "mongodb://localhost:27017/argon_br_x"},
 	}

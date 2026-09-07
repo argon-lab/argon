@@ -16,17 +16,23 @@ import (
 
 // Service creates and serves collection snapshots.
 type Service struct {
-	manifests    *mongo.Collection
-	chunks       *mongo.Collection // raw handle for GC reference checks
-	store        ChunkStore
-	branches     *branchwal.BranchService
-	materializer *materializer.Service
-	compressor   *wal.Compressor
+	manifests        *mongo.Collection
+	publicationLocks *mongo.Collection
+	chunks           *mongo.Collection // raw handle for GC reference checks
+	store            ChunkStore
+	branches         *branchwal.BranchService
+	materializer     *materializer.Service
+	compressor       *wal.Compressor
 
 	// Auto-snapshot state (see auto.go).
 	autoMu       sync.Mutex
 	autoCfg      *AutoConfig
 	autoBranches map[string]*autoState
+	autoStopping bool
+	autoRunning  int
+	autoIdle     chan struct{}
+	autoContext  context.Context
+	autoCancel   context.CancelFunc
 }
 
 // NewService creates a snapshot service with the default (MongoDB) chunk
@@ -47,12 +53,13 @@ func NewServiceWithStore(db *mongo.Database, branches *branchwal.BranchService, 
 	}
 
 	s := &Service{
-		manifests:    db.Collection("wal_snapshots"),
-		chunks:       db.Collection("wal_snapshot_chunks"),
-		store:        store,
-		branches:     branches,
-		materializer: mat,
-		compressor:   compressor,
+		manifests:        db.Collection("wal_snapshots"),
+		publicationLocks: db.Collection("wal_snapshot_locks"),
+		chunks:           db.Collection("wal_snapshot_chunks"),
+		store:            store,
+		branches:         branches,
+		materializer:     mat,
+		compressor:       compressor,
 	}
 
 	ctx := context.Background()
@@ -86,6 +93,9 @@ func (s *Service) CreateSnapshot(ctx context.Context, branchID string, lsn int64
 	if err != nil {
 		return nil, fmt.Errorf("branch %s not found: %w", branchID, err)
 	}
+	if branch.IsDeleted {
+		return nil, fmt.Errorf("cannot create a snapshot for a deleted branch")
+	}
 	if lsn <= branch.BaseLSN || lsn > branch.HeadLSN {
 		return nil, fmt.Errorf("snapshot LSN %d outside branch range (%d, %d]", lsn, branch.BaseLSN, branch.HeadLSN)
 	}
@@ -110,6 +120,18 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 	chunks, docCount, err := encodeState(docs, s.compressor)
 	if err != nil {
 		return nil, err
+	}
+	unlock, err := s.lockPublication(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	fresh, err := s.branches.GetBranchByIDAny(branch.ID)
+	if err != nil {
+		return nil, err
+	}
+	if fresh.IsDeleted {
+		return nil, fmt.Errorf("branch was deleted while building its snapshot")
 	}
 
 	chunkIDs := make([]string, 0, len(chunks))

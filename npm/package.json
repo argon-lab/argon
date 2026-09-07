@@ -1,6 +1,6 @@
 {
   "name": "argonctl",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "mcpName": "io.github.argon-lab/argon",
   "description": "Git for MongoDB: branch, time-travel, merge and undo - CLI",
   "keywords": [
@@ -22,22 +22,23 @@
   },
   "license": "MIT",
   "author": "Argon Lab",
-  "main": "index.js",
   "bin": {
     "argon": "bin/argon.js",
     "argonctl": "bin/argon.js"
   },
   "files": [
-    "bin/",
-    "scripts/",
+    "bin/argon.js",
+    "scripts/install.js",
+    "scripts/uninstall.js",
     "README.md"
   ],
   "scripts": {
     "postinstall": "node scripts/install.js",
-    "preuninstall": "node scripts/uninstall.js"
+    "preuninstall": "node scripts/uninstall.js",
+    "test": "node --test scripts/install.test.js"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18.0.0"
   },
   "os": [
     "darwin",

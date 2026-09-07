@@ -1,13 +1,13 @@
 #!/usr/bin/env node
+'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
-const { execSync } = require('child_process');
-
+const fs = require('node:fs');
+const path = require('node:path');
+const https = require('node:https');
+const { pipeline } = require('node:stream/promises');
+const { execFileSync } = require('node:child_process');
 const version = require('../package.json').version;
 
-// Platform mapping
 const PLATFORM_MAP = {
   'darwin-x64': 'darwin-amd64',
   'darwin-arm64': 'darwin-arm64',
@@ -16,85 +16,70 @@ const PLATFORM_MAP = {
   'win32-x64': 'windows-amd64',
 };
 
-function getPlatform() {
-  const platform = `${process.platform}-${process.arch}`;
-  if (!PLATFORM_MAP[platform]) {
-    throw new Error(`Unsupported platform: ${platform}`);
+function getPlatform(platform = process.platform, arch = process.arch) {
+  const key = `${platform}-${arch}`;
+  if (!PLATFORM_MAP[key]) throw new Error(`Unsupported platform: ${key}`);
+  return PLATFORM_MAP[key];
+}
+
+// Only a successful final HTTP response reaches the file. GitHub's CDN may
+// redirect more than once; reject loops, insecure redirects, and error pages.
+async function downloadBinary(url, destination, get = https.get, redirects = 5) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') throw new Error('Downloads must use HTTPS');
+    const response = await new Promise((resolve, reject) => {
+      const request = get(parsed, resolve);
+      request.on('error', reject);
+      request.setTimeout(30000, () => request.destroy(new Error('Download timed out')));
+    });
+    if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+      response.resume();
+      if (redirects === 0 || !response.headers.location) throw new Error('Invalid or excessive download redirects');
+      return await downloadBinary(new URL(response.headers.location, parsed).href, destination, get, redirects - 1);
+    }
+    if (response.statusCode !== 200) {
+      response.resume();
+      throw new Error(`Download failed: HTTP ${response.statusCode}`);
+    }
+    await pipeline(response, fs.createWriteStream(destination));
+  } catch (error) {
+    fs.rmSync(destination, { force: true });
+    throw error;
   }
-  return PLATFORM_MAP[platform];
-}
-
-function getBinaryName() {
-  // The wrapper bin/argon.js execs this; distinct from the wrapper name.
-  return process.platform === 'win32' ? 'argon-bin.exe' : 'argon-bin';
-}
-
-function downloadBinary(url, dest) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    https.get(url, (response) => {
-      if (response.statusCode === 302 || response.statusCode === 301) {
-        // Follow redirect
-        https.get(response.headers.location, (redirectResponse) => {
-          redirectResponse.pipe(file);
-          file.on('finish', () => {
-            file.close(resolve);
-          });
-        }).on('error', reject);
-      } else if (response.statusCode === 200) {
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close(resolve);
-        });
-      } else {
-        reject(new Error(`Failed to download: ${response.statusCode}`));
-      }
-    }).on('error', reject);
-  });
 }
 
 async function install() {
+  const platform = getPlatform();
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const assetName = `argon-${platform}${suffix}`;
+  const url = `https://github.com/argon-lab/argon/releases/download/v${version}/${assetName}`;
+  const binDir = path.join(__dirname, '..', 'bin');
+  const binaryPath = path.join(binDir, `argon-bin${suffix}`);
+  const temporaryPath = `${binaryPath}.${process.pid}.tmp${suffix}`;
+  fs.mkdirSync(binDir, { recursive: true });
+  console.log(`Downloading Argon CLI v${version} for ${platform}...`);
   try {
-    const platform = getPlatform();
-    const binaryName = getBinaryName();
-    const assetName = process.platform === 'win32' ? `argon-${platform}.exe` : `argon-${platform}`;
-    const downloadUrl = `https://github.com/argon-lab/argon/releases/download/v${version}/${assetName}`;
-    
-    const binDir = path.join(__dirname, '..', 'bin');
-    const binaryPath = path.join(binDir, binaryName);
-
-    // Create bin directory
-    if (!fs.existsSync(binDir)) {
-      fs.mkdirSync(binDir, { recursive: true });
+    await downloadBinary(url, temporaryPath);
+    if (process.platform !== 'win32') fs.chmodSync(temporaryPath, 0o755);
+    const output = execFileSync(temporaryPath, ['--version'], { encoding: 'utf8', timeout: 30000 });
+    const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!new RegExp(`(?:^|\\s)v?${escaped}(?:\\s|$)`).test(output)) {
+      throw new Error(`Binary reported an unexpected version: ${output.trim()}`);
     }
-
-    console.log(`Downloading Argon CLI v${version} for ${platform}...`);
-    console.log(`From: ${downloadUrl}`);
-    
-    await downloadBinary(downloadUrl, binaryPath);
-    
-    // Make binary executable on Unix-like systems
-    if (process.platform !== 'win32') {
-      fs.chmodSync(binaryPath, '755');
-    }
-
-    // Verify installation
-    try {
-      const output = execSync(`"${binaryPath}" --version`, { encoding: 'utf8' });
-      console.log('✅ Argon CLI installed successfully!');
-      console.log(output.trim());
-    } catch (e) {
-      console.error('⚠️  Binary downloaded but verification failed');
-      console.error('Please check if the binary is working correctly');
-    }
-
-  } catch (error) {
-    console.error('Failed to install Argon CLI:', error.message);
-    console.error('\nYou can manually download from:');
-    console.error('https://github.com/argon-lab/argon/releases');
-    process.exit(1);
+    fs.renameSync(temporaryPath, binaryPath);
+    console.log(`Argon CLI installed successfully: ${output.trim()}`);
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
   }
 }
 
-// Run installation
-install();
+if (require.main === module) {
+  install().catch(error => {
+    console.error(`Failed to install Argon CLI: ${error.message}`);
+    console.error('Manual downloads: https://github.com/argon-lab/argon/releases');
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { downloadBinary, getPlatform };

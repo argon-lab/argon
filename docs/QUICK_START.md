@@ -1,85 +1,112 @@
 # Quick start
 
-Install → first merged branch, step by step.
+This path runs a real MongoDB replica set, checks prerequisites, and uses a
+managed API/console process for write capture and sandbox expiry.
 
-## 1 · Install + MongoDB
-
-```bash
-brew install argon-lab/tap/argonctl      # or: npm install -g argonctl
-
-# MongoDB must be a replica set (change streams); one node is fine:
-docker run -d --name argon-mongo -p 27017:27017 mongo:7 --replSet rs0
-docker exec argon-mongo mongosh --quiet --eval 'rs.initiate()'
-```
-
-Argon connects to `MONGODB_URI` (default `mongodb://localhost:27017`) and
-keeps its metadata in the `argon_wal` database.
-
-## 2 · Bring your data in
+## Install and check MongoDB
 
 ```bash
-argon import database --uri mongodb://localhost:27017 --database myapp --project myapp
-# starting fresh instead: argon projects create myapp
+npm install -g argonctl
+# macOS alternative: brew install argon-lab/tap/argonctl
+
+docker run -d --name argon-mongo -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0
+docker exec argon-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+export MONGODB_URI='mongodb://localhost:27017/?replicaSet=rs0'
+argon doctor
 ```
 
-Every document becomes versioned history on `main`; a snapshot is taken
-automatically so reads never replay the whole import.
+Wait for primary election if doctor reports that the replica set is not ready.
+The `mongo:7` tag follows current 7.x patches; production deployments should
+use a current supported patch release and keep it updated.
+`doctor` verifies MongoDB 6+, a writable replica-set primary, metadata writes,
+cross-database transactions and exact change-stream images. It creates and
+removes uniquely named temporary probe collections. `argon status` provides
+read-only readiness checks. Both return nonzero on failure.
 
-## 3 · Branch and work with any driver
+## Run the managed workflow
+
+In terminal A:
 
 ```bash
-argon branches create experiment -p myapp   # instant — a pointer, no copy
-argon checkout -p myapp -b experiment       # → prints a MongoDB URI
-argon watch    -p myapp -b experiment       # captures writes (keep running)
+argon console --no-browser
 ```
 
-Point pymongo, mongoose, mongosh — anything — at the URI and work
-normally: real indexes, aggregation, transactions. Every write becomes
-history, attributed to its actor.
+Open http://127.0.0.1:1818. The process supervises capture for live branches,
+waits for capture before returning native URIs, and sweeps expired sandboxes
+every minute. Keep it running while agents work. MCP clients can instead
+launch `argon mcp`, which manages its sandbox capture and expiry too.
 
-Want stable URIs instead of per-checkout ones? `argon proxy` serves
-`mongodb://host:27018/<project>~<branch>?directConnection=true`.
-Prefer a UI? `argon console` opens a local web console.
-
-## 4 · Review and merge — a data pull request
+In terminal B, from a repository checkout:
 
 ```bash
-argon diff          -p myapp -b experiment   # what would change
-argon merge preview -p myapp -b experiment   # persist a reviewable plan
-argon merge apply <plan-id>                  # exactly-once; stale heads refused
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install pymongo
+python3 examples/pinned_agents.py --api http://127.0.0.1:1818
 ```
 
-Conflicts fail loudly; resolve with `--strategy theirs|ours` or fix the
-data and re-preview.
+The runnable example creates business accounts, pins the baseline, gives two
+independent agent proposals identical databases, reviews both changes, merges
+the approved 10% discount, and discards the rejected 50% proposal. Assertions
+check isolation and the final database state. No LLM account is needed; the
+two deterministic proposals make the data workflow reproducible. The resulting
+project and pin remain available in the console for inspection.
 
-## 5 · Time travel, undo, rewind
+## CLI-only workflow
+
+CLI commands connect directly to MongoDB. A one-shot checkout/sandbox command
+does not leave a background watcher or TTL worker behind.
 
 ```bash
-argon time-travel query -p myapp -b main --lsn 1000
-
-argon undo -p myapp -b main --from-lsn 990 --dry-run          # revert a range
-argon undo -p myapp -b main --from-lsn 990 --actor agent-7    # …or one writer
-
-argon restore preview -p myapp -b main --time 2026-07-07T09:00:00Z
-argon restore reset   -p myapp -b main --time 2026-07-07T09:00:00Z --backup pre-incident
+argon projects create myapp --output json
+argon branches create experiment -p myapp --output json
+argon checkout -p myapp -b experiment --output json
+argon collections prepare orders -p myapp -b experiment
+# Keep this running in terminal A; use the printed URI from terminal B:
+argon watch -p myapp -b experiment --actor agent:experiment
 ```
 
-Resets are recorded, not destructive: discarded entries stay for audit,
-and the backup branch (or any pin) keeps the old state readable.
-
-## 6 · For agents
+After writing through that URI, use another terminal:
 
 ```bash
-claude mcp add argon -- argon mcp           # sandboxes/diff/merge/undo/pins as MCP tools
-argon sandbox create -p myapp --ttl 1h      # disposable branch + URI, one step
-argon pin create  -p myapp --name eval-v1   # immutable dataset state
-argon pin sandbox -p myapp --name eval-v1   # identical input, every eval run
+argon diff -p myapp -b experiment --output json
+argon merge preview -p myapp -b experiment --output json
+argon merge apply <plan-id> --output json
 ```
 
-Full agent workflow (MCP, REST, Python): [AGENTS.md](AGENTS.md).
+Use the `plan.id` returned by preview. Versioned operations synchronize
+completed native writes first; stale plans fail and require a new preview.
+For bare CLI sandboxes, schedule `argon sandbox sweep -p myapp` yourself.
 
-## Where next
+## History and cleanup
 
-[CLI.md](CLI.md) — every command ·
-[ARCHITECTURE.md](ARCHITECTURE.md) — guarantees, honestly ·
-[OPERATIONS.md](OPERATIONS.md) — S3 snapshots, GC, migration
+```bash
+argon time-travel info -p myapp -b main --output json
+argon time-travel query -p myapp -b main --lsn <retained-lsn> --output json
+argon undo -p myapp -b experiment --from-lsn <first-change-lsn> --dry-run --output json
+# Stop native writers, then drain and release before a reset:
+argon release -p myapp -b experiment
+argon restore preview -p myapp -b experiment --lsn <retained-lsn>
+```
+
+Read retained LSNs from `time-travel info`; sample numbers are not valid for
+every project. Missing images and later changes are skipped by undo and
+reported explicitly. Retention GC can remove old audit/undo history; pins
+preserve named states. Drop/rename DDL is not captured and marks capture
+degraded. Native capture actor labels apply to the whole branch, not each
+MongoDB client. See [architecture](ARCHITECTURE.md) and
+[operations](OPERATIONS.md) before production use.
+
+## Build from source
+
+```bash
+# From the repository root:
+(cd cli && go build -o ../bin/argon .)
+(cd api && go run .)
+```
+
+`ARGON_METADATA_DB` changes the metadata database (default `argon_wal`), which
+is useful for isolated tests. Use Go 1.26.6 or newer, as declared in `go.mod`;
+CLI and API are separate Go modules.
+The API defaults to 127.0.0.1:8080. Set `ARGON_API_TOKEN` before exposing a
+non-loopback listener, and send that bearer token from REST clients.

@@ -3,8 +3,7 @@
 ## Overview
 
 Argon is a Git-like version control layer for MongoDB: branch, time-travel,
-and restore your data the way you manage code (merge and diff are on the
-roadmap, M4). It is built on a
+merge and restore data through reviewable changes. It is built on a
 write-ahead log (WAL) whose replay is **deterministic by construction**, with
 branches implemented as pointers into that log.
 
@@ -68,8 +67,8 @@ document:
 | `collection`, `document_id` | The document the entry is about |
 | `post` | Compressed full post-image (required on every put) |
 | `pre` | Compressed pre-image (puts over existing docs, deletes) — powers diff, undo, audit |
-| `txn_id` | Reserved: atomic-visibility grouping |
-| `actor` | Who wrote it (`user:...`, `agent:...`, `importer`) |
+| `txn_id` | Capture/merge transaction grouping; published heads cover complete batches |
+| `actor` | Explicit programmatic writer or persisted native branch label |
 | `v` | Schema version (2) |
 
 Replay is a pure fold: `put` ⇒ `state[document_id] = post`, `delete` ⇒
@@ -95,7 +94,7 @@ A branch is `(id, parent_id, base_lsn, head_lsn, discarded_ranges)`:
 
 - `base_lsn` — the fork point: the parent-chain LSN this branch started from.
 - `head_lsn` — the newest entry belonging to this branch. Writers advance it
-  with `$max` (monotonic under concurrency); only restore may lower it.
+  with transactional compare-and-set against the observed head; restore may lower it.
 - A branch's own entries live in `(base_lsn, head_lsn]`. Everything at or
   below `base_lsn` is inherited from the ancestry chain via `parent_id`.
 
@@ -107,7 +106,7 @@ soft-deleted).
 
 ### Reset and discarded ranges
 
-`reset --to-lsn T` records the abandoned window `[T+1, old_head]` in the
+`argon restore reset --lsn T` records the abandoned window `[T+1, old_head]` in the
 branch's `discarded_ranges` and lowers the head. The entries stay in the WAL
 for audit; materialization skips them.
 
@@ -157,7 +156,7 @@ without one, fall back to full replay unchanged.
   automatically valid again.
 - **Incremental**: `CreateSnapshot` materializes through the snapshot-aware
   path itself, so each snapshot builds from the previous one plus the delta.
-- **Automatic**: the driver notifies the snapshot service after writes;
+- **Automatic**: both programmatic writes and committed native capture batches notify the snapshot service;
   once a branch head advances a threshold past its newest snapshot (default
   1000 LSNs, checked at most every 64 writes per branch), a snapshot is
   taken off the write path. `argon snapshot create/list` does it manually.
@@ -225,9 +224,9 @@ is **never** deleted, no matter how old — and reclaiming entries ends
 time-travel, audit and undo below the cutoff, which is exactly what a
 retention window means.
 
-Together with snapshots this gives storage an upper bound: state size plus
-the retention window of history, instead of the full write history
-forever.
+Snapshots and GC bound replay and reclaim eligible history. Total storage
+still grows with active branch states, permanent pins and write volume inside
+the retention window; retention is not a fixed disk-space quota.
 
 ## Write paths
 
@@ -290,22 +289,64 @@ refuses v1 data entries with an error; `argon migrate-wal --project <name>`
 rewrites them in place (parents before children, LSNs preserved, no-op
 entries removed). Migration is idempotent.
 
-## Consistency model (current, honest)
+## Consistency model
 
-- **Deterministic replay** — the same WAL prefix always materializes to the
-  same state; verified by property tests (repeated replay, cross-instance,
-  historical LSNs, same-seed cross-database convergence).
-- **Read-your-writes per handle** — an interceptor advances its in-memory
-  head after each append.
-- **Resolve-then-append is not atomic** — concurrent writers to the same
-  branch are last-writer-wins at document level. The WAL itself stays
-  consistent because every entry is self-contained.
-- **Capture is asynchronous** — for checked-out branches, any driver's
-  writes to the physical database become history via the change-stream
-  ingester (`argon watch`, the API server, or the MCP server must be
-  running); the WAL trails the primary by the ingest lag. Writes made
-  while no ingester runs are recovered on resume (resume tokens), but
-  writes to non-Argon databases are never captured.
+- **Deterministic replay:** full BSON outcomes are logged. Typed IDs remain
+  distinct, including ObjectID versus a same-looking string and ordered
+  composite IDs. Legacy image-backed IDs are normalized when read.
+- **Atomic publication:** metadata writer batches, merge data/audit/plan state,
+  capture WAL/head/resume token and reset metadata are transactionally
+  published. Concurrent writers compare the observed branch head/incarnation.
+- **Live conflict checks:** physical merge/undo compare each current document
+  with the previewed before-image inside the write transaction. A stale
+  document aborts the entire batch even if capture has not advanced the head.
+- **Asynchronous native capture:** completed driver writes initially exist in
+  mongod. Managed API/MCP URI creation waits for readiness and a durable barrier;
+  versioned CLI/API/MCP operations drain completed native writes before reading.
+  Direct Go service consumers must call `Services.SyncBranch` when they need
+  that synchronization. The wire proxy does not delay native acknowledgements.
+- **Recovery:** checkout persists the first stream boundary, later capture
+  commits resume tokens with WAL batches, and transient failures retry. This
+  requires MongoDB to retain the oplog/change-stream history and exact images.
+  Expired history or missing post-images becomes degraded capture, not success.
+- **Transaction bounds:** native transaction events are published as complete
+  batches at the branch head, including groups larger than a server cursor batch.
+  An empty cursor batch alone does not prove a transaction ended: capture waits
+  for a subsequent database marker or a different transaction. Cancellation
+  leaves an unproven trailing group behind the saved resume boundary for replay.
+  An arbitrary historical LSN inside a transaction
+  is still a document-history prefix, not a transaction-consistent snapshot.
+- **Undo:** compensations contain their own before-images. Missing required
+  images and any later unselected document writes are reported and skipped.
+  Actor filtering uses recorded labels; MongoDB change streams do not identify
+  each application or user. A native branch keeps one persisted actor label.
+
+## Capture and lifecycle prerequisites
+
+Use MongoDB 6+ as a writable replica set; the regression environment is MongoDB
+7.0.14. `argon doctor` checks real image/transaction permissions. Before the
+first write to every new native collection, run
+`argon collections prepare <collection> -p <project> -b <branch>` or create it
+through the MongoDB driver with `changeStreamPreAndPostImages: {enabled:true}`.
+Auto-enabling after a collection appears cannot recover images for updates
+that already happened. Checkout prepares materialized collections itself.
+
+Document insert/update/replace/delete operations are versioned. Collection
+rename/drop/database-drop is unsupported and produces persisted `degraded`
+health. Indexes, validators and collection options are executed by mongod but
+are not versioned or reproduced by a later checkout. Missing delete pre-images
+make undo unrecoverable for those documents. Observe the capture health rather
+than assuming a running process implies complete history.
+
+Repeated checkout returns an existing live database without rebuilding it.
+Before release, stop application writers; release drains through a durable
+marker before dropping the physical database. Writes after that marker are
+outside the guarantee. Explicit discard intentionally removes the branch and
+its history, after pin/child preflight checks. Coordinate destructive lifecycle
+operations through one control-plane owner: checkout serialization is local
+to a Service, not a distributed lease for simultaneous first checkout across
+processes. Native URI credentials are deployment credentials, not per-sandbox
+security isolation.
 
 ## Known limitations and roadmap
 
@@ -318,8 +359,9 @@ Current limitations (deliberate scope):
   snapshots cover them; snapshot chunks can additionally live in an
   S3-compatible or filesystem chunk store (see "Chunk store backends"
   above). GCS is not yet a backend.
-- Per-operation write throughput and divergence storage amplification are
-  not yet benchmarked — blocked on a public write surface (#16).
+- Published benchmarks still need native capture overhead, end-to-end sandbox
+  readiness and divergence storage growth. The public `WriterFor` write API
+  exists; the old public-writer issue is no longer a blocker.
 
 Performance characteristics are measured by the public benchmark suite at
 https://github.com/argon-lab/benchmarks — reproducible with
@@ -358,6 +400,8 @@ Planned next:
 | `wal_snapshots` | Snapshot manifests |
 | `wal_pins` | Dataset pins (named immutable branch states) |
 | `wal_snapshot_chunks` | Content-addressed snapshot data |
+| `wal_ingest_state` | Durable capture boundary, actor, resume token and last health report |
+| `wal_snapshot_locks` | Persistent publication/GC locks; see operations recovery |
 
 Indexes on `wal_log`: unique `(project_id, lsn)`;
 `(branch_id, collection, lsn)`; `(branch_id, collection, document_id, lsn)`;

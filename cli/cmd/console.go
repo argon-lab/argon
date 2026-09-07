@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/argon-lab/argon/api/server"
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -28,21 +27,25 @@ var consoleCmd = &cobra.Command{
 	Long: `Serve the Argon web console against your local engine.
 
 One process serves both the REST control plane and the console UI,
-bound to localhost by default. Everything the console shows is your
+bound to localhost by default. It supervises native write capture and
+sweeps expired sandboxes every minute while running. Everything the console shows is your
 own data: projects, branches, history, merge plans, pins, sandboxes.
 
 Set ARGON_API_TOKEN to require a bearer token on the API, or
 ARGON_READ_ONLY=1 to serve a look-but-don't-touch instance.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		services, err := walcli.NewServices()
+		addr := fmt.Sprintf("%s:%d", consoleHost, consolePort)
+		if err := server.ValidateListenAddress(addr, server.OptionsFromEnv()); err != nil {
+			return err
+		}
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect to MongoDB: %w", err)
 		}
 		router := server.NewRouter(services)
 
-		addr := fmt.Sprintf("%s:%d", consoleHost, consolePort)
 		url := "http://" + addr
-		srv := &http.Server{Addr: addr, Handler: router}
+		srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 10 * time.Second}
 		errc := make(chan error, 1)
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -60,6 +63,7 @@ ARGON_READ_ONLY=1 to serve a look-but-don't-touch instance.`,
 
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(quit)
 		select {
 		case err := <-errc:
 			router.Shutdown()
@@ -68,11 +72,16 @@ ARGON_READ_ONLY=1 to serve a look-but-don't-touch instance.`,
 		}
 
 		fmt.Println("shutting down...")
-		router.Shutdown() // stop supervised ingesters first
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(ctx)
-		return nil
+		// Stop accepting requests and wait for handlers before capture/snapshot
+		// shutdown, so a late request cannot start more background work.
+		shutdownErr := srv.Shutdown(ctx)
+		if shutdownErr != nil {
+			_ = srv.Close()
+		}
+		router.Shutdown()
+		return shutdownErr
 	},
 }
 

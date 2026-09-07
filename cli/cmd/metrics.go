@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -11,7 +10,7 @@ var metricsCmd = &cobra.Command{
 	Use:   "metrics",
 	Short: "Show performance metrics",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return err
 		}

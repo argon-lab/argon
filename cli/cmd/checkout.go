@@ -46,8 +46,8 @@ aggregation and transactions all run on mongod itself. While checked
 out, feed the WAL by running "argon watch" so direct writes keep
 versioned history; SDK writes to a checked-out branch are rejected.
 
-Re-running checkout refreshes the database to the branch's current WAL
-state.`,
+Repeating checkout on a live branch returns its existing database and
+preserves pending direct writes. Stop writers before release.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		branchName, _ := cmd.Flags().GetString("branch")
@@ -55,7 +55,7 @@ state.`,
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -69,6 +69,9 @@ state.`,
 			return fmt.Errorf("checkout failed: %w", err)
 		}
 
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch_id": branchID, "physical_db": info.PhysicalDB, "lsn": info.LSN, "connection_string": services.BranchConnectionString(info.PhysicalDB), "capture_managed": false})
+		}
 		fmt.Printf("Checked out at LSN %d: %d collection(s), %d document(s)\n",
 			info.LSN, info.Collections, info.Documents)
 		fmt.Printf("Connection string:\n  %s\n", services.BranchConnectionString(info.PhysicalDB))
@@ -87,7 +90,7 @@ var connectCmd = &cobra.Command{
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -101,6 +104,9 @@ var connectCmd = &cobra.Command{
 		}
 		if !branch.IsLive() {
 			return fmt.Errorf("branch is not checked out; run \"argon checkout\" first")
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch_id": branchID, "connection_string": services.BranchConnectionString(branch.PhysicalDB), "capture_managed": false})
 		}
 		fmt.Println(services.BranchConnectionString(branch.PhysicalDB))
 		return nil
@@ -117,7 +123,7 @@ var releaseCmd = &cobra.Command{
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -127,6 +133,9 @@ var releaseCmd = &cobra.Command{
 		}
 		if err := services.Checkout.Release(context.Background(), branchID); err != nil {
 			return fmt.Errorf("release failed: %w", err)
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch_id": branchID, "released": true})
 		}
 		fmt.Println("Released. Check the branch out again anytime to rebuild it from the WAL.")
 		return nil

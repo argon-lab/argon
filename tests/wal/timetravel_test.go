@@ -6,11 +6,11 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/materializer"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/timetravel"
 	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -116,10 +116,13 @@ func TestTimeTravel_MaterializeAtTime(t *testing.T) {
 
 		// Small delay to ensure different timestamps
 		time.Sleep(10 * time.Millisecond)
-		midTime := time.Now()
-
-		_, err = interceptor.Put(ctx, "events", bson.M{"_id": "e2", "event": "middle"})
+		middleLSN, err := interceptor.Put(ctx, "events", bson.M{"_id": "e2", "event": "middle"})
 		assert.NoError(t, err)
+		middle, err := walService.GetEntry(project.ID, middleLSN)
+		require.NoError(t, err)
+		// Query the persisted event timestamp, without assuming a durable
+		// transaction finishes within five milliseconds of starting the call.
+		midTime := middle.Timestamp
 
 		time.Sleep(10 * time.Millisecond)
 
@@ -130,7 +133,7 @@ func TestTimeTravel_MaterializeAtTime(t *testing.T) {
 		branch, _ = branchService.GetBranchByID(branch.ID)
 
 		// Query at midTime - should see e1 and e2
-		state, err := timeTravelService.MaterializeAtTime(branch, "events", midTime.Add(5*time.Millisecond))
+		state, err := timeTravelService.MaterializeAtTime(branch, "events", midTime)
 		assert.NoError(t, err)
 		assert.Len(t, state, 2)
 		assert.NotNil(t, state["e1"])

@@ -29,8 +29,9 @@ type Router struct {
 	opts     Options
 	demo     *demoState
 
-	ingestMu sync.Mutex
-	ingest   map[string]context.CancelFunc
+	ingestMu    sync.Mutex
+	ingest      map[string]context.CancelFunc
+	sweepCancel context.CancelFunc
 }
 
 // NewRouter builds the API over the given services, configured from the
@@ -85,6 +86,7 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 	v1 := r.Group("/api/v1")
 	{
 		v1.GET("/meta", r.meta)
+		v1.POST("/events", r.recordEvent)
 		v1.GET("/status/ingesters", r.ingesterStatus)
 
 		if opts.DemoMode {
@@ -129,6 +131,11 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 	}
 	r.mountUI()
 	r.superviseLiveBranches()
+	sweepCtx, sweepCancel := context.WithCancel(context.Background())
+	r.sweepCancel = sweepCancel
+	if !opts.ReadOnly && !opts.DemoMode {
+		go services.RunSandboxSweeper(sweepCtx)
+	}
 	if opts.DemoMode {
 		r.startDemoSweeper()
 	}
@@ -154,47 +161,69 @@ func (r *Router) superviseLiveBranches() {
 		}
 		for _, b := range branches {
 			if b.IsLive() {
-				r.startIngester(b.ID)
+				if err := r.startIngester(b.ID); err != nil {
+					log.Printf("api: capture for %s unavailable: %v", b.ID, err)
+				}
 			}
 		}
 	}
 }
 
-// Shutdown stops every supervised ingester and the demo sweeper.
+// Shutdown stops every supervised ingester and the demo sweeper, then waits
+// for automatic snapshots. Stop/drain HTTP requests before calling it.
 func (r *Router) Shutdown() {
+	if r.sweepCancel != nil {
+		r.sweepCancel()
+	}
 	if r.demo != nil && r.demo.cancel != nil {
 		r.demo.cancel()
 	}
-	r.ingestMu.Lock()
-	defer r.ingestMu.Unlock()
-	for id, cancel := range r.ingest {
-		cancel()
-		delete(r.ingest, id)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.services.Ingest.Shutdown(ctx); err != nil {
+		log.Printf("api: capture shutdown: %v", err)
 	}
-}
-
-func (r *Router) startIngester(branchID string) {
-	r.ingestMu.Lock()
-	defer r.ingestMu.Unlock()
-	if _, running := r.ingest[branchID]; running {
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	r.ingest[branchID] = cancel
-	go func() {
-		if err := r.services.Ingest.Run(ctx, branchID); err != nil && ctx.Err() == nil {
-			log.Printf("api: ingester for branch %s stopped: %v", branchID, err)
+	snapshotCtx, snapshotCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer snapshotCancel()
+	if err := r.services.WaitAuto(snapshotCtx); err != nil {
+		log.Printf("api: snapshot shutdown: %v", err)
+		// Cancellation interrupts cooperative storage I/O; give its independent
+		// deferred publication-lock cleanup a short grace before process exit.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if cleanupErr := r.services.WaitAuto(cleanupCtx); cleanupErr != nil {
+			log.Printf("api: snapshot cleanup still incomplete: %v", cleanupErr)
 		}
-	}()
+	}
+
 }
 
-func (r *Router) stopIngester(branchID string) {
+func (r *Router) startIngester(branchID string, actors ...string) error {
+	actor := ""
+	if len(actors) > 0 {
+		actor = actors[0]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.services.StartCapture(ctx, branchID, actor); err != nil {
+		return err
+	}
+	r.ingestMu.Lock()
+	r.ingest[branchID] = func() { _ = r.stopIngester(branchID) }
+	r.ingestMu.Unlock()
+	return nil
+}
+
+func (r *Router) stopIngester(branchID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.services.Ingest.Stop(ctx, branchID); err != nil {
+		return err
+	}
 	r.ingestMu.Lock()
 	defer r.ingestMu.Unlock()
-	if cancel, ok := r.ingest[branchID]; ok {
-		cancel()
-		delete(r.ingest, branchID)
-	}
+	delete(r.ingest, branchID)
+	return nil
 }
 
 // --- helpers ---
@@ -304,24 +333,24 @@ func (r *Router) getBranch(c *gin.Context) {
 		return
 	}
 	resp := gin.H{"branch": branch}
-	if branch.IsLive() {
+	if branch.IsLive() && !r.opts.DemoMode {
+		if err := r.startIngester(branchID); err != nil {
+			abortErr(c, http.StatusServiceUnavailable, err)
+			return
+		}
 		resp["connection_string"] = r.services.BranchConnectionString(branch.PhysicalDB)
 	}
 	c.JSON(http.StatusOK, resp)
 }
 
 func (r *Router) deleteBranch(c *gin.Context) {
-	projectID, branchID, ok := r.resolve(c)
+	_, branchID, ok := r.resolve(c)
 	if !ok {
 		return
 	}
-	r.stopIngester(branchID)
 	if err := r.services.Sandbox.Discard(c.Request.Context(), branchID); err != nil {
-		// Fall back for non-sandbox branches that are not checked out.
-		if err2 := r.services.Branches.DeleteBranch(projectID, c.Param("branch")); err2 != nil {
-			abortErr(c, http.StatusConflict, err2)
-			return
-		}
+		abortErr(c, http.StatusConflict, err)
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
@@ -338,7 +367,17 @@ func (r *Router) checkoutBranch(c *gin.Context) {
 		abortErr(c, http.StatusInternalServerError, err)
 		return
 	}
-	r.startIngester(branchID)
+	var capture struct {
+		Actor string `json:"actor"`
+	}
+	if err := c.ShouldBindJSON(&capture); err != nil && err.Error() != "EOF" {
+		abortErr(c, http.StatusBadRequest, err)
+		return
+	}
+	if err := r.startIngester(branchID, capture.Actor); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"connection_string": r.services.BranchConnectionString(info.PhysicalDB),
 		"physical_db":       info.PhysicalDB,
@@ -353,7 +392,6 @@ func (r *Router) releaseBranch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	r.stopIngester(branchID)
 	if err := r.services.Checkout.Release(c.Request.Context(), branchID); err != nil {
 		abortErr(c, http.StatusInternalServerError, err)
 		return
@@ -372,6 +410,7 @@ func (r *Router) createSandbox(c *gin.Context) {
 		From       string  `json:"from"`
 		Name       string  `json:"name"`
 		TTLMinutes float64 `json:"ttl_minutes"`
+		Actor      string  `json:"actor"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil && err.Error() != "EOF" {
 		abortErr(c, http.StatusBadRequest, err)
@@ -386,13 +425,20 @@ func (r *Router) createSandbox(c *gin.Context) {
 		abortErr(c, http.StatusNotFound, fmt.Errorf("parent branch %q not found", from))
 		return
 	}
-	ttl := time.Duration(body.TTLMinutes) * time.Minute
+	if err := r.services.SyncBranch(c.Request.Context(), parent.ID); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
+		return
+	}
+	ttl := time.Duration(body.TTLMinutes * float64(time.Minute))
 	info, err := r.services.Sandbox.Create(c.Request.Context(), projectID, parent.ID, body.Name, ttl)
 	if err != nil {
 		abortErr(c, http.StatusInternalServerError, err)
 		return
 	}
-	r.startIngester(info.BranchID)
+	if err := r.startIngester(info.BranchID, body.Actor); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
+		return
+	}
 	c.JSON(http.StatusCreated, gin.H{
 		"branch":            info.BranchName,
 		"connection_string": r.services.BranchConnectionString(info.PhysicalDB),
@@ -439,6 +485,10 @@ func (r *Router) createPin(c *gin.Context) {
 	branch, err := r.services.Branches.GetBranch(projectID, branchName)
 	if err != nil {
 		abortErr(c, http.StatusNotFound, fmt.Errorf("branch %q not found", branchName))
+		return
+	}
+	if err := r.services.SyncBranch(c.Request.Context(), branch.ID); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
 		return
 	}
 	pin, err := r.services.Pins.Create(projectID, branch.ID, body.Name, body.LSN, body.Note)
@@ -494,6 +544,7 @@ func (r *Router) sandboxFromPin(c *gin.Context) {
 	var body struct {
 		Name       string  `json:"name"`
 		TTLMinutes float64 `json:"ttl_minutes"`
+		Actor      string  `json:"actor"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil && err.Error() != "EOF" {
 		abortErr(c, http.StatusBadRequest, err)
@@ -518,13 +569,16 @@ func (r *Router) sandboxFromPin(c *gin.Context) {
 		abortErr(c, http.StatusConflict, err)
 		return
 	}
-	ttl := time.Duration(body.TTLMinutes) * time.Minute
+	ttl := time.Duration(body.TTLMinutes * float64(time.Minute))
 	info, err := r.services.Sandbox.Adopt(c.Request.Context(), branch.ID, ttl)
 	if err != nil {
 		abortErr(c, http.StatusInternalServerError, err)
 		return
 	}
-	r.startIngester(info.BranchID)
+	if err := r.startIngester(info.BranchID, body.Actor); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
+		return
+	}
 	c.JSON(http.StatusCreated, gin.H{
 		"branch":            info.BranchName,
 		"connection_string": r.services.BranchConnectionString(info.PhysicalDB),
@@ -542,6 +596,10 @@ func (r *Router) diffBranch(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if err := r.services.SyncBranch(c.Request.Context(), branchID); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
+		return
+	}
 	plan, err := r.services.Merge.Compute(branchID)
 	if err != nil {
 		abortErr(c, http.StatusBadRequest, err)
@@ -553,6 +611,10 @@ func (r *Router) diffBranch(c *gin.Context) {
 func (r *Router) mergePreview(c *gin.Context) {
 	_, branchID, ok := r.resolve(c)
 	if !ok {
+		return
+	}
+	if err := r.services.SyncBranch(c.Request.Context(), branchID); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
 		return
 	}
 	plan, err := r.services.Merge.Preview(c.Request.Context(), branchID)
@@ -574,6 +636,15 @@ func (r *Router) mergeApply(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil && err.Error() != "EOF" {
 		abortErr(c, http.StatusBadRequest, err)
+		return
+	}
+	plan, err := r.services.Merge.GetPlan(c.Request.Context(), planID)
+	if err != nil {
+		abortErr(c, http.StatusNotFound, err)
+		return
+	}
+	if err := r.services.SyncBranch(c.Request.Context(), plan.SourceBranchID); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
 		return
 	}
 	result, err := r.services.Merge.Apply(c.Request.Context(), planID, body.Strategy)
@@ -647,6 +718,10 @@ func (r *Router) timeTravelInfo(c *gin.Context) {
 func (r *Router) createSnapshot(c *gin.Context) {
 	_, branchID, ok := r.resolve(c)
 	if !ok {
+		return
+	}
+	if err := r.services.SyncBranch(c.Request.Context(), branchID); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
 		return
 	}
 	branch, err := r.services.Branches.GetBranchByID(branchID)

@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/argon-lab/argon/internal/wal"
@@ -19,7 +20,8 @@ type AutoConfig struct {
 	// database: only every Nth call per branch performs the check.
 	CheckEvery int
 	// Synchronous runs snapshot creation inline instead of in a goroutine.
-	// Meant for tests; production keeps snapshotting off the write path.
+	// Used by one-shot commands and tests; long-running servers normally
+	// keep snapshot creation off the write path.
 	Synchronous bool
 }
 
@@ -46,6 +48,12 @@ func (s *Service) EnableAuto(cfg AutoConfig) {
 	}
 	s.autoMu.Lock()
 	defer s.autoMu.Unlock()
+	if s.autoStopping {
+		return
+	}
+	if s.autoContext == nil {
+		s.autoContext, s.autoCancel = context.WithCancel(context.Background())
+	}
 	s.autoCfg = &cfg
 	if s.autoBranches == nil {
 		s.autoBranches = make(map[string]*autoState)
@@ -62,7 +70,7 @@ func (s *Service) EnableAuto(cfg AutoConfig) {
 func (s *Service) MaybeSnapshot(branch *wal.Branch) {
 	s.autoMu.Lock()
 	cfg := s.autoCfg
-	if cfg == nil {
+	if cfg == nil || s.autoStopping {
 		s.autoMu.Unlock()
 		return
 	}
@@ -78,18 +86,28 @@ func (s *Service) MaybeSnapshot(branch *wal.Branch) {
 	}
 	st.callsSinceCheck = 0
 	st.inFlight = true
+	if s.autoRunning == 0 {
+		s.autoIdle = make(chan struct{})
+	}
+	s.autoRunning++
+	ctx := s.autoContext
+	branchID := branch.ID
 	s.autoMu.Unlock()
 
 	release := func() {
 		s.autoMu.Lock()
 		st.inFlight = false
+		s.autoRunning--
+		if s.autoRunning == 0 {
+			close(s.autoIdle)
+		}
 		s.autoMu.Unlock()
 	}
 
 	run := func() {
 		defer release()
-		if err := s.snapshotIfStale(branch, cfg.Threshold); err != nil {
-			log.Printf("auto-snapshot for branch %s failed: %v", branch.ID, err)
+		if err := s.snapshotIfStale(ctx, branchID, cfg.Threshold); err != nil {
+			log.Printf("auto-snapshot for branch %s failed: %v", branchID, err)
 		}
 	}
 
@@ -103,12 +121,14 @@ func (s *Service) MaybeSnapshot(branch *wal.Branch) {
 // snapshotIfStale creates a snapshot when the branch head has advanced more
 // than threshold LSNs past the newest existing snapshot (or past the fork
 // point when the branch has none).
-func (s *Service) snapshotIfStale(branch *wal.Branch, threshold int64) error {
-	ctx := context.Background()
+func (s *Service) snapshotIfStale(ctx context.Context, branchID string, threshold int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Re-read the branch: the caller's copy may lag, and snapshotting at a
 	// stale head is wasted work.
-	fresh, err := s.branches.GetBranchByIDAny(branch.ID)
+	fresh, err := s.branches.GetBranchByIDAny(branchID)
 	if err != nil {
 		return err
 	}
@@ -135,4 +155,41 @@ func (s *Service) snapshotIfStale(branch *wal.Branch, threshold int64) error {
 	}
 	_, err = s.CreateSnapshot(ctx, fresh.ID, fresh.HeadLSN)
 	return err
+}
+
+// WaitAuto permanently stops admission of automatic snapshots and waits for
+// every already registered task, including synchronous work, to return. A nil
+// result means all tasks, including their deferred lock cleanup, have returned.
+// Storage/cleanup failures are logged by the worker. Call it
+// after stopping request/capture producers and before disconnecting MongoDB.
+//
+// The context bounds the wait. On timeout cooperative storage I/O is canceled,
+// but callers receive an error: uncooperative or unavailable storage may still
+// require abandoned-lock recovery if the process exits before cleanup finishes.
+// A later WaitAuto call can wait for that cleanup without admitting new work.
+func (s *Service) WaitAuto(ctx context.Context) error {
+	s.autoMu.Lock()
+	s.autoStopping = true
+	idle := s.autoIdle
+	cancel := s.autoCancel
+	if s.autoRunning == 0 {
+		s.autoMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return nil
+	}
+	s.autoMu.Unlock()
+	select {
+	case <-idle:
+		if cancel != nil {
+			cancel()
+		}
+		return nil
+	case <-ctx.Done():
+		if cancel != nil {
+			cancel()
+		}
+		return fmt.Errorf("automatic snapshot shutdown did not finish; storage cancellation was requested and publication lock cleanup may still be pending: %w", ctx.Err())
+	}
 }

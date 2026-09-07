@@ -23,6 +23,10 @@ def db():
     assert uri, "ARGON_BRANCH_URI must point at a checked-out branch"
     client = MongoClient(uri)
     database = client.get_default_database()
+    # Exact event history requires images before the first rapid update.
+    for name in ("users", "orders", "accounts", "items", "ledger", "big"):
+        if name not in database.list_collection_names():
+            database.create_collection(name, changeStreamPreAndPostImages={"enabled": True})
     yield database
     client.close()
 

@@ -8,16 +8,15 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/argon-lab/argon/pkg/walcli"
 )
 
 // ImportPreview contains information about what would be imported
 type ImportPreview struct {
-	DatabaseName        string            `json:"database_name"`
-	Collections         []CollectionInfo  `json:"collections"`
-	TotalDocuments      int64             `json:"total_documents"`
-	EstimatedSize       int64             `json:"estimated_size_bytes"`
-	EstimatedWALEntries int64             `json:"estimated_wal_entries"`
+	DatabaseName        string           `json:"database_name"`
+	Collections         []CollectionInfo `json:"collections"`
+	TotalDocuments      int64            `json:"total_documents"`
+	EstimatedSize       int64            `json:"estimated_size_bytes"`
+	EstimatedWALEntries int64            `json:"estimated_wal_entries"`
 }
 
 // CollectionInfo contains details about a collection to be imported
@@ -93,7 +92,7 @@ Example:
 		}
 
 		// Initialize services
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to initialize services: %w", err)
 		}
@@ -110,9 +109,7 @@ Example:
 		// Output results
 		switch outputFormat {
 		case "json":
-			encoder := json.NewEncoder(os.Stdout)
-			encoder.SetIndent("", "  ")
-			return encoder.Encode(preview)
+			return writeJSON(cmd, preview)
 		default:
 			return printImportPreview(preview)
 		}
@@ -152,7 +149,7 @@ Example:
 		}
 
 		// Initialize services
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to initialize services: %w", err)
 		}
@@ -174,9 +171,9 @@ Example:
 				// cancel here has bitten people; demand an explicit --yes.
 				return fmt.Errorf("stdin is not a terminal; pass --yes to confirm the import")
 			}
-			fmt.Printf("⚠️  About to import database '%s' into new project '%s'\n", databaseName, projectName)
-			fmt.Printf("   This will create WAL entries for all existing data.\n")
-			fmt.Printf("   Continue? (y/N): ")
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠️  About to import database '%s' into new project '%s'\n", databaseName, projectName)
+			fmt.Fprintf(cmd.ErrOrStderr(), "   This will create WAL entries for all existing data.\n")
+			fmt.Fprintf(cmd.ErrOrStderr(), "   Continue? (y/N): ")
 
 			var response string
 			_, _ = fmt.Scanln(&response)
@@ -186,9 +183,9 @@ Example:
 		}
 
 		// Perform the import
-		fmt.Printf("🚀 Starting import of database '%s'...\n", databaseName)
+		fmt.Fprintf(cmd.ErrOrStderr(), "🚀 Starting import of database '%s'...\n", databaseName)
 		if dryRun {
-			fmt.Println("   (DRY RUN - no changes will be made)")
+			fmt.Fprintln(cmd.ErrOrStderr(), "   (DRY RUN - no changes will be made)")
 		}
 
 		resultData, err := services.ImportDatabase(ctx, opts.MongoURI, opts.DatabaseName, opts.ProjectName, opts.DryRun, opts.BatchSize)
@@ -202,9 +199,7 @@ Example:
 		// Output results
 		switch outputFormat {
 		case "json":
-			encoder := json.NewEncoder(os.Stdout)
-			encoder.SetIndent("", "  ")
-			return encoder.Encode(result)
+			return writeJSON(cmd, result)
 		default:
 			return printImportResult(result, dryRun)
 		}
@@ -233,7 +228,7 @@ Example:
 		}
 
 		// Initialize services
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to initialize services: %w", err)
 		}
@@ -403,12 +398,12 @@ func convertToImportPreview(data interface{}) *ImportPreview {
 	if err != nil {
 		return &ImportPreview{}
 	}
-	
+
 	var result ImportPreview
 	if err := json.Unmarshal(jsonBytes, &result); err != nil {
 		return &ImportPreview{}
 	}
-	
+
 	return &result
 }
 
@@ -419,12 +414,11 @@ func convertToImportResult(data interface{}) *ImportResult {
 	if err != nil {
 		return &ImportResult{}
 	}
-	
+
 	var result ImportResult
 	if err := json.Unmarshal(jsonBytes, &result); err != nil {
 		return &ImportResult{}
 	}
-	
+
 	return &result
 }
-

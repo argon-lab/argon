@@ -51,34 +51,10 @@ func (s *Service) ResetBranchToLSN(branchID string, targetLSN int64) (*wal.Branc
 		return nil, fmt.Errorf("target LSN %d is beyond branch HEAD %d", targetLSN, branch.HeadLSN)
 	}
 
-	// Safety check: warn if resetting would lose data
-	entriesAfterTarget, err := s.wal.GetBranchEntries(branchID, "", targetLSN+1, branch.HeadLSN)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check entries after target: %w", err)
+	if err := s.branches.ResetHead(branch, targetLSN); err != nil {
+		return nil, fmt.Errorf("failed to reset branch: %w", err)
 	}
-
-	if len(entriesAfterTarget) > 0 {
-		// Record the abandoned window before lowering the head. The entries
-		// stay in the WAL for audit, but materialization must skip them:
-		// the next write's LSN will be higher than theirs, so without this
-		// record, advancing the head would resurrect the discarded history.
-		if err := s.branches.AddDiscardedRange(branchID, targetLSN+1, branch.HeadLSN); err != nil {
-			return nil, fmt.Errorf("failed to record discarded range: %w", err)
-		}
-		branch.DiscardedRanges = append(branch.DiscardedRanges,
-			wal.LSNRange{From: targetLSN + 1, To: branch.HeadLSN})
-	}
-
-	// Update branch HEAD
-	branch.HeadLSN = targetLSN
-
-	// Save the updated branch. Reset deliberately moves the head backwards,
-	// which the monotonic writer path (UpdateBranchHead) refuses to do.
-	if err := s.branches.SetBranchHead(branchID, targetLSN); err != nil {
-		return nil, fmt.Errorf("failed to update branch HEAD: %w", err)
-	}
-
-	return branch, nil
+	return s.branches.GetBranchByID(branchID)
 }
 
 // ResetBranchToTime resets a branch to a specific timestamp

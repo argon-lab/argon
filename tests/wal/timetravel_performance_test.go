@@ -7,11 +7,11 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/materializer"
 	projectwal "github.com/argon-lab/argon/internal/project/wal"
 	"github.com/argon-lab/argon/internal/timetravel"
 	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -92,7 +92,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 			t.Logf("Time travel to checkpoint %d (LSN %d): %v for %d docs", i, checkpoint, elapsed, expectedDocs)
 
 			// Should complete within 500ms even for large histories
-			assert.Less(t, elapsed, 500*time.Millisecond)
+			performanceLess(t, elapsed, 500*time.Millisecond)
 		}
 	})
 
@@ -143,7 +143,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 		t.Logf("Performance: %.0f queries/sec, avg latency: %v", qps, avgLatency)
 
 		// Should handle at least 1000 queries per second
-		assert.Greater(t, qps, 1000.0)
+		performanceGreater(t, qps, 1000.0)
 	})
 
 	t.Run("Time-based query performance", func(t *testing.T) {
@@ -183,7 +183,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 			t.Logf("Time travel to %v: %v for %d docs", ts.Format("15:04:05"), elapsed, len(state))
 
 			// Time-based queries should also be fast
-			assert.Less(t, elapsed, 200*time.Millisecond)
+			performanceLess(t, elapsed, 200*time.Millisecond)
 		}
 	})
 
@@ -220,7 +220,7 @@ func TestTimeTravelPerformance(t *testing.T) {
 		t.Logf("Materialized %d documents in %v (%.0f docs/sec)", numDocs, elapsed, docsPerSec)
 
 		// Should materialize at least 10,000 docs per second
-		assert.Greater(t, docsPerSec, 10000.0)
+		performanceGreater(t, docsPerSec, 10000.0)
 	})
 }
 

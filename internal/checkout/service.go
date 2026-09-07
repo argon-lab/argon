@@ -11,11 +11,14 @@ package checkout
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
+	"sync"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
 	"github.com/argon-lab/argon/internal/materializer"
-	"github.com/argon-lab/argon/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -25,11 +28,18 @@ const insertBatchSize = 1000
 
 // Service checks branches out into physical databases and back.
 type Service struct {
-	client       *mongo.Client
-	ingestState  *mongo.Collection
-	branches     *branchwal.BranchService
-	materializer *materializer.Service
+	client        *mongo.Client
+	ingestState   *mongo.Collection
+	branches      *branchwal.BranchService
+	materializer  *materializer.Service
+	mu            sync.Mutex
+	beforeRelease func(context.Context, string) error
+	beforeDiscard func(context.Context, string) error
 }
+
+// SetBeforeRelease installs the capture drain used before removing a live database.
+func (s *Service) SetBeforeRelease(fn func(context.Context, string) error) { s.beforeRelease = fn }
+func (s *Service) SetBeforeDiscard(fn func(context.Context, string) error) { s.beforeDiscard = fn }
 
 // NewService creates a checkout service. The client must be the same
 // deployment that holds the Argon metadata: physical branch databases live
@@ -62,15 +72,18 @@ type Info struct {
 }
 
 // Checkout materializes the branch's state at its current head into its
-// physical database and marks the branch live. Re-running refreshes the
-// database to the branch's current WAL state (any direct writes since the
-// previous checkout that have already been ingested are preserved by
-// definition; un-ingested ones would be lost, so refresh while the
-// ingester is stopped or drained).
+// physical database and marks the branch live. Re-running on an already
+// live branch returns the same database without overwriting direct writes.
 func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	branch, err := s.branches.GetBranchByID(branchID)
 	if err != nil {
 		return nil, fmt.Errorf("branch %s not found: %w", branchID, err)
+	}
+	// A connection request must never rebuild a database with pending writes.
+	if branch.IsLive() {
+		return &Info{BranchID: branch.ID, PhysicalDB: branch.PhysicalDB, LSN: branch.HeadLSN}, nil
 	}
 
 	state, err := s.materializer.MaterializeBranch(branch)
@@ -99,8 +112,27 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 		info.Collections++
 		info.Documents += count
 	}
+	// Persist a stream boundary before making the URI available. A first watch
+	// can now recover writes that arrived between checkout and stream startup.
+	var boundary bson.Raw
+	if err := physical.RunCommand(ctx, bson.D{{Key: "ping", Value: 1}}).Decode(&boundary); err != nil {
+		return nil, fmt.Errorf("failed to establish capture boundary: %w", err)
+	}
+	t, inc, ok := boundary.Lookup("operationTime").TimestampOK()
+	if !ok {
+		return nil, fmt.Errorf("MongoDB replica set with change streams is required (missing operationTime)")
+	}
+	// startAtOperationTime is inclusive; exclude the materialization itself.
+	inc++
+	if inc == 0 {
+		t++
+	}
+	if _, err := s.ingestState.UpdateOne(ctx, bson.M{"_id": branch.ID},
+		bson.M{"$set": bson.M{"start_at": primitive.Timestamp{T: t, I: inc}}}, options.Update().SetUpsert(true)); err != nil {
+		return nil, fmt.Errorf("failed to persist capture boundary: %w", err)
+	}
 
-	if err := s.branches.SetCheckoutState(branch.ID, dbName, wal.BranchStateLive, branch.HeadLSN); err != nil {
+	if err := s.branches.CompareAndSetCheckout(ctx, branch, dbName, branch.HeadLSN); err != nil {
 		return nil, fmt.Errorf("failed to mark branch live: %w", err)
 	}
 	return info, nil
@@ -109,9 +141,8 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 // loadCollection bulk-inserts one collection's state and prepares it for
 // change-stream capture.
 func (s *Service) loadCollection(ctx context.Context, physical *mongo.Database, collection string, docs map[string]bson.M) (int64, error) {
-	// Pre/post images give the ingester exact document images on update
-	// and delete events. Best effort: unsupported deployments still work
-	// through updateLookup, with pre-images absent.
+	// Exact images are required; unsupported deployments fail before a URI
+	// is returned rather than silently producing inaccurate history.
 	if err := EnablePrePostImages(ctx, physical, collection); err != nil {
 		return 0, err
 	}
@@ -149,9 +180,8 @@ func (s *Service) loadCollection(ctx context.Context, physical *mongo.Database, 
 }
 
 // EnablePrePostImages turns on change-stream pre/post images for a
-// collection, creating it if needed. Failures on deployments that don't
-// support the option (pre-6.0) are ignored — capture degrades to
-// updateLookup post-images.
+// collection, creating it if needed. Unsupported servers and permission
+// failures are returned to the caller.
 func EnablePrePostImages(ctx context.Context, physical *mongo.Database, collection string) error {
 	err := physical.RunCommand(ctx, bson.D{
 		{Key: "create", Value: collection},
@@ -168,8 +198,7 @@ func EnablePrePostImages(ctx context.Context, physical *mongo.Database, collecti
 	if modErr == nil {
 		return nil
 	}
-	// Unsupported server or option: proceed without pre-images.
-	return nil
+	return fmt.Errorf("exact change-stream images are required for %s: %w", collection, modErr)
 }
 
 // Release drops the physical database and returns the branch to
@@ -182,8 +211,34 @@ func (s *Service) Release(ctx context.Context, branchID string) error {
 		return fmt.Errorf("branch %s not found: %w", branchID, err)
 	}
 	if branch.PhysicalDB != "" {
+		if s.beforeRelease != nil {
+			if err := s.beforeRelease(ctx, branchID); err != nil {
+				return fmt.Errorf("capture drain failed; database retained: %w", err)
+			}
+		}
 		if err := s.client.Database(branch.PhysicalDB).Drop(ctx); err != nil {
 			return fmt.Errorf("failed to drop physical database: %w", err)
+		}
+	}
+	return s.branches.SetCheckoutState(branch.ID, "", "", 0)
+}
+
+// Discard removes a physical database whose entire branch history is being
+// explicitly deleted. Unlike Release, it does not require recoverable history.
+// The caller must check pins/children before invoking it.
+func (s *Service) Discard(ctx context.Context, branchID string) error {
+	if s.beforeDiscard != nil {
+		if err := s.beforeDiscard(ctx, branchID); err != nil {
+			return err
+		}
+	}
+	branch, err := s.branches.GetBranchByID(branchID)
+	if err != nil {
+		return err
+	}
+	if branch.PhysicalDB != "" {
+		if err := s.client.Database(branch.PhysicalDB).Drop(ctx); err != nil {
+			return err
 		}
 	}
 	return s.branches.SetCheckoutState(branch.ID, "", "", 0)
@@ -203,9 +258,23 @@ func ConnectionString(baseURI, physicalDB string) string {
 		query = base[i:]
 		base = base[:i]
 	}
+	authDatabase := "admin"
 	// Strip a trailing default database path if present.
 	if i := indexByteAfterScheme(base, '/'); i >= 0 {
+		if name := base[i+1:]; name != "" {
+			if decoded, err := url.PathUnescape(name); err == nil {
+				authDatabase = decoded
+			}
+		}
 		base = base[:i]
+	}
+	// Changing the default database must not silently change SCRAM's auth
+	// database for authenticated deployments.
+	if indexByteAfterScheme(base, '@') >= 0 {
+		if values, err := url.ParseQuery(strings.TrimPrefix(query, "?")); err == nil && values.Get("authSource") == "" {
+			values.Set("authSource", authDatabase)
+			query = "?" + values.Encode()
+		}
 	}
 	return base + "/" + physicalDB + query
 }

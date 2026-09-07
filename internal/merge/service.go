@@ -31,7 +31,6 @@ import (
 	"github.com/argon-lab/argon/internal/materializer"
 	"github.com/argon-lab/argon/internal/mongoexpr"
 	"github.com/argon-lab/argon/internal/wal"
-	"github.com/argon-lab/argon/internal/walwriter"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -55,8 +54,10 @@ type Change struct {
 	Collection string `bson:"collection" json:"collection"`
 	DocumentID string `bson:"document_id" json:"document_id"`
 	// Delete marks a removal; otherwise Document is the adopted state.
-	Delete   bool   `bson:"delete,omitempty" json:"delete,omitempty"`
-	Document bson.M `bson:"document,omitempty" json:"document,omitempty"`
+	Delete   bool        `bson:"delete,omitempty" json:"delete,omitempty"`
+	Document bson.M      `bson:"document,omitempty" json:"document,omitempty"`
+	ID       interface{} `bson:"document_key,omitempty" json:"document_key,omitempty"`
+	Before   bson.M      `bson:"before,omitempty" json:"before,omitempty"`
 }
 
 // Conflict is a document both sides changed differently since the fork.
@@ -70,6 +71,9 @@ type Conflict struct {
 
 // Plan is a persisted, reviewable merge proposal.
 type Plan struct {
+	FormatVersion  int                `bson:"format_version,omitempty" json:"format_version,omitempty"`
+	SourceVersion  int64              `bson:"source_version,omitempty" json:"source_version,omitempty"`
+	TargetVersion  int64              `bson:"target_version,omitempty" json:"target_version,omitempty"`
 	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	ProjectID      string             `bson:"project_id" json:"project_id"`
 	SourceBranchID string             `bson:"source_branch_id" json:"source_branch_id"`
@@ -137,6 +141,9 @@ func (s *Service) Compute(sourceBranchID string) (*Plan, error) {
 	}
 
 	plan := &Plan{
+		FormatVersion:  2,
+		SourceVersion:  source.MutationVersion,
+		TargetVersion:  target.MutationVersion,
 		ProjectID:      source.ProjectID,
 		SourceBranchID: source.ID,
 		SourceBranch:   source.Name,
@@ -190,6 +197,8 @@ func (s *Service) Compute(sourceBranchID string) (*Plan, error) {
 				DocumentID: docID,
 				Delete:     th == nil,
 				Document:   th,
+				ID:         imageID(th, o, b),
+				Before:     o,
 			})
 		}
 	}
@@ -275,6 +284,9 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 	if source.HeadLSN != plan.SourceHead {
 		return nil, fmt.Errorf("stale plan: source advanced from LSN %d to %d since preview; run preview again", plan.SourceHead, source.HeadLSN)
 	}
+	if plan.FormatVersion >= 2 && (source.MutationVersion != plan.SourceVersion || target.MutationVersion != plan.TargetVersion) {
+		return nil, fmt.Errorf("stale plan: branch state changed since preview; run preview again")
+	}
 
 	changes := append([]Change{}, plan.Changes...)
 	resolved := 0
@@ -287,6 +299,8 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 					DocumentID: c.DocumentID,
 					Delete:     c.Theirs == nil,
 					Document:   c.Theirs,
+					ID:         imageID(c.Theirs, c.Ours, c.Base),
+					Before:     c.Ours,
 				})
 				resolved++
 			}
@@ -300,122 +314,186 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 		}
 	}
 
-	if target.IsLive() {
-		err = s.applyPhysical(ctx, target, changes)
-	} else {
-		err = s.applyWAL(ctx, target, source, changes)
+	// Older persisted plans did not retain delete IDs or before-images.
+	// Recover them from the exact target head, refusing ambiguous legacy keys.
+	if plan.FormatVersion < 2 {
+		state, err := s.materializer.MaterializeBranch(target)
+		if err != nil {
+			return nil, err
+		}
+		for i := range changes {
+			c := &changes[i]
+			var before bson.M
+			for key, doc := range state[c.Collection] {
+				if key == c.DocumentID || wal.LegacyDocumentIDString(doc["_id"]) == c.DocumentID {
+					if before != nil {
+						return nil, fmt.Errorf("legacy merge plan has ambiguous ID %q; run preview again", c.DocumentID)
+					}
+					before = doc
+				}
+			}
+			c.Before = before
+			c.ID = imageID(c.Document, before)
+			if c.ID == nil {
+				return nil, fmt.Errorf("legacy merge plan lacks BSON ID for %q; run preview again", c.DocumentID)
+			}
+			c.DocumentID = wal.DocumentIDString(c.ID)
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-
-	// The audit marker: which branch merged in, under which plan.
-	mergeRecord := &wal.Entry{
-		ProjectID: target.ProjectID,
-		BranchID:  target.ID,
-		Operation: wal.OpMerge,
-		Actor:     "merge",
-		Metadata: map[string]interface{}{
-			"plan_id":            plan.ID.Hex(),
-			"source_branch_id":   plan.SourceBranchID,
-			"source_branch":      plan.SourceBranch,
-			"source_head":        plan.SourceHead,
-			"changes":            len(changes),
-			"conflicts_resolved": resolved,
-			"strategy":           strategy,
-		},
-	}
-	if lsn, err := s.wal.Append(mergeRecord); err != nil {
-		return nil, fmt.Errorf("failed to record the merge: %w", err)
-	} else if !target.IsLive() {
-		if err := s.branches.UpdateBranchHead(target.ID, lsn); err != nil {
-			return nil, fmt.Errorf("failed to advance target head: %w", err)
+	for _, c := range changes {
+		if _, err := documentIDValue(c); err != nil {
+			return nil, err
 		}
 	}
 
-	now := time.Now()
-	_, err = s.plans.UpdateOne(ctx,
-		bson.M{"_id": plan.ID, "status": StatusPending},
-		bson.M{"$set": bson.M{"status": StatusApplied, "strategy": strategy, "applied_at": now}},
-	)
+	_, err = s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		// This claim is committed together with all effects. Crashes or
+		// transaction retries cannot leave a partly applied/spent plan.
+		claimed, err := s.plans.UpdateOne(sc, bson.M{"_id": plan.ID, "status": StatusPending},
+			bson.M{"$set": bson.M{"status": "applying"}})
+		if err != nil {
+			return nil, err
+		}
+		if claimed.MatchedCount != 1 {
+			return nil, fmt.Errorf("merge plan is no longer pending")
+		}
+		if err := s.branches.FenceBranch(sc, target); err != nil {
+			return nil, err
+		}
+		if err := s.branches.FenceBranch(sc, source); err != nil {
+			return nil, err
+		}
+
+		if target.IsLive() {
+			if err := s.applyPhysical(sc, target, changes); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := s.applyWAL(sc, target, source, changes, "merge:"+plan.ID.Hex()); err != nil {
+				return nil, err
+			}
+		}
+		mergeRecord := &wal.Entry{
+			ProjectID: target.ProjectID, BranchID: target.ID,
+			Operation: wal.OpMerge, Actor: "merge", TxnID: "merge:" + plan.ID.Hex(),
+			Metadata: map[string]interface{}{
+				"plan_id": plan.ID.Hex(), "source_branch_id": plan.SourceBranchID,
+				"source_branch": plan.SourceBranch, "source_head": plan.SourceHead,
+				"changes": len(changes), "conflicts_resolved": resolved, "strategy": strategy,
+			},
+		}
+		lsn, err := s.wal.AppendContext(sc, mergeRecord)
+		if err != nil {
+			return nil, fmt.Errorf("failed to record merge: %w", err)
+		}
+		if !target.IsLive() {
+			if err := s.branches.CompareAndSetHead(sc, target.ID, target.HeadLSN, lsn); err != nil {
+				return nil, err
+			}
+		}
+		_, err = s.plans.UpdateOne(sc, bson.M{"_id": plan.ID, "status": "applying"},
+			bson.M{"$set": bson.M{"status": StatusApplied, "strategy": strategy, "applied_at": time.Now()}})
+		return nil, err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to mark plan applied: %w", err)
+		return nil, err
 	}
 	return &ApplyResult{Applied: len(changes), ConflictsResolved: resolved}, nil
 }
 
-func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, changes []Change) error {
-	writer := walwriter.New(s.wal, s.branches, s.materializer, target)
-	writer.SetActor("merge:" + source.Name)
-
-	// Group puts per collection for contiguous batches; deletes go singly.
-	putsByCollection := make(map[string][]bson.M)
+func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, changes []Change, txnID string) error {
+	entries := make([]*wal.Entry, 0, len(changes))
 	for _, c := range changes {
-		if !c.Delete {
-			putsByCollection[c.Collection] = append(putsByCollection[c.Collection], c.Document)
-		}
-	}
-	for _, collection := range sortedKeys(putsByCollection) {
-		if _, err := writer.PutMany(ctx, collection, putsByCollection[collection]); err != nil {
-			return fmt.Errorf("failed to apply merge puts to %s: %w", collection, err)
-		}
-	}
-	for _, c := range changes {
-		if !c.Delete {
-			continue
-		}
 		id, err := documentIDValue(c)
 		if err != nil {
 			return err
 		}
-		if _, _, err := writer.Delete(ctx, c.Collection, id); err != nil {
-			return fmt.Errorf("failed to apply merge delete to %s/%s: %w", c.Collection, c.DocumentID, err)
+		if c.Document != nil {
+			c.Document["_id"] = id
 		}
+		if c.Before != nil {
+			c.Before["_id"] = id
+		}
+		e := &wal.Entry{ProjectID: target.ProjectID, BranchID: target.ID,
+			Collection: c.Collection, DocumentID: wal.DocumentIDString(id), Actor: "merge:" + source.Name,
+			Operation: wal.OpPut, TxnID: txnID}
+		if c.Before != nil {
+			e.PreImage, err = bson.Marshal(c.Before)
+			if err != nil {
+				return err
+			}
+		}
+		if c.Delete {
+			e.Operation = wal.OpDelete
+		} else {
+			e.PostImage, err = bson.Marshal(c.Document)
+			if err != nil {
+				return err
+			}
+		}
+		entries = append(entries, e)
 	}
-	return nil
+	_, err := s.wal.AppendBatchContext(ctx, entries)
+	return err
 }
 
 func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes []Change) error {
 	physical := s.client.Database(target.PhysicalDB)
 	for _, c := range changes {
+		id, err := documentIDValue(c)
+		if err != nil {
+			return err
+		}
+		if c.Document != nil {
+			c.Document["_id"] = id
+		}
 		coll := physical.Collection(c.Collection)
+		var current bson.M
+		err = coll.FindOne(ctx, bson.M{"_id": id}).Decode(&current)
+		if err != nil && err != mongo.ErrNoDocuments {
+			return err
+		}
+		if err == mongo.ErrNoDocuments {
+			current = nil
+		}
+		changed, err := docsUnequal(current, c.Before)
+		if err != nil {
+			return err
+		}
+		if changed {
+			return fmt.Errorf("stale merge plan: physical document %s/%s changed since preview; wait for capture and preview again", c.Collection, c.DocumentID)
+		}
 		if c.Delete {
-			id, err := documentIDValue(c)
-			if err != nil {
+			if _, err := coll.DeleteOne(ctx, bson.M{"_id": id}); err != nil {
 				return err
 			}
-			if _, err := coll.DeleteOne(ctx, bson.M{"_id": id}); err != nil {
-				return fmt.Errorf("failed to delete %s/%s: %w", c.Collection, c.DocumentID, err)
-			}
-			continue
-		}
-		if _, err := coll.ReplaceOne(ctx,
-			bson.M{"_id": c.Document["_id"]},
-			c.Document,
-			options.Replace().SetUpsert(true),
-		); err != nil {
-			return fmt.Errorf("failed to apply %s/%s: %w", c.Collection, c.DocumentID, err)
+		} else if _, err := coll.ReplaceOne(ctx, bson.M{"_id": id}, c.Document, options.Replace().SetUpsert(true)); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// documentIDValue recovers the real _id for a delete change: from the base
-// or ours image if present in a conflict-resolution, otherwise the change
-// document. For plain deletes theirs is nil, so the materialized target
-// state supplies it.
-func documentIDValue(c Change) (interface{}, error) {
-	if c.Document != nil {
-		if id, ok := c.Document["_id"]; ok {
-			return id, nil
+func imageID(images ...bson.M) interface{} {
+	for _, image := range images {
+		if image != nil {
+			if id, ok := image["_id"]; ok {
+				return id
+			}
 		}
 	}
-	// Deletes carry no document; the canonical string form round-trips for
-	// the common _id types (ObjectID hex and strings).
-	if oid, err := primitive.ObjectIDFromHex(c.DocumentID); err == nil {
-		return oid, nil
+	return nil
+}
+
+func documentIDValue(c Change) (interface{}, error) {
+	if c.ID != nil {
+		return c.ID, nil
 	}
-	return c.DocumentID, nil
+	if id := imageID(c.Document, c.Before); id != nil {
+		return id, nil
+	}
+	// Current keys are lossless; old persisted plans are enriched above.
+	return wal.DocumentIDValue(c.DocumentID)
 }
 
 // docsUnequal is canonical BSON inequality with nil meaning "absent".

@@ -8,7 +8,10 @@ package server
 import (
 	"crypto/subtle"
 	"fmt"
+	"github.com/argon-lab/argon/pkg/version"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -21,16 +24,15 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Version is stamped at build time via -ldflags
-// "-X github.com/argon-lab/argon/api/server.Version=...". It is what
-// /api/v1/meta reports.
-var Version = "dev"
+// Version shares the embedded release metadata with the CLI. Release builds
+// override github.com/argon-lab/argon/pkg/version.Build via -ldflags.
+var Version = version.String()
 
 // Options are the cross-cutting server settings. The zero value is an open
-// local control plane: any origin, no token, writes allowed.
+// local control plane: same origin, no token, writes allowed.
 type Options struct {
 	// CORSOrigins is a comma-separated allowlist of browser origins;
-	// empty or "*" allows any origin.
+	// empty permits same-origin requests; "*" explicitly allows any origin.
 	CORSOrigins string
 	// Token, when set, requires "Authorization: Bearer <token>" on every
 	// endpoint except /health and /api/v1/meta.
@@ -80,7 +82,7 @@ func OptionsFromEnv() Options {
 // --- middleware ---
 
 func corsMiddleware(origins string) gin.HandlerFunc {
-	allowAll := origins == "" || origins == "*"
+	allowAll := origins == "*"
 	allowed := make(map[string]bool)
 	for _, o := range strings.Split(origins, ",") {
 		if o = strings.TrimSpace(o); o != "" {
@@ -88,7 +90,13 @@ func corsMiddleware(origins string) gin.HandlerFunc {
 		}
 	}
 	return func(c *gin.Context) {
-		if origin := c.GetHeader("Origin"); origin != "" && (allowAll || allowed[origin]) {
+		if origin := c.GetHeader("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			sameOrigin := err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && u.Host == c.Request.Host && u.Path == "" && u.RawQuery == "" && u.Fragment == ""
+			if !allowAll && !allowed[origin] && !sameOrigin {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin is not allowed"})
+				return
+			}
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
@@ -101,6 +109,21 @@ func corsMiddleware(origins string) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// ValidateListenAddress prevents accidentally exposing an unauthenticated
+// control plane. Anonymous demo is deliberately limited to its HTTP sandbox.
+func ValidateListenAddress(addr string, opts Options) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid listen address: %w", err)
+	}
+	ip := net.ParseIP(host)
+	local := host == "localhost" || (ip != nil && ip.IsLoopback())
+	if !local && opts.Token == "" && !opts.DemoMode {
+		return fmt.Errorf("public API binding requires ARGON_API_TOKEN (or explicit ARGON_DEMO_MODE); use 127.0.0.1 for local access")
+	}
+	return nil
 }
 
 func authMiddleware(token string) gin.HandlerFunc {
@@ -151,8 +174,11 @@ func intQuery(c *gin.Context, name string, def int64) (int64, error) {
 
 func (r *Router) meta(c *gin.Context) {
 	resp := gin.H{
-		"version":   r.opts.Version,
-		"read_only": r.opts.ReadOnly,
+		"version":            r.opts.Version,
+		"read_only":          r.opts.ReadOnly,
+		"native_connections": !r.opts.DemoMode,
+		"actor_scope":        "branch",
+		"ddl_capture":        false,
 	}
 	if r.opts.DemoMode {
 		resp["demo"] = true
@@ -162,14 +188,15 @@ func (r *Router) meta(c *gin.Context) {
 }
 
 func (r *Router) ingesterStatus(c *gin.Context) {
-	r.ingestMu.Lock()
-	ids := make([]string, 0, len(r.ingest))
-	for id := range r.ingest {
-		ids = append(ids, id)
+	statuses := r.services.Ingest.Statuses()
+	ids := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		if status.State == "running" {
+			ids = append(ids, status.BranchID)
+		}
 	}
-	r.ingestMu.Unlock()
 	sort.Strings(ids)
-	c.JSON(http.StatusOK, gin.H{"ingesters": ids, "count": len(ids)})
+	c.JSON(http.StatusOK, gin.H{"ingesters": ids, "count": len(ids), "capture": statuses})
 }
 
 // --- history ---
@@ -367,7 +394,11 @@ func (r *Router) listSandboxes(c *gin.Context) {
 	items := make([]gin.H, 0, len(boxes))
 	for _, b := range boxes {
 		item := gin.H{"branch": b}
-		if b.IsLive() {
+		if b.IsLive() && !r.opts.DemoMode {
+			if err := r.startIngester(b.ID); err != nil {
+				abortErr(c, http.StatusServiceUnavailable, err)
+				return
+			}
 			item["connection_string"] = r.services.BranchConnectionString(b.PhysicalDB)
 		}
 		items = append(items, item)
@@ -380,7 +411,6 @@ func (r *Router) discardSandbox(c *gin.Context) {
 	if !ok {
 		return
 	}
-	r.stopIngester(branchID)
 	if err := r.services.Sandbox.Discard(c.Request.Context(), branchID); err != nil {
 		abortErr(c, http.StatusConflict, err)
 		return
@@ -400,7 +430,7 @@ func (r *Router) extendSandbox(c *gin.Context) {
 		abortErr(c, http.StatusBadRequest, err)
 		return
 	}
-	expires, err := r.services.Sandbox.Extend(c.Request.Context(), branchID, time.Duration(body.TTLMinutes)*time.Minute)
+	expires, err := r.services.Sandbox.Extend(c.Request.Context(), branchID, time.Duration(body.TTLMinutes*float64(time.Minute)))
 	if err != nil {
 		abortErr(c, http.StatusConflict, err)
 		return

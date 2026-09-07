@@ -8,6 +8,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 )
 
 // Service manages WAL operations
@@ -89,6 +91,14 @@ func NewService(db *mongo.Database) (*Service, error) {
 
 // Append adds a new entry to the WAL
 func (s *Service) Append(entry *Entry) (int64, error) {
+	return s.AppendContext(context.Background(), entry)
+}
+
+// AppendContext participates in the caller's MongoDB session/transaction.
+func (s *Service) AppendContext(ctx context.Context, entry *Entry) (int64, error) {
+	if err := entry.NormalizeDocumentKey(); err != nil {
+		return 0, err
+	}
 	if err := entry.ValidateForAppend(); err != nil {
 		return 0, err
 	}
@@ -102,12 +112,12 @@ func (s *Service) Append(entry *Entry) (int64, error) {
 	entry.Timestamp = time.Now()
 
 	// Compress entry before storing
-	if err := s.compressor.CompressEntry(entry); err != nil {
+	stored := *entry
+	if err := s.compressor.CompressEntry(&stored); err != nil {
 		return 0, fmt.Errorf("failed to compress WAL entry: %w", err)
 	}
 
-	ctx := context.Background()
-	if _, err := s.collection.InsertOne(ctx, entry); err != nil {
+	if _, err := s.collection.InsertOne(ctx, &stored); err != nil {
 		// The reserved LSN becomes a gap in the sequence. Gaps are
 		// harmless: consumers rely on ordering, never on density, so
 		// reservations are never rolled back (a rollback under
@@ -122,12 +132,20 @@ func (s *Service) Append(entry *Entry) (int64, error) {
 // optimal performance. All entries must belong to the same project because
 // the batch is allocated one contiguous per-project LSN range.
 func (s *Service) AppendBatch(entries []*Entry) ([]int64, error) {
+	return s.AppendBatchContext(context.Background(), entries)
+}
+
+// AppendBatchContext participates in the caller's MongoDB transaction.
+func (s *Service) AppendBatchContext(ctx context.Context, entries []*Entry) ([]int64, error) {
 	if len(entries) == 0 {
 		return []int64{}, nil
 	}
 
 	projectID := entries[0].ProjectID
 	for i, entry := range entries {
+		if err := entry.NormalizeDocumentKey(); err != nil {
+			return nil, err
+		}
 		if entry.ProjectID != projectID {
 			return nil, fmt.Errorf("batch entry %d belongs to project %q, expected %q: batches must be single-project", i, entry.ProjectID, projectID)
 		}
@@ -152,20 +170,31 @@ func (s *Service) AppendBatch(entries []*Entry) ([]int64, error) {
 		lsns[i] = entry.LSN
 
 		// Compress entry before storing
-		if err := s.compressor.CompressEntry(entry); err != nil {
+		stored := *entry
+		if err := s.compressor.CompressEntry(&stored); err != nil {
 			return nil, fmt.Errorf("failed to compress WAL entry %d: %w", i, err)
 		}
 
-		documents[i] = entry
+		documents[i] = &stored
 	}
 
-	ctx := context.Background()
 	if _, err := s.collection.InsertMany(ctx, documents, options.InsertMany().SetOrdered(true)); err != nil {
 		// Any unwritten reserved LSNs become gaps, which are harmless.
 		return nil, fmt.Errorf("failed to append WAL entries batch: %w", err)
 	}
 
 	return lsns, nil
+}
+
+// WithTransaction runs a retryable, atomic metadata/data mutation against
+// the same MongoDB deployment as the WAL.
+func (s *Service) WithTransaction(ctx context.Context, fn func(mongo.SessionContext) (interface{}, error)) (interface{}, error) {
+	session, err := s.db.Client().StartSession()
+	if err != nil {
+		return nil, err
+	}
+	defer session.EndSession(context.Background())
+	return session.WithTransaction(ctx, fn, options.Transaction().SetReadConcern(readconcern.Snapshot()).SetWriteConcern(writeconcern.Majority()))
 }
 
 // GetEntry retrieves a single WAL entry by project and LSN. LSNs are unique
@@ -253,10 +282,15 @@ func (s *Service) GetCurrentLSN(projectID string) int64 {
 
 // GetDocumentHistory retrieves WAL entries for a specific document
 func (s *Service) GetDocumentHistory(branchID, collection, documentID string, startLSN, endLSN int64) ([]*Entry, error) {
+	id, err := DocumentIDValue(documentID)
+	if err != nil {
+		return nil, err
+	}
+	legacyKey := LegacyDocumentIDString(id)
 	filter := bson.M{
 		"branch_id":   branchID,
 		"collection":  collection,
-		"document_id": documentID,
+		"document_id": bson.M{"$in": []string{documentID, legacyKey}},
 		"lsn": bson.M{
 			"$gte": startLSN,
 			"$lte": endLSN,
@@ -264,7 +298,25 @@ func (s *Service) GetDocumentHistory(branchID, collection, documentID string, st
 	}
 
 	opts := options.Find().SetSort(bson.M{"lsn": 1})
-	return s.GetEntries(filter, opts)
+	entries, err := s.GetEntries(filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if len(entry.PostImage) > 0 || len(entry.PreImage) > 0 {
+			if err := entry.NormalizeDocumentKey(); err != nil {
+				return nil, err
+			}
+			if entry.DocumentID != documentID {
+				continue
+			}
+		} else if entry.Operation == OpDelete && entry.DocumentKeyVersion == 0 && DocumentIDString(entry.DocumentID) != entry.DocumentID {
+			return nil, fmt.Errorf("legacy delete at LSN %d has an ambiguous BSON ID and no pre-image; full collection replay is required", entry.LSN)
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered, nil
 }
 
 // DistinctCollections returns the collections touched by a branch's own

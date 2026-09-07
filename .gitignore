@@ -143,6 +143,7 @@ argon_projects.db
 
 # Local testing
 test_dump.archive
+.review-artifacts/
 
 # Claude AI assistant files
 CLAUDE.md

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +26,7 @@ versioned history.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		listen, _ := cmd.Flags().GetString("listen")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
