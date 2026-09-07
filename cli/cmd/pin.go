@@ -45,7 +45,7 @@ var pinCreateCmd = &cobra.Command{
 		atTime, _ := cmd.Flags().GetString("time")
 		note, _ := cmd.Flags().GetString("note")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -60,6 +60,14 @@ var pinCreateCmd = &cobra.Command{
 		branch, err := services.Branches.GetBranch(project.ID, branchName)
 		if err != nil {
 			return fmt.Errorf("branch %q not found: %w", branchName, err)
+		}
+
+		if err := services.SyncBranch(cmd.Context(), branch.ID); err != nil {
+			return err
+		}
+		branch, err = services.Branches.GetBranchByID(branch.ID)
+		if err != nil {
+			return err
 		}
 
 		if atTime != "" {
@@ -80,6 +88,9 @@ var pinCreateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"pin": p})
+		}
 		fmt.Printf("Pinned %s/%s at LSN %d as %q\n", projectName, branchName, p.LSN, p.Name)
 		fmt.Println("This state now survives GC and resets until the pin is deleted.")
 		return nil
@@ -92,7 +103,7 @@ var pinListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -103,6 +114,9 @@ var pinListCmd = &cobra.Command{
 		pins, err := services.Pins.List(project.ID)
 		if err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"pins": pins})
 		}
 		if len(pins) == 0 {
 			fmt.Println("No pins.")
@@ -124,7 +138,7 @@ var pinDeleteCmd = &cobra.Command{
 		projectName, _ := cmd.Flags().GetString("project")
 		name, _ := cmd.Flags().GetString("name")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -134,6 +148,9 @@ var pinDeleteCmd = &cobra.Command{
 		}
 		if err := services.Pins.Delete(project.ID, name); err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"deleted": true, "pin": name})
 		}
 		fmt.Printf("Deleted pin %q\n", name)
 		return nil
@@ -148,7 +165,7 @@ var pinBranchCmd = &cobra.Command{
 		name, _ := cmd.Flags().GetString("name")
 		as, _ := cmd.Flags().GetString("as")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -159,6 +176,9 @@ var pinBranchCmd = &cobra.Command{
 		branch, err := services.Restore.CreateBranchFromPin(projectID, branchID, as, lsn)
 		if err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch": branch})
 		}
 		fmt.Printf("Created branch %q from pin %q (LSN %d)\n", branch.Name, name, lsn)
 		return nil
@@ -174,7 +194,7 @@ var pinSandboxCmd = &cobra.Command{
 		as, _ := cmd.Flags().GetString("as")
 		ttl, _ := cmd.Flags().GetDuration("ttl")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -196,6 +216,9 @@ var pinSandboxCmd = &cobra.Command{
 		info, err := services.Sandbox.Adopt(context.Background(), branch.ID, ttl)
 		if err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch_id": info.BranchID, "name": info.BranchName, "connection_string": services.BranchConnectionString(info.PhysicalDB), "expires_at": info.ExpiresAt, "fork_lsn": lsn, "capture_managed": false})
 		}
 		fmt.Printf("Sandbox %q forked from pin %q (LSN %d)\n", info.BranchName, name, lsn)
 		fmt.Printf("Connect: %s\n", services.BranchConnectionString(info.PhysicalDB))

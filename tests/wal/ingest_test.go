@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/argon-lab/argon/internal/checkout"
-	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/ingest"
 	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -30,6 +30,11 @@ type ingestFixture struct {
 func newIngestFixture(t *testing.T, project string) *ingestFixture {
 	t.Helper()
 	db := setupTestDB(t)
+	return newIngestFixtureAt(t, project, db)
+}
+
+func newIngestFixtureAt(t *testing.T, project string, db *mongo.Database) *ingestFixture {
+	t.Helper()
 	f := newSnapshotFixture(t, db)
 	client := db.Client()
 	co := checkout.NewService(client, db, f.branches, f.mat)

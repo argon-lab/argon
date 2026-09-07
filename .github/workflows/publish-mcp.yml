@@ -1,53 +1,57 @@
 name: Publish to MCP Registry
 
-# Registers io.github.argon-lab/argon in the official MCP Registry.
-# Auth is GitHub OIDC (no tokens): the registry trusts that this workflow runs
-# in the argon-lab org, which grants the io.github.argon-lab/* namespace.
-#
-# Prerequisite each publish: argonctl must already be on npm at the target
-# version WITH the "mcpName" field (npm publish is manual — see runbook), because
-# the registry verifies the published package's mcpName matches server.json.
-
+# Called explicitly after npm succeeds: release events created with GITHUB_TOKEN
+# do not start another workflow. Manual dispatch is available for recovery.
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      version:
+        description: Published npm version
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish, e.g. 2.0.1 (defaults to the release tag)"
-        required: false
+        description: Published npm version, for example 2.0.1
+        required: true
+        type: string
 
 permissions:
   contents: read
-  id-token: write # required for github-oidc login to the registry
+  id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Resolve version
-        id: ver
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate and stamp the requested version
+        id: version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          v="${{ github.event.inputs.version }}"
-          [ -z "$v" ] && v="${GITHUB_REF_NAME#v}"
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
-      - name: Stamp version into server.json
+          version=$(node scripts/release-version.js "$RELEASE_VERSION")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Verify npm publication is visible
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          v="${{ steps.ver.outputs.version }}"
-          tmp=$(mktemp)
-          jq --arg v "$v" '.version=$v | .packages[0].version=$v' server.json > "$tmp" && mv "$tmp" server.json
-          cat server.json
-
+          for attempt in $(seq 1 12); do
+            if [ "$(npm view "argonctl@$RELEASE_VERSION" mcpName 2>/dev/null)" = io.github.argon-lab/argon ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'The matching argonctl package with mcpName is not visible on npm.' >&2
+          exit 1
       - name: Install mcp-publisher
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
-          sudo mv mcp-publisher /usr/local/bin/
-
-      - name: Authenticate (GitHub OIDC)
-        run: mcp-publisher login github-oidc
-
+          curl --fail --location --retry 3 --output mcp-publisher.tar.gz https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+      - name: Authenticate with GitHub OIDC
+        run: ./mcp-publisher login github-oidc
       - name: Publish
-        run: mcp-publisher publish
+        run: ./mcp-publisher publish

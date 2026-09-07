@@ -51,7 +51,13 @@ func TestWALPerformance(t *testing.T) {
 		// round-trip latency, which varies wildly between local Docker and
 		// CI. High-throughput writers should use AppendBatch, which pays
 		// for the sequencer once per batch.
-		assert.Greater(t, opsPerSec, 150.0, "Should handle at least 150 sequential ops/sec")
+		performanceGreater(t, opsPerSec, 150.0, "Should handle at least 150 sequential ops/sec")
+		entries, err := walService.GetBranchEntries("main", "test", 0, walService.GetCurrentLSN("perf-test"))
+		require.NoError(t, err)
+		require.Len(t, entries, numOps)
+		for i, entry := range entries {
+			require.Equal(t, int64(i+1), entry.LSN)
+		}
 	})
 
 	t.Run("Concurrent append performance", func(t *testing.T) {
@@ -88,19 +94,30 @@ func TestWALPerformance(t *testing.T) {
 
 		t.Logf("Concurrent: %d ops in %v (%.0f ops/sec)", totalOps, elapsed, opsPerSec)
 		// Regression canary; see the note on the sequential floor.
-		assert.Greater(t, opsPerSec, 500.0, "Should handle at least 500 concurrent ops/sec")
+		performanceGreater(t, opsPerSec, 500.0, "Should handle at least 500 concurrent ops/sec")
+		seen := make(map[int64]bool, totalOps)
+		for g := 0; g < numGoroutines; g++ {
+			entries, err := walService.GetBranchEntries(fmt.Sprintf("branch-%d", g), "test", 0, walService.GetCurrentLSN("concurrent-perf"))
+			require.NoError(t, err)
+			require.Len(t, entries, opsPerGoroutine)
+			for _, entry := range entries {
+				require.False(t, seen[entry.LSN], "concurrent reservations must never duplicate LSNs")
+				seen[entry.LSN] = true
+			}
+		}
+		require.Len(t, seen, totalOps)
 	})
 
 	t.Run("Query performance", func(t *testing.T) {
 		// Query the entries we just created
 		start := time.Now()
 
-		entries, err := walService.GetBranchEntries("main", "test", 0, walService.GetCurrentLSN("concurrent-perf"))
+		entries, err := walService.GetBranchEntries("main", "test", 0, walService.GetCurrentLSN("perf-test"))
 		assert.NoError(t, err)
 
 		elapsed := time.Since(start)
 		t.Logf("Retrieved %d entries in %v", len(entries), elapsed)
-		assert.Less(t, elapsed, 500*time.Millisecond, "Query should complete within 500ms")
+		performanceLess(t, elapsed, 500*time.Millisecond, "Query should complete within 500ms")
 	})
 }
 
@@ -132,7 +149,14 @@ func TestBranchPerformance(t *testing.T) {
 		avgTime := elapsed / time.Duration(numBranches)
 
 		t.Logf("Created %d branches in %v (avg: %v per branch)", numBranches, elapsed, avgTime)
-		assert.Less(t, avgTime, 10*time.Millisecond, "Branch creation should be under 10ms")
+		performanceLess(t, avgTime, 10*time.Millisecond, "Branch creation should be under 10ms")
+		children, err := branchService.GetChildBranches(main.ID)
+		require.NoError(t, err)
+		require.Len(t, children, numBranches)
+		for _, child := range children {
+			require.Equal(t, main.HeadLSN, child.BaseLSN)
+			require.Equal(t, child.BaseLSN, child.HeadLSN)
+		}
 	})
 
 	t.Run("Branch hierarchy performance", func(t *testing.T) {
@@ -154,6 +178,13 @@ func TestBranchPerformance(t *testing.T) {
 		avgTime := elapsed / time.Duration(depth)
 
 		t.Logf("Created %d-level hierarchy in %v (avg: %v per level)", depth, elapsed, avgTime)
-		assert.Less(t, avgTime, 20*time.Millisecond, "Hierarchical branch creation should be under 20ms")
+		performanceLess(t, avgTime, 20*time.Millisecond, "Hierarchical branch creation should be under 20ms")
+		for i := 0; i < depth; i++ {
+			branch, err := branchService.GetBranchByID(parentID)
+			require.NoError(t, err)
+			require.Equal(t, fmt.Sprintf("level-%d", depth-i-1), branch.Name)
+			parentID = branch.ParentID
+		}
+		require.Empty(t, parentID)
 	})
 }

@@ -16,7 +16,7 @@ Four surfaces, one engine — pick by integration point:
 |---|---|---|
 | CLI | `argon sandbox`, `argon pin`, … | humans, scripts, CI |
 | MCP server | `argon mcp` (stdio) | Claude / Cursor / any MCP client |
-| REST API + console | `argon console` (or `go run ./api`) | language SDKs, browsers |
+| REST API + console | `argon console` (or `(cd api && go run .)`) | language SDKs, browsers |
 | Wire proxy | `argon proxy` | stable per-branch connection strings |
 
 ## Sandboxes
@@ -28,14 +28,17 @@ argon sandbox create -p myapp --ttl 1h
 # → connection string; hand it to the agent, any driver works
 ```
 
-MCP and REST sandboxes capture writes automatically (supervised
-ingesters); with the bare CLI, run `argon watch`. Then:
+MCP and REST sandboxes wait for capture readiness and drain before returning
+URIs. Their server processes also sweep expired sandboxes every minute. With
+the bare CLI, keep `argon watch --actor <run-label>` running and explicitly
+schedule `argon sandbox sweep`. Actor labels apply to an entire branch and
+are persisted; use a new sandbox for a different run label. Then:
 
 ```bash
-argon diff -p myapp -b <sandbox>              # exactly what the agent changed
+argon diff -p myapp -b <sandbox>              # review supported document changes
 argon merge preview/apply …                   # adopt it — a reviewable data PR
-argon undo … --actor <agent>                  # revert one writer, conflict-aware
-argon sandbox discard …                       # or let the TTL reclaim it
+argon undo … --actor <agent>                  # filter the branch actor label, conflict-aware
+argon sandbox discard …                       # or let the managed server sweep it
 ```
 
 ## Pins — reproducible evals
@@ -65,8 +68,8 @@ out — no extra process.
 ## REST control plane
 
 `argon console` serves the REST API plus a web UI locally (binds
-127.0.0.1, opens your browser); `go run ./api` serves the API alone
-(default `:8080`, `PORT` to change). Control plane only — data flows
+127.0.0.1, opens your browser); `(cd api && go run .)` serves the API alone
+(default `127.0.0.1:8080`, `PORT`/`HOST` to change). Control plane only — data flows
 through the MongoDB connection strings it returns.
 
 ```
@@ -78,7 +81,7 @@ GET    /api/v1/projects/:p/branches/:b
 DELETE /api/v1/projects/:p/branches/:b
 POST   /api/v1/projects/:p/branches/:b/checkout
 POST   /api/v1/projects/:p/branches/:b/release
-POST   /api/v1/projects/:p/sandboxes                   {name?, from?, ttl_minutes?}
+POST   /api/v1/projects/:p/sandboxes                   {name?, from?, ttl_minutes?, actor?}
 GET    /api/v1/projects/:p/sandboxes
 DELETE /api/v1/projects/:p/sandboxes/:b
 POST   /api/v1/projects/:p/sandboxes/:b/extend         {ttl_minutes}
@@ -97,7 +100,7 @@ GET    /api/v1/projects/:p/pins
 POST   /api/v1/projects/:p/pins                        {name, branch?, lsn?, note?}
 DELETE /api/v1/projects/:p/pins/:name
 POST   /api/v1/projects/:p/pins/:name/branches         {name}
-POST   /api/v1/projects/:p/pins/:name/sandboxes        {name?, ttl_minutes?}
+POST   /api/v1/projects/:p/pins/:name/sandboxes        {name?, ttl_minutes?, actor?}
 GET    /api/v1/meta
 GET    /api/v1/status/ingesters
 ```
@@ -106,7 +109,8 @@ Sandbox-creating endpoints start a supervised ingester; errors return
 `{"error": "..."}` with a meaningful status. Optional switches, all off
 by default: `ARGON_API_TOKEN` (Bearer auth on every `/api` endpoint
 except `/meta`), `ARGON_READ_ONLY=1`, `ARGON_CORS_ORIGINS`, and
-`ARGON_DEMO_MODE=1` — an anonymous hosted playground: one ephemeral
+`ARGON_DEMO_MODE=1` — a restricted anonymous hosted playground with no native URIs/checkout:
+one ephemeral
 seeded project per visitor, requests scoped to it, writes rate-limited,
 everything reclaimed after `ARGON_DEMO_TTL_MINUTES` (default 60).
 
@@ -151,3 +155,24 @@ mongod still evaluates every query. Constraints: `directConnection=true`
 required, compression negotiated away, `authSource=admin` with auth,
 unresolvable aliases return a clean command error. Capture stays
 asynchronous — run `argon watch` (or use API/MCP sandboxes) behind it.
+
+## Complete business-data example
+
+[examples/pinned_agents.py](../examples/pinned_agents.py) runs two deterministic
+agent proposals against one pin, writes through PyMongo, checks isolation,
+reviews both diffs, merges the approved discount and discards the rejected
+proposal. Start `argon console --no-browser`, install `pymongo`, then run:
+
+```bash
+python3 examples/pinned_agents.py --api http://127.0.0.1:1818
+```
+
+Set `ARGON_API_TOKEN` in the example's environment when the local server uses
+a bearer token. This requires your own engine; the hosted demo does not
+provide database credentials. Native MongoDB credentials remain deployment
+credentials, not a security boundary between mutually untrusted agents.
+Provision restricted MongoDB users/deployments for those workloads.
+
+Prepare every new collection before updates with `argon collections prepare`
+or the MongoDB driver's `changeStreamPreAndPostImages: {enabled:true}` option.
+A newly materialized collection is already prepared by checkout.

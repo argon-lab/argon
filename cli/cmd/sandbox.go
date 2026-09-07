@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +30,7 @@ var sandboxCreateCmd = &cobra.Command{
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -44,11 +43,17 @@ var sandboxCreateCmd = &cobra.Command{
 			return err
 		}
 
+		if err := services.SyncBranch(cmd.Context(), parentID); err != nil {
+			return err
+		}
 		info, err := services.Sandbox.Create(context.Background(), project.ID, parentID, name, ttl)
 		if err != nil {
 			return fmt.Errorf("sandbox creation failed: %w", err)
 		}
 
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch_id": info.BranchID, "name": info.BranchName, "physical_db": info.PhysicalDB, "connection_string": services.BranchConnectionString(info.PhysicalDB), "expires_at": info.ExpiresAt, "fork_lsn": info.ForkLSN, "capture_managed": false})
+		}
 		fmt.Printf("Sandbox %q forked from %s at LSN %d.\n", info.BranchName, info.ForkedFrom, info.ForkLSN)
 		fmt.Printf("Expires: %s\n", info.ExpiresAt.Format(time.RFC3339))
 		fmt.Printf("Connection string:\n  %s\n", services.BranchConnectionString(info.PhysicalDB))
@@ -66,7 +71,7 @@ var sandboxListCmd = &cobra.Command{
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -77,6 +82,9 @@ var sandboxListCmd = &cobra.Command{
 		sandboxes, err := services.Sandbox.ListSandboxes(context.Background(), project.ID)
 		if err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"sandboxes": sandboxes})
 		}
 		if len(sandboxes) == 0 {
 			fmt.Println("No sandboxes.")
@@ -109,7 +117,7 @@ var sandboxDiscardCmd = &cobra.Command{
 			return fmt.Errorf("--project and --branch are required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -119,6 +127,9 @@ var sandboxDiscardCmd = &cobra.Command{
 		}
 		if err := services.Sandbox.Discard(context.Background(), branchID); err != nil {
 			return fmt.Errorf("discard failed: %w", err)
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"discarded": true, "branch_id": branchID})
 		}
 		fmt.Println("Discarded; storage reclaimed.")
 		return nil
@@ -135,7 +146,7 @@ var sandboxKeepCmd = &cobra.Command{
 			return fmt.Errorf("--project and --branch are required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -145,6 +156,9 @@ var sandboxKeepCmd = &cobra.Command{
 		}
 		if err := services.Sandbox.Keep(context.Background(), branchID); err != nil {
 			return fmt.Errorf("keep failed: %w", err)
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"kept": true, "branch_id": branchID})
 		}
 		fmt.Println("TTL removed; the branch is permanent now.")
 		return nil
@@ -160,7 +174,7 @@ var sandboxSweepCmd = &cobra.Command{
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -171,6 +185,9 @@ var sandboxSweepCmd = &cobra.Command{
 		report, err := services.Sandbox.Sweep(context.Background(), project.ID)
 		if err != nil {
 			return fmt.Errorf("sweep failed: %w", err)
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"reaped": report.Reaped, "skipped": report.Skipped})
 		}
 		for _, name := range report.Reaped {
 			fmt.Printf("Reaped %s\n", name)

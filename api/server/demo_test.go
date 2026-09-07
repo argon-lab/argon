@@ -110,10 +110,21 @@ func TestAPI_DemoGateway(t *testing.T) {
 	code, resp, _ = doDemo(t, router, "POST", "/api/v1/demo/scenario", session1, nil)
 	require.Equal(t, http.StatusCreated, code, "%v", resp)
 	runBranch := resp["branch"].(string)
-	assert.Equal(t, "agent-run-1", runBranch)
+	assert.Contains(t, runBranch, "agent-run-1-")
+	acceptedBranch := resp["accepted_branch"].(string)
+	require.Len(t, resp["branches"], 2)
+	projectRecord, err := services.Projects.GetProjectByName(project1)
+	require.NoError(t, err)
+	input, err := services.Pins.Get(projectRecord.ID, resp["pin"].(string))
+	require.NoError(t, err)
+	for _, name := range []string{runBranch, acceptedBranch} {
+		b, e := services.Branches.GetBranch(input.ProjectID, name)
+		require.NoError(t, e)
+		require.Equal(t, input.LSN, b.BaseLSN)
+	}
 
 	code, resp, _ = doDemo(t, router, "GET",
-		"/api/v1/projects/"+project1+"/branches/"+runBranch+"/entries?actor=agent:planner", session1, nil)
+		"/api/v1/projects/"+project1+"/branches/"+acceptedBranch+"/entries?actor=agent:planner", session1, nil)
 	require.Equal(t, http.StatusOK, code)
 	require.NotEmpty(t, resp["entries"])
 
@@ -121,13 +132,26 @@ func TestAPI_DemoGateway(t *testing.T) {
 		"/api/v1/projects/"+project1+"/branches/"+runBranch+"/merge-preview", session1, nil)
 	require.Equal(t, http.StatusCreated, code, "%v", resp)
 	planID := resp["id"].(string)
-	require.Len(t, resp["conflicts"], 1, "the human edit on main must surface as a conflict")
+	require.Len(t, resp["conflicts"], 1, "the adopted planner proposal must surface as a conflict")
 
 	// Plans are reachable by their owner and invisible across sessions.
 	code, _, _ = doDemo(t, router, "GET", "/api/v1/merge-plans/"+planID, session1, nil)
 	require.Equal(t, http.StatusOK, code)
 	code, _, _ = doDemo(t, router, "GET", "/api/v1/merge-plans/"+planID, session2, nil)
 	require.Equal(t, http.StatusNotFound, code)
+
+	// Repeating the walkthrough must still start both agents at $49.
+	code, resp, _ = doDemo(t, router, "POST", "/api/v1/demo/scenario", session1, nil)
+	require.Equal(t, http.StatusCreated, code, "%v", resp)
+	input, err = services.Pins.Get(projectRecord.ID, resp["pin"].(string))
+	require.NoError(t, err)
+	for _, name := range []string{resp["branch"].(string), resp["accepted_branch"].(string)} {
+		b, err := services.Branches.GetBranch(projectRecord.ID, name)
+		require.NoError(t, err)
+		before, err := services.Materializer.MaterializeDocumentAtLSN(b, "orders", "o1", input.LSN)
+		require.NoError(t, err)
+		require.EqualValues(t, 49, before["price"])
+	}
 }
 
 func TestAPI_DemoWriteBudgetAndSweep(t *testing.T) {

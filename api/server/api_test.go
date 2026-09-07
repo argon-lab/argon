@@ -222,7 +222,7 @@ func TestAPI_ConsoleReadSurface(t *testing.T) {
 	// Meta and status come up before any data exists.
 	code, resp := do(t, router, "GET", "/api/v1/meta", nil)
 	require.Equal(t, http.StatusOK, code)
-	assert.Equal(t, "dev", resp["version"])
+	assert.Equal(t, Version, resp["version"])
 	assert.Equal(t, false, resp["read_only"])
 	code, resp = do(t, router, "GET", "/api/v1/status/ingesters", nil)
 	require.Equal(t, http.StatusOK, code)
@@ -362,7 +362,7 @@ func TestAPI_TokenReadOnlyAndCORS(t *testing.T) {
 		_ = services.Client.Database(dbName).Drop(context.Background())
 	})
 
-	router := NewRouterWith(services, Options{Token: "sesame", ReadOnly: true, Version: "test"})
+	router := NewRouterWith(services, Options{Token: "sesame", ReadOnly: true, Version: "test", CORSOrigins: "http://localhost:5173"})
 	t.Cleanup(router.Shutdown)
 
 	// Meta stays open so a client can discover it needs a token.

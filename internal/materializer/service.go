@@ -227,26 +227,38 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 		return nil, err
 	}
 
-	state := make(map[string]bson.M)
-	for _, seg := range segments {
+	// Every physical event is a full document state, so the last visible
+	// event on the nearest ancestry segment answers a point read directly.
+	// Consult that segment's snapshot only when its document history has
+	// been reclaimed; this avoids loading an entire snapshot on every write.
+	for i := len(segments) - 1; i >= 0; i-- {
+		seg := segments[i]
 		entries, err := s.wal.GetDocumentHistory(seg.branch.ID, collection, documentID, seg.fromLSN, seg.toLSN)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get document history for branch %s: %w", seg.branch.ID, err)
 		}
-		for _, entry := range entries {
-			if seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
+		for j := len(entries) - 1; j >= 0; j-- {
+			entry := entries[j]
+			if !entry.IsData() || seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
 				continue
 			}
+			state := make(map[string]bson.M)
 			if err := s.ApplyEntry(state, entry); err != nil {
-				return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
+				return nil, err
+			}
+			return state[documentID], nil
+		}
+		if s.snapshots != nil {
+			state, _, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return state[documentID], nil
 			}
 		}
 	}
-
-	if doc, exists := state[documentID]; exists {
-		return doc, nil
-	}
-	return nil, nil // Document doesn't exist or was deleted.
+	return nil, nil
 }
 
 // MaterializeDocument gets the current state of a specific document.
@@ -270,12 +282,41 @@ func (s *Service) ApplyEntry(state map[string]bson.M, entry *wal.Entry) error {
 		if err := bson.Unmarshal(entry.PostImage, &doc); err != nil {
 			return fmt.Errorf("failed to unmarshal post-image: %w", err)
 		}
-		state[entry.DocumentID] = doc
+		id, err := wal.DocumentIDFromImage(entry.PostImage)
+		if err != nil {
+			// Early physical WAL producers kept the ID only in the envelope.
+			state[entry.DocumentID] = doc
+			return nil
+		}
+		doc["_id"] = id
+		state[wal.DocumentIDString(id)] = doc
 	case wal.OpDelete:
 		if entry.DocumentID == "" {
 			return fmt.Errorf("delete entry LSN %d has no document ID", entry.LSN)
 		}
-		delete(state, entry.DocumentID)
+		if len(entry.PreImage) > 0 {
+			id, err := wal.DocumentIDFromImage(entry.PreImage)
+			if err != nil {
+				delete(state, entry.DocumentID)
+				return nil
+			}
+			delete(state, wal.DocumentIDString(id))
+		} else if entry.DocumentKeyVersion > 0 {
+			delete(state, entry.DocumentID)
+		} else {
+			// Old keys can describe two distinct BSON IDs. Resolve from the
+			// existing state only when unambiguous; never guess and delete both.
+			matched := ""
+			for key, doc := range state {
+				if wal.LegacyDocumentIDString(doc["_id"]) == entry.DocumentID {
+					if matched != "" {
+						return fmt.Errorf("legacy delete %q has an ambiguous BSON ID and no pre-image", entry.DocumentID)
+					}
+					matched = key
+				}
+			}
+			delete(state, matched)
+		}
 	default:
 		// Control operations don't affect collection state.
 	}

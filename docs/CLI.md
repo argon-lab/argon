@@ -2,7 +2,13 @@
 
 Every command talks to `MONGODB_URI` (default `mongodb://localhost:27017`);
 metadata lives in the `argon_wal` database. Shared flags: `-p/--project`,
-`-b/--branch` (default `main`), `-o/--output table|json|yaml`.
+`-b/--branch` (default `main`). Commands that advertise `-o/--output` support
+`table|json`; unsupported formats fail before work begins. JSON produces one
+value on stdout and diagnostics go to stderr. Projects/branches, sandbox, pin,
+diff/merge, undo, checkout/connect/release, history, snapshot, doctor and status
+all support JSON. The former global `--api-key`, `--project-id` and `--config`
+options were removed because they did not affect execution. Configure MongoDB
+through `MONGODB_URI`; configure server auth through `ARGON_API_TOKEN`.
 
 ## Projects & branches
 
@@ -19,9 +25,10 @@ argon branches delete <name> -p P              refused for main, branches with
 
 ```
 argon checkout -p P -b B      materialize into a physical MongoDB database,
-                              print its URI (re-run to refresh)
+                              print its URI (repeat preserves the live database)
+argon collections prepare NAME -p P -b B  enable exact images before first writes
 argon connect  -p P -b B      print a checked-out branch's URI
-argon watch    -p P -b B      capture direct writes into history (keep running)
+argon watch    -p P -b B [--actor A] capture writes with a persisted branch label
 argon release  -p P -b B      drop the physical db; history stays
 argon proxy [--listen :27018] stable URIs: mongodb://host/<project>~<branch>
 argon console [--port 1818]   local web console (REST API + UI), opens browser
@@ -49,12 +56,12 @@ argon time-travel query -p P -b B --lsn N [-c collection]
 
 argon undo -p P -b B --from-lsn N [--to-lsn M] [--actor A] [--dry-run]
     Revert a range by restoring pre-images — append-only, never rewrites
-    history. --actor reverts one writer and refuses documents someone
-    else touched since.
+    history. --actor filters a recorded label; later unselected writes
+    are conflicts and skipped. Missing images are reported as unrecoverable.
 
 argon restore preview -p P -b B (--lsn N | --time RFC3339)
 argon restore reset   -p P -b B (--lsn N | --time RFC3339) [--backup NAME]
-    Rewind the head. Recorded, not destructive: discarded entries stay
+    First stop writers and release a live branch. Rewind the head: discarded entries stay
     for audit; --backup forks the pre-reset head first.
 argon restore branch  -p P -b B (--lsn N | --time RFC3339) --as NAME
     Fork the historical state into a new branch instead.
@@ -93,7 +100,8 @@ argon sandbox list / discard / keep / sweep
 ```
 
 `sweep` reaps expired sandboxes (pinned ones skipped loudly); `keep`
-removes the TTL.
+removes the TTL. Bare CLI commands do not start background workers. Keep
+`watch` running and schedule `sweep`, or use console/API/MCP managed sandboxes.
 
 ## Snapshots, GC, agents, migration
 
@@ -108,3 +116,21 @@ argon mcp                           MCP server over stdio (13 tools)
 argon migrate-wal --project P [--dry-run]      v1 → v2 schema migration
 argon status / metrics              health and performance counters
 ```
+
+## Readiness and scripting
+
+```bash
+argon doctor --output json          # actual temporary write/capture probe
+argon status --output json          # read-only checks, last reported capture status
+argon projects list --output json   # {"projects": [...]}
+argon branches list -p P --output json
+argon merge preview -p P -b B --output json  # {"plan": {"id": ...}}
+```
+
+Doctor/status return nonzero when readiness fails. A stored capture status
+is the last report from a worker, not proof that its process is still alive.
+The CLI does not support relative time on `time-travel info`; use retained
+LSNs for queries and RFC3339 timestamps on restore/pin commands.
+
+`console` binds 127.0.0.1 by default. Non-loopback binding requires
+`ARGON_API_TOKEN` unless the restricted hosted demo is explicitly enabled.

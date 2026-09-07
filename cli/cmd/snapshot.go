@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +29,7 @@ var snapshotCreateCmd = &cobra.Command{
 			branchName = "main"
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -43,11 +42,21 @@ var snapshotCreateCmd = &cobra.Command{
 			return fmt.Errorf("branch %q not found: %w", branchName, err)
 		}
 
+		if err := services.SyncBranch(cmd.Context(), branch.ID); err != nil {
+			return err
+		}
+		branch, err = services.Branches.GetBranchByID(branch.ID)
+		if err != nil {
+			return err
+		}
 		snaps, err := services.Snapshots.CreateSnapshot(context.Background(), branch.ID, branch.HeadLSN)
 		if err != nil {
 			return fmt.Errorf("snapshot failed: %w", err)
 		}
 
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"snapshots": snaps, "lsn": branch.HeadLSN})
+		}
 		fmt.Printf("Created %d collection snapshot(s) at LSN %d:\n", len(snaps), branch.HeadLSN)
 		for _, s := range snaps {
 			fmt.Printf("  %-24s %6d docs  %8d bytes  %d chunk(s)\n",
@@ -70,7 +79,7 @@ var snapshotListCmd = &cobra.Command{
 			branchName = "main"
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -86,6 +95,9 @@ var snapshotListCmd = &cobra.Command{
 		snaps, err := services.Snapshots.ListSnapshots(context.Background(), branch.ID)
 		if err != nil {
 			return fmt.Errorf("failed to list snapshots: %w", err)
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"snapshots": snaps})
 		}
 		if len(snaps) == 0 {
 			fmt.Println("No snapshots yet.")

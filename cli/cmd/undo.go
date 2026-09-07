@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +33,7 @@ Use "argon time-travel info" to find LSNs, and --dry-run to preview.`,
 			return fmt.Errorf("--from-lsn is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -48,27 +47,33 @@ Use "argon time-travel info" to find LSNs, and --dry-run to preview.`,
 			return fmt.Errorf("failed to plan undo: %w", err)
 		}
 
-		fmt.Printf("Undo [%d, %d]", plan.FromLSN, plan.ToLSN)
-		if plan.Actor != "" {
-			fmt.Printf(" for actor %q", plan.Actor)
-		}
-		fmt.Printf(": %d document(s) to revert\n", len(plan.Compensations))
-		for _, c := range plan.Compensations {
-			action := "restore"
-			if c.Restore == nil {
-				action = "delete "
+		if !jsonOutput(cmd) {
+			fmt.Printf("Undo [%d, %d]", plan.FromLSN, plan.ToLSN)
+			if plan.Actor != "" {
+				fmt.Printf(" for actor %q", plan.Actor)
 			}
-			fmt.Printf("  %s %s/%s\n", action, c.Collection, c.DocumentID)
-		}
-		for _, c := range plan.Conflicts {
-			fmt.Printf("  CONFLICT %s/%s: modified by %q at LSN %d — skipped\n",
-				c.Collection, c.DocumentID, c.OtherActor, c.AtLSN)
-		}
-		for _, u := range plan.Unrecoverable {
-			fmt.Printf("  UNRECOVERABLE %s: no pre-image available — skipped\n", u)
+			fmt.Printf(": %d document(s) to revert\n", len(plan.Compensations))
+			for _, c := range plan.Compensations {
+				action := "restore"
+				if c.Restore == nil {
+					action = "delete "
+				}
+				fmt.Printf("  %s %s/%s\n", action, c.Collection, c.DocumentID)
+			}
+			for _, c := range plan.Conflicts {
+				fmt.Printf("  CONFLICT %s/%s: modified by %q at LSN %d — skipped\n",
+					c.Collection, c.DocumentID, c.OtherActor, c.AtLSN)
+			}
+			for _, u := range plan.Unrecoverable {
+				fmt.Printf("  UNRECOVERABLE %s: no pre-image available — skipped\n", u)
+			}
+
 		}
 
 		if dryRun {
+			if jsonOutput(cmd) {
+				return writeJSON(cmd, map[string]any{"dry_run": true, "plan": plan})
+			}
 			fmt.Println("Dry run: nothing applied.")
 			return nil
 		}
@@ -76,6 +81,9 @@ Use "argon time-travel info" to find LSNs, and --dry-run to preview.`,
 		restored, deleted, err := services.ApplyUndoPlan(context.Background(), branchID, plan)
 		if err != nil {
 			return fmt.Errorf("undo failed: %w", err)
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"dry_run": false, "plan": plan, "restored": restored, "deleted": deleted})
 		}
 		fmt.Printf("Done: %d restored, %d deleted.\n", restored, deleted)
 		return nil

@@ -16,13 +16,15 @@ import (
 // must not be cleaned up; descendants keep reading the ancestor's
 // snapshots through the chain.
 //
-// Chunk reclamation is a two-step check (drop manifests, then delete
-// chunks that no remaining manifest references). A snapshot being created
-// concurrently could in principle re-reference a chunk between the check
-// and the delete; the next snapshot of that branch simply re-uploads the
-// chunk (content addressing makes that harmless but wasteful), and proper
-// epoch-based GC arrives with WAL segment retention.
+// Publication and reclamation share a durable lock across processes. A
+// surviving manifest can never be published between reference checking
+// and chunk deletion, including when the chunk store is external to MongoDB.
 func (s *Service) CleanupBranch(ctx context.Context, branchID string) (manifestsRemoved, chunksRemoved int64, err error) {
+	unlock, err := s.lockPublication(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer unlock()
 	// Collect the chunk IDs this branch's manifests reference.
 	cursor, err := s.manifests.Find(ctx, bson.M{"branch_id": branchID})
 	if err != nil {

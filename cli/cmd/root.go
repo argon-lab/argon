@@ -1,80 +1,40 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
-	"os"
 
+	"github.com/argon-lab/argon/pkg/version"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
-var (
-	cfgFile   string
-	apiKey    string
-	projectID string
-	output    string
-)
-
-// rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "argon",
-	Short: "MongoDB branching with time travel - powered by WAL architecture",
-	Long: `Argon CLI - MongoDB branching system with time travel capabilities.
+	Short: "Branch, review and recover MongoDB data",
+	Long: `Argon versions MongoDB data with branches, merge plans, pins and undo.
 
-Experience instant branching (1ms) and query any point in history.
-Built with Write-Ahead Log (WAL) architecture for maximum performance.
-
-Examples:
-  argon projects create my-project        # Create project with time travel
-  argon branches create feature-x -p proj # Create instant branch
-  argon time-travel info -p proj -b main  # Show time travel history
-  argon status                            # System health and performance
-  argon metrics                           # Detailed performance metrics
-
-The first MongoDB database with Git-like time travel.`,
-	Version: "2.0.0",
+Start with "argon doctor", then "argon console" for a managed local API
+and web console. Use MONGODB_URI to select the MongoDB replica set.
+The CLI connects directly to MongoDB; API bearer tokens configure the
+HTTP server through ARGON_API_TOKEN, not individual CLI commands.`,
+	Version:      version.String(),
+	SilenceUsage: true,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if flag := cmd.Flags().Lookup("output"); flag != nil {
+			format, _ := cmd.Flags().GetString("output")
+			if format != "table" && format != "json" {
+				return fmt.Errorf("unsupported output %q; use table or json", format)
+			}
+		}
+		return nil
+	},
 }
 
-// Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() error {
-	return rootCmd.Execute()
-}
-
-func init() {
-	cobra.OnInitialize(initConfig)
-
-	// Global flags (identical to Neon CLI)
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.argon.yaml)")
-	rootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Argon API key for authentication")
-	rootCmd.PersistentFlags().StringVar(&projectID, "project-id", "", "Argon project ID")
-	rootCmd.PersistentFlags().StringVarP(&output, "output", "o", "table", "Output format (json|yaml|table)")
-
-	// Bind flags to viper
-	_ = viper.BindPFlag("api-key", rootCmd.PersistentFlags().Lookup("api-key"))
-	_ = viper.BindPFlag("project-id", rootCmd.PersistentFlags().Lookup("project-id"))
-	_ = viper.BindPFlag("output", rootCmd.PersistentFlags().Lookup("output"))
-}
-
-// initConfig reads in config file and ENV variables.
-func initConfig() {
-	if cfgFile != "" {
-		viper.SetConfigFile(cfgFile)
-	} else {
-		home, err := os.UserHomeDir()
-		cobra.CheckErr(err)
-
-		// Search config in home directory with name ".argon" (without extension).
-		viper.AddConfigPath(home)
-		viper.SetConfigType("yaml")
-		viper.SetConfigName(".argon")
+	err := rootCmd.Execute()
+	cleanupErr := closeCommandServices()
+	if cleanupErr != nil {
+		fmt.Fprintf(rootCmd.ErrOrStderr(), "Error: command cleanup: %v\n", cleanupErr)
 	}
-
-	// Environment variables
-	viper.SetEnvPrefix("ARGON")
-	viper.AutomaticEnv()
-
-	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
-	}
+	return errors.Join(err, cleanupErr)
 }

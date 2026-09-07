@@ -23,16 +23,18 @@ jobs:
           docker exec ci-mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' && break
           sleep 1
         done
+        docker exec ci-mongo mongosh --quiet --eval 'db.runCommand({ping: 1})'
         docker exec ci-mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
         for i in $(seq 1 30); do
           [ "$(docker exec ci-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break
           sleep 1
         done
+        test "$(docker exec ci-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = true
     
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.21'
+        go-version-file: go.mod
     
     - name: Cache Go modules
       uses: actions/cache@v4
@@ -45,6 +47,16 @@ jobs:
     - name: Download dependencies
       run: go mod download
 
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Validate release metadata and installer
+      run: |
+        node scripts/release-version.js --check
+        node --test scripts/release-version.test.js npm/scripts/install.test.js
+        npm pack --dry-run ./npm
+
     - name: Start MinIO (S3 chunk store backend)
       run: |
         docker run -d --name ci-minio -p 9010:9000 \
@@ -54,6 +66,7 @@ jobs:
           curl -sf http://localhost:9010/minio/health/live && break
           sleep 1
         done
+        curl -fsS http://localhost:9010/minio/health/live
 
     - name: Run tests
       env:
@@ -64,9 +77,13 @@ jobs:
         AWS_REGION: us-east-1
       run: go test -v ./...
     
-    - name: Build CLI
+    - name: Test and build CLI
       working-directory: ./cli
-      run: go build -v .
+      env:
+        ARGON_TEST_MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0
+      run: |
+        go test ./...
+        go build -v .
 
     - name: Test API
       working-directory: ./api
@@ -82,7 +99,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version-file: go.mod
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -101,11 +118,13 @@ jobs:
           docker exec compat-mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' && break
           sleep 1
         done
+        docker exec compat-mongo mongosh --quiet --eval 'db.runCommand({ping: 1})'
         docker exec compat-mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
         for i in $(seq 1 30); do
           [ "$(docker exec compat-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break
           sleep 1
         done
+        test "$(docker exec compat-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = true
 
     - name: Install Python driver
       run: pip install pymongo pytest
@@ -114,19 +133,41 @@ jobs:
       run: bash compat/run.sh
 
   lint:
-    name: Lint
+    name: Vet (${{ matrix.module }})
     runs-on: ubuntu-latest
-    
+    strategy:
+      matrix:
+        module: ['.', cli, api]
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.21'
-    
-    - name: golangci-lint
-      uses: golangci/golangci-lint-action@v6
-      with:
-        version: latest
-        args: --timeout=5m
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            cli/go.sum
+            api/go.sum
+      - name: Go vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+  vulnerabilities:
+    name: Reachable Go vulnerabilities (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: ['.', cli, api]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            cli/go.sum
+            api/go.sum
+      - name: Install official vulnerability scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+      - name: Scan reachable dependencies against the current database
+        working-directory: ${{ matrix.module }}
+        run: govulncheck ./...

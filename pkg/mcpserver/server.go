@@ -18,6 +18,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/argon-lab/argon/pkg/walcli"
 )
@@ -70,17 +71,35 @@ type jsonRPCResponse struct {
 // ingesters started by this server stop with it.
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	defer s.stopAllIngesters()
+	defer func() { cancel(); s.stopAllIngesters() }()
+	go s.services.RunSandboxSweeper(ctx)
 
 	scanner := bufio.NewScanner(s.in)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-
-	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return nil
+	lines := make(chan []byte)
+	readDone := make(chan error, 1)
+	go func() {
+		defer func() { readDone <- scanner.Err(); close(lines) }()
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			select {
+			case lines <- line:
+			case <-ctx.Done():
+				return
+			}
 		}
-		line := scanner.Bytes()
+	}()
+	for {
+		var line []byte
+		select {
+		case <-ctx.Done():
+			return nil
+		case next, ok := <-lines:
+			if !ok {
+				return <-readDone
+			}
+			line = next
+		}
 		if len(line) == 0 {
 			continue
 		}
@@ -91,7 +110,6 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		s.dispatch(ctx, &req)
 	}
-	return scanner.Err()
 }
 
 func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) {
@@ -179,35 +197,51 @@ func (s *Server) write(resp *jsonRPCResponse) {
 
 // startIngester supervises a change-stream ingester for a branch until the
 // server stops or the branch is discarded.
-func (s *Server) startIngester(branchID string) {
+func (s *Server) startIngester(branchID string, actors ...string) error {
+	actor := ""
+	if len(actors) > 0 {
+		actor = actors[0]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.services.StartCapture(ctx, branchID, actor); err != nil {
+		return err
+	}
 	s.ingestMu.Lock()
 	defer s.ingestMu.Unlock()
-	if _, running := s.ingest[branchID]; running {
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.ingest[branchID] = cancel
-	go func() {
-		if err := s.services.Ingest.Run(ctx, branchID); err != nil && ctx.Err() == nil {
-			log.Printf("mcp: ingester for branch %s stopped: %v", branchID, err)
-		}
-	}()
+	s.ingest[branchID] = func() { _ = s.stopIngester(branchID) }
+	return nil
 }
 
-func (s *Server) stopIngester(branchID string) {
+func (s *Server) stopIngester(branchID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.services.Ingest.Stop(ctx, branchID); err != nil {
+		return err
+	}
 	s.ingestMu.Lock()
 	defer s.ingestMu.Unlock()
-	if cancel, ok := s.ingest[branchID]; ok {
-		cancel()
-		delete(s.ingest, branchID)
-	}
+	delete(s.ingest, branchID)
+	return nil
 }
 
 func (s *Server) stopAllIngesters() {
-	s.ingestMu.Lock()
-	defer s.ingestMu.Unlock()
-	for id, cancel := range s.ingest {
-		cancel()
-		delete(s.ingest, id)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.services.Ingest.Shutdown(ctx); err != nil {
+		log.Printf("mcp: capture shutdown: %v", err)
 	}
+	snapshotCtx, snapshotCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer snapshotCancel()
+	if err := s.services.WaitAuto(snapshotCtx); err != nil {
+		log.Printf("mcp: snapshot shutdown: %v", err)
+		// Cancellation interrupts cooperative storage I/O; give its independent
+		// deferred publication-lock cleanup a short grace before process exit.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if cleanupErr := s.services.WaitAuto(cleanupCtx); cleanupErr != nil {
+			log.Printf("mcp: snapshot cleanup still incomplete: %v", cleanupErr)
+		}
+	}
+
 }

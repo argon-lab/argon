@@ -20,6 +20,9 @@ the pre-reset head (or pins on it) keep reading the old state.`,
 
 // restoreTarget resolves the --lsn/--time flags to a concrete LSN.
 func restoreTarget(cmd *cobra.Command, services *walcli.Services, branchID string) (int64, error) {
+	if err := services.SyncBranch(cmd.Context(), branchID); err != nil {
+		return 0, err
+	}
 	lsn, _ := cmd.Flags().GetInt64("lsn")
 	atTime, _ := cmd.Flags().GetString("time")
 	if (lsn == 0) == (atTime == "") {
@@ -50,7 +53,7 @@ var restorePreviewCmd = &cobra.Command{
 		projectName, _ := cmd.Flags().GetString("project")
 		branchName, _ := cmd.Flags().GetString("branch")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -86,7 +89,7 @@ var restoreResetCmd = &cobra.Command{
 		branchName, _ := cmd.Flags().GetString("branch")
 		backup, _ := cmd.Flags().GetString("backup")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -101,6 +104,14 @@ var restoreResetCmd = &cobra.Command{
 		target, err := restoreTarget(cmd, services, branchID)
 		if err != nil {
 			return err
+		}
+
+		current, err := services.Branches.GetBranchByID(branchID)
+		if err != nil {
+			return err
+		}
+		if current.IsLive() {
+			return fmt.Errorf("stop writers and run argon release before resetting a live branch")
 		}
 
 		if backup != "" {
@@ -119,9 +130,7 @@ var restoreResetCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("Reset %s to LSN %d\n", branch.Name, branch.HeadLSN)
-		if branch.IsLive() {
-			fmt.Println("The branch is checked out: run \"argon checkout\" again to refresh the physical database.")
-		}
+
 		return nil
 	},
 }
@@ -134,7 +143,7 @@ var restoreBranchCmd = &cobra.Command{
 		branchName, _ := cmd.Flags().GetString("branch")
 		as, _ := cmd.Flags().GetString("as")
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}

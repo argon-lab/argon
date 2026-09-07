@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	branchwal "github.com/argon-lab/argon/internal/branch/wal"
@@ -21,9 +22,9 @@ import (
 	"github.com/argon-lab/argon/internal/snapshot"
 	"github.com/argon-lab/argon/internal/timetravel"
 	"github.com/argon-lab/argon/internal/undo"
+	"github.com/argon-lab/argon/internal/wal"
 	"github.com/argon-lab/argon/internal/walwriter"
 	"github.com/argon-lab/argon/internal/wireproxy"
-	"github.com/argon-lab/argon/internal/wal"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -61,7 +62,11 @@ func NewServices() (*Services, error) {
 	if mongoURI == "" {
 		mongoURI = "mongodb://localhost:27017"
 	}
-	return NewServicesAt(mongoURI, "argon_wal")
+	metadataDB := os.Getenv("ARGON_METADATA_DB")
+	if metadataDB == "" {
+		metadataDB = "argon_wal"
+	}
+	return NewServicesAt(mongoURI, metadataDB)
 }
 
 // NewServicesAt creates all WAL services against an explicit deployment and
@@ -117,7 +122,14 @@ func NewServicesAt(mongoURI, dbName string) (*Services, error) {
 	gcService := gc.NewService(walService, branchService, snapshotService)
 	checkoutService := checkout.NewService(client, db, branchService, materializerService)
 	ingestService := ingest.NewService(client, db, walService, branchService)
-	undoService := undo.NewService(walService, branchService, client)
+	ingestService.SetAutoSnapshotter(snapshotService)
+	checkoutService.SetBeforeRelease(func(ctx context.Context, branchID string) error {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		return ingestService.Stop(ctx, branchID)
+	})
+	checkoutService.SetBeforeDiscard(ingestService.Cancel)
+	undoService := undo.NewService(walService, branchService, client, materializerService)
 	mergeService := merge.NewService(db, walService, branchService, materializerService, client)
 	sandboxService := sandbox.NewService(branchService, checkoutService)
 	pinService, err := pin.NewService(db, branchService)
@@ -138,6 +150,9 @@ func NewServicesAt(mongoURI, dbName string) (*Services, error) {
 	// Reclaim a deleted branch's WAL entries and snapshots. Safe because
 	// regular deletion refuses branches with children.
 	branchService.SetDeleteHook(func(branchID string) {
+		if err := ingestService.ClearResumeState(context.Background(), branchID); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to reclaim capture state for %s: %v\n", branchID, err)
+		}
 		if _, _, _, err := gcService.ReclaimDeletedBranch(context.Background(), branchID); err != nil {
 			fmt.Printf("Warning: failed to reclaim storage for branch %s: %v\n", branchID, err)
 		}
@@ -206,6 +221,11 @@ func (s *Services) WriterFor(projectName, branchName string) (*walwriter.Writer,
 // BuildUndoPlan and ApplyUndoPlan wrap the undo service for CLI use (the
 // cli module cannot import internal packages).
 func (s *Services) BuildUndoPlan(branchID string, fromLSN, toLSN int64, actor string) (*undo.Plan, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.Ingest.Drain(ctx, branchID); err != nil {
+		return nil, err
+	}
 	branch, err := s.Branches.GetBranchByID(branchID)
 	if err != nil {
 		return nil, err
@@ -219,7 +239,106 @@ func (s *Services) ApplyUndoPlan(ctx context.Context, branchID string, plan *und
 	if err != nil {
 		return 0, 0, err
 	}
-	return s.Undo.Apply(ctx, branch, plan)
+	restored, deleted, err = s.Undo.Apply(ctx, branch, plan)
+	if err != nil {
+		return 0, 0, err
+	}
+	if branch.IsLive() {
+		if err := s.Ingest.Drain(ctx, branchID); err != nil {
+			return restored, deleted, err
+		}
+	}
+	return restored, deleted, nil
+}
+
+// StartCapture configures a branch/run label, not per-writer authentication.
+func (s *Services) StartCapture(ctx context.Context, branchID, actor string) error {
+	return s.Ingest.Start(ctx, branchID, ingest.WithActor(actor))
+}
+
+// RunCapture is the blocking CLI capture entry point with a branch/run actor.
+func (s *Services) RunCapture(ctx context.Context, branchID, actor string) error {
+	return s.Ingest.Run(ctx, branchID, ingest.WithActor(actor))
+}
+
+// PrepareCollection must precede application writes to a new collection;
+// enabling images after its first update cannot recover missing images.
+func (s *Services) PrepareCollection(ctx context.Context, branchID, name string) error {
+	branch, err := s.Branches.GetBranchByID(branchID)
+	if err != nil {
+		return err
+	}
+	if !branch.IsLive() {
+		return fmt.Errorf("branch is not checked out; run checkout first")
+	}
+	if name == "" || strings.HasPrefix(name, "__argon_") {
+		return fmt.Errorf("choose a non-empty collection name outside the reserved __argon_ namespace")
+	}
+	return checkout.EnablePrePostImages(ctx, s.Client.Database(branch.PhysicalDB), name)
+}
+
+// SyncBranch makes completed native writes visible to versioned control-plane
+// operations. A merge also compares the parent, so drain both live databases.
+func (s *Services) SyncBranch(ctx context.Context, branchID string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := s.Ingest.Drain(ctx, branchID); err != nil {
+		return err
+	}
+	branch, err := s.Branches.GetBranchByID(branchID)
+	if err != nil {
+		return err
+	}
+	if branch.ParentID != "" {
+		return s.Ingest.Drain(ctx, branch.ParentID)
+	}
+	return nil
+}
+
+// RunSandboxSweeper reaps expired sandboxes while a managed API/MCP server runs.
+// CLI-only deployments can continue to schedule `argon sandbox sweep` themselves.
+func (s *Services) RunSandboxSweeper(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			projects, err := s.Projects.ListProjects()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "sandbox sweep: %v\n", err)
+				continue
+			}
+			for _, project := range projects {
+				passCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				report, err := s.Sandbox.Sweep(passCtx, project.ID)
+				cancel()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "sandbox sweep: %v\n", err)
+				} else {
+					for _, skipped := range report.Skipped {
+						fmt.Fprintf(os.Stderr, "sandbox sweep skipped: %s\n", skipped)
+					}
+				}
+			}
+		}
+	}
+}
+
+// SynchronousSnapshots keeps automatic snapshot work inside short-lived CLI
+// commands, so process exit cannot abandon a background snapshot's storage lock.
+func (s *Services) SynchronousSnapshots() {
+	cfg := snapshot.DefaultAutoConfig()
+	cfg.Synchronous = true
+	s.Snapshots.EnableAuto(cfg)
+}
+
+// WaitAuto stops new automatic snapshots and waits for their publication/lock
+// cleanup. Shutdown callers must stop producers first and keep Mongo connected
+// until this returns; an error reports an incomplete bounded shutdown.
+func (s *Services) WaitAuto(ctx context.Context) error {
+	return s.Snapshots.WaitAuto(ctx)
 }
 
 // NewWireProxy builds the wire-protocol proxy over these services (the
@@ -255,7 +374,7 @@ func (s *Services) ImportDatabase(ctx context.Context, mongoURI, databaseName, p
 		"dry_run":       dryRun,
 		"batch_size":    batchSize,
 	}
-	
+
 	// Create a struct that matches the internal ImportOptions
 	return s.callImportDatabase(ctx, opts)
 }
@@ -270,6 +389,6 @@ func (s *Services) callImportDatabase(ctx context.Context, opts map[string]inter
 		DryRun:       opts["dry_run"].(bool),
 		BatchSize:    opts["batch_size"].(int),
 	}
-	
+
 	return s.Importer.ImportDatabase(ctx, importOpts)
 }

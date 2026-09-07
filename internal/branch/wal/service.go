@@ -31,6 +31,8 @@ type BranchService struct {
 	deleteGuard func(branchID string) error
 }
 
+var ErrBranchChanged = errors.New("branch changed concurrently; reload and retry")
+
 // SetDeleteGuard registers a check that can refuse DeleteBranch.
 func (s *BranchService) SetDeleteGuard(guard func(branchID string) error) {
 	s.deleteGuard = guard
@@ -214,6 +216,7 @@ func (s *BranchService) SetExpiry(branchID string, expiresAt *time.Time) error {
 func (s *BranchService) SetCheckoutState(branchID, physicalDB, state string, checkedOutLSN int64) error {
 	ctx := context.Background()
 	update := bson.M{}
+	update["$inc"] = bson.M{"mutation_version": 1}
 	if physicalDB == "" && state == "" {
 		update["$unset"] = bson.M{"physical_db": "", "state": "", "checked_out_lsn": ""}
 	} else {
@@ -227,6 +230,23 @@ func (s *BranchService) SetCheckoutState(branchID, physicalDB, state string, che
 	return err
 }
 
+// CompareAndSetCheckout publishes a materialization only if the branch is
+// still the exact metadata state from which it was built.
+func (s *BranchService) CompareAndSetCheckout(ctx context.Context, expected *wal.Branch, physicalDB string, checkedOutLSN int64) error {
+	filter := bson.M{"_id": expected.ID, "head_lsn": expected.HeadLSN, "is_deleted": false,
+		"mutation_version": mutationVersionCondition(expected.MutationVersion), "state": bson.M{"$ne": wal.BranchStateLive}}
+	res, err := s.collection.UpdateOne(ctx, filter, bson.M{"$set": bson.M{
+		"physical_db": physicalDB, "state": wal.BranchStateLive, "checked_out_lsn": checkedOutLSN},
+		"$inc": bson.M{"mutation_version": 1}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount != 1 {
+		return ErrBranchChanged
+	}
+	return nil
+}
+
 // AddDiscardedRange records an LSN window abandoned by a reset so that
 // materialization skips it. The entries themselves stay in the WAL for
 // audit and for time travel to points before the reset.
@@ -237,7 +257,7 @@ func (s *BranchService) AddDiscardedRange(branchID string, from, to int64) error
 	ctx := context.Background()
 	_, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": branchID},
-		bson.M{"$push": bson.M{"discarded_ranges": wal.LSNRange{From: from, To: to}}},
+		bson.M{"$push": bson.M{"discarded_ranges": wal.LSNRange{From: from, To: to}}, "$inc": bson.M{"mutation_version": 1}},
 	)
 	return err
 }
@@ -290,6 +310,38 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 	if err != nil {
 		return err
 	}
+	if err := s.RequireDeletable(branch.ID); err != nil {
+		return err
+	}
+
+	// Create WAL entry for deletion
+	entry := &wal.Entry{
+		ProjectID: projectID,
+		BranchID:  branch.ID,
+		Operation: wal.OpDeleteBranch,
+		Metadata:  map[string]interface{}{"branch_id": branch.ID, "final_lsn": branch.HeadLSN},
+	}
+	if _, err = s.wal.Append(entry); err != nil {
+		return fmt.Errorf("failed to append WAL entry: %w", err)
+	}
+	_, err = s.collection.UpdateOne(ctx, bson.M{"_id": branch.ID}, bson.M{"$set": bson.M{"is_deleted": true}})
+	if err != nil {
+		return err
+	}
+	if s.onDelete != nil {
+		s.onDelete(branch.ID)
+	}
+	return nil
+}
+
+// RequireDeletable performs the same main/child/pin checks as deletion,
+// before a caller discards a physical database or stops its capture worker.
+func (s *BranchService) RequireDeletable(branchID string) error {
+	ctx := context.Background()
+	branch, err := s.GetBranchByID(branchID)
+	if err != nil {
+		return err
+	}
 
 	// Validate it's not the main branch (unless force is specified)
 	if branch.Name == "main" {
@@ -298,7 +350,7 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 
 	// Check for child branches
 	childCount, err := s.collection.CountDocuments(ctx, bson.M{
-		"project_id": projectID,
+		"project_id": branch.ProjectID,
 		"parent_id":  branch.ID,
 		"is_deleted": false,
 	})
@@ -315,37 +367,6 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 		}
 	}
 
-	// Create WAL entry for deletion
-	entry := &wal.Entry{
-		ProjectID: projectID,
-		BranchID:  name,
-		Operation: wal.OpDeleteBranch,
-		Metadata: map[string]interface{}{
-			"branch_id": branch.ID,
-			"final_lsn": branch.HeadLSN,
-		},
-	}
-
-	_, err = s.wal.Append(entry)
-	if err != nil {
-		return fmt.Errorf("failed to append WAL entry: %w", err)
-	}
-
-	// Simple deletion - just mark as deleted
-	_, err = s.collection.UpdateOne(ctx,
-		bson.M{"_id": branch.ID},
-		bson.M{"$set": bson.M{"is_deleted": true}},
-	)
-	if err != nil {
-		return err
-	}
-
-	// Safe because DeleteBranch refuses branches with children: nothing
-	// can reach this branch's snapshots through an ancestry chain anymore.
-	if s.onDelete != nil {
-		s.onDelete(branch.ID)
-	}
-
 	return nil
 }
 
@@ -355,12 +376,83 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 // hiding already-written entries from materialization. To move a head
 // backwards deliberately (restore/reset), use SetBranchHead.
 func (s *BranchService) UpdateBranchHead(branchID string, newLSN int64) error {
-	ctx := context.Background()
+	return s.UpdateBranchHeadContext(context.Background(), branchID, newLSN)
+}
+
+func (s *BranchService) UpdateBranchHeadContext(ctx context.Context, branchID string, newLSN int64) error {
 	_, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": branchID},
-		bson.M{"$max": bson.M{"head_lsn": newLSN}},
+		bson.M{"$max": bson.M{"head_lsn": newLSN}, "$inc": bson.M{"mutation_version": 1}},
 	)
 	return err
+}
+
+// CompareAndSetHead fences a mutation against the state it was prepared
+// from. It must be used in the same transaction as the mutation's WAL.
+func (s *BranchService) CompareAndSetHead(ctx context.Context, branchID string, expected, next int64) error {
+	result, err := s.collection.UpdateOne(ctx, bson.M{"_id": branchID, "head_lsn": expected, "is_deleted": false},
+		bson.M{"$set": bson.M{"head_lsn": next}, "$inc": bson.M{"mutation_version": 1}})
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount != 1 {
+		return ErrBranchChanged
+	}
+	return nil
+}
+
+// FenceBranch locks an exact branch incarnation inside a transaction. Empty
+// checkout fields match missing legacy fields as well as explicit empties.
+func (s *BranchService) FenceBranch(ctx context.Context, branch *wal.Branch) error {
+	filter := bson.M{"_id": branch.ID, "head_lsn": branch.HeadLSN, "is_deleted": false}
+	filter["mutation_version"] = mutationVersionCondition(branch.MutationVersion)
+	if branch.IsLive() {
+		filter["state"] = wal.BranchStateLive
+		filter["physical_db"] = branch.PhysicalDB
+	} else {
+		filter["state"] = bson.M{"$ne": wal.BranchStateLive}
+	}
+	res, err := s.collection.UpdateOne(ctx, filter, bson.M{"$inc": bson.M{"mutation_version": 1}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount != 1 {
+		return ErrBranchChanged
+	}
+	return nil
+}
+
+func mutationVersionCondition(version int64) interface{} {
+	if version == 0 {
+		return bson.M{"$in": bson.A{nil, int64(0)}}
+	}
+	return version
+}
+
+// ResetHead atomically records the abandoned interval and rewinds the head.
+// Live branches must first be drained/released: resetting only metadata
+// while applications continue writing would expose two conflicting states.
+func (s *BranchService) ResetHead(branch *wal.Branch, target int64) error {
+	if branch.IsLive() {
+		return fmt.Errorf("cannot reset a checked-out branch; release it after capture has drained first")
+	}
+	if target < branch.BaseLSN || target > branch.HeadLSN {
+		return fmt.Errorf("invalid reset target %d", target)
+	}
+	update := bson.M{"$set": bson.M{"head_lsn": target}, "$inc": bson.M{"mutation_version": 1}}
+	if target < branch.HeadLSN {
+		update["$push"] = bson.M{"discarded_ranges": wal.LSNRange{From: target + 1, To: branch.HeadLSN}}
+	}
+	result, err := s.collection.UpdateOne(context.Background(), bson.M{"_id": branch.ID, "head_lsn": branch.HeadLSN, "is_deleted": false,
+		"mutation_version": mutationVersionCondition(branch.MutationVersion),
+		"state":            bson.M{"$ne": wal.BranchStateLive}}, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount != 1 {
+		return fmt.Errorf("branch changed concurrently; reload and retry reset")
+	}
+	return nil
 }
 
 // SetBranchHead sets the head LSN of a branch unconditionally. This is the
@@ -370,7 +462,7 @@ func (s *BranchService) SetBranchHead(branchID string, newLSN int64) error {
 	ctx := context.Background()
 	_, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": branchID},
-		bson.M{"$set": bson.M{"head_lsn": newLSN}},
+		bson.M{"$set": bson.M{"head_lsn": newLSN}, "$inc": bson.M{"mutation_version": 1}},
 	)
 	return err
 }

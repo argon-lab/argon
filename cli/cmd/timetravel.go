@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +24,7 @@ var timeTravelInfoCmd = &cobra.Command{
 			return fmt.Errorf("--project and --branch are required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return err
 		}
@@ -39,11 +38,21 @@ var timeTravelInfoCmd = &cobra.Command{
 			return fmt.Errorf("branch not found: %w", err)
 		}
 
+		if err := services.SyncBranch(cmd.Context(), branch.ID); err != nil {
+			return err
+		}
+		branch, err = services.Branches.GetBranchByID(branch.ID)
+		if err != nil {
+			return err
+		}
 		info, err := services.TimeTravel.GetTimeTravelInfo(branch)
 		if err != nil {
 			return fmt.Errorf("failed to get time travel info: %w", err)
 		}
 
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch_id": branch.ID, "earliest_lsn": info.EarliestLSN, "latest_lsn": info.LatestLSN, "entry_count": info.EntryCount, "earliest_time": info.EarliestTime, "latest_time": info.LatestTime})
+		}
 		fmt.Printf("🕰️  Time Travel Info for '%s/%s':\n\n", projectName, branchName)
 		fmt.Printf("   LSN Range: %d → %d\n", info.EarliestLSN, info.LatestLSN)
 		fmt.Printf("   Total History: %d operations\n", info.EntryCount)
@@ -57,7 +66,7 @@ var timeTravelInfoCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Println("💡 Query any point in history:")
 		fmt.Printf("   argon time-travel query --project %s --branch %s --lsn %d\n",
-			projectName, branchName, info.EarliestLSN+10)
+			projectName, branchName, info.LatestLSN)
 
 		return nil
 	},
@@ -85,7 +94,7 @@ var timeTravelQueryCmd = &cobra.Command{
 			return fmt.Errorf("invalid LSN: %w", err)
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return err
 		}
@@ -99,26 +108,36 @@ var timeTravelQueryCmd = &cobra.Command{
 			return fmt.Errorf("branch not found: %w", err)
 		}
 
-		fmt.Printf("🔍 Querying database state at LSN %d...\n\n", lsn)
-
+		if err := services.SyncBranch(cmd.Context(), branch.ID); err != nil {
+			return err
+		}
+		branch, err = services.Branches.GetBranchByID(branch.ID)
+		if err != nil {
+			return err
+		}
 		if collection != "" {
-			// Query specific collection
 			state, err := services.TimeTravel.MaterializeAtLSN(branch, collection, lsn)
 			if err != nil {
-				return fmt.Errorf("failed to query historical state: %w", err)
+				return err
 			}
-
-			fmt.Printf("Collection '%s' had %d documents at LSN %d:\n", collection, len(state), lsn)
-			for docID := range state {
-				fmt.Printf("  📄 %s\n", docID)
+			if jsonOutput(cmd) {
+				return writeJSON(cmd, map[string]any{"lsn": lsn, "collection": collection, "documents": state})
+			}
+			fmt.Printf("Collection %s at LSN %d: %d documents\n", collection, lsn, len(state))
+			for id := range state {
+				fmt.Println(id)
 			}
 		} else {
-			// Show available collections
-			fmt.Println("Available collections at this point in time:")
-			fmt.Println("  (Use --collection flag to see documents)")
-			fmt.Println()
-			fmt.Printf("Example: argon time-travel query --project %s --branch %s --lsn %d --collection users\n",
-				projectName, branchName, lsn)
+			state, err := services.Materializer.MaterializeBranchAtLSN(branch, lsn)
+			if err != nil {
+				return err
+			}
+			if jsonOutput(cmd) {
+				return writeJSON(cmd, map[string]any{"lsn": lsn, "collections": state})
+			}
+			for name, documents := range state {
+				fmt.Printf("%s: %d documents\n", name, len(documents))
+			}
 		}
 
 		return nil
@@ -128,16 +147,14 @@ var timeTravelQueryCmd = &cobra.Command{
 func init() {
 	// Add flags
 	timeTravelInfoCmd.Flags().StringP("project", "p", "", "Project name (required)")
-	timeTravelInfoCmd.Flags().StringP("branch", "b", "", "Branch name (required)")
+	timeTravelInfoCmd.Flags().StringP("branch", "b", "main", "Branch name (default: main)")
 	_ = timeTravelInfoCmd.MarkFlagRequired("project")
-	_ = timeTravelInfoCmd.MarkFlagRequired("branch")
 
 	timeTravelQueryCmd.Flags().StringP("project", "p", "", "Project name (required)")
-	timeTravelQueryCmd.Flags().StringP("branch", "b", "", "Branch name (required)")
+	timeTravelQueryCmd.Flags().StringP("branch", "b", "main", "Branch name (default: main)")
 	timeTravelQueryCmd.Flags().String("lsn", "", "LSN to query (required)")
 	timeTravelQueryCmd.Flags().StringP("collection", "c", "", "Collection name")
 	_ = timeTravelQueryCmd.MarkFlagRequired("project")
-	_ = timeTravelQueryCmd.MarkFlagRequired("branch")
 	_ = timeTravelQueryCmd.MarkFlagRequired("lsn")
 
 	// Add subcommands

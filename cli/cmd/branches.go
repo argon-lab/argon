@@ -3,14 +3,13 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
 var branchesCmd = &cobra.Command{
 	Use:   "branches",
 	Short: "Manage branches with instant creation",
-	Long:  `Create and manage MongoDB branches with instant 1ms creation using time travel architecture.`,
+	Long:  `Create branches with a metadata write; checkout materializes their data.`,
 }
 
 var branchesCreateCmd = &cobra.Command{
@@ -25,7 +24,7 @@ var branchesCreateCmd = &cobra.Command{
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect to system: %w", err)
 		}
@@ -41,11 +40,21 @@ var branchesCreateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		branch, err := services.Branches.CreateBranch(projectID, branchName, fromBranch)
+		parent, err := services.Branches.GetBranch(projectID, fromBranch)
+		if err != nil {
+			return err
+		}
+		if err := services.SyncBranch(cmd.Context(), parent.ID); err != nil {
+			return err
+		}
+		branch, err := services.Branches.CreateBranch(projectID, branchName, parent.ID)
 		if err != nil {
 			return fmt.Errorf("failed to create branch: %w", err)
 		}
 
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch": branch})
+		}
 		fmt.Printf("⚡ Created branch '%s' (a metadata write, no data copied)\n", branch.Name)
 		fmt.Printf("   Project: %s\n", projectName)
 		fmt.Printf("   Based on: %s\n", fromBranch)
@@ -68,7 +77,7 @@ var branchesListCmd = &cobra.Command{
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect to system: %w", err)
 		}
@@ -82,6 +91,9 @@ var branchesListCmd = &cobra.Command{
 			return fmt.Errorf("failed to list branches: %w", err)
 		}
 
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branches": branches})
+		}
 		if len(branches) == 0 {
 			fmt.Printf("No branches found in project '%s'.\n", projectName)
 			fmt.Println()
@@ -120,7 +132,7 @@ var branchesDeleteCmd = &cobra.Command{
 			return fmt.Errorf("cannot delete main branch")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect to system: %w", err)
 		}
@@ -129,11 +141,18 @@ var branchesDeleteCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		err = services.Branches.DeleteBranch(projectID, branchName)
+		branch, err := services.Branches.GetBranch(projectID, branchName)
+		if err != nil {
+			return err
+		}
+		err = services.Sandbox.Discard(cmd.Context(), branch.ID)
 		if err != nil {
 			return fmt.Errorf("failed to delete branch: %w", err)
 		}
 
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"deleted": true, "branch": branchName})
+		}
 		fmt.Printf("🗑️  Deleted branch '%s' from project '%s'\n", branchName, projectName)
 
 		return nil

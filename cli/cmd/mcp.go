@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/argon-lab/argon/pkg/mcpserver"
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +22,7 @@ Register it with an MCP client, e.g. Claude Code:
 
   claude mcp add argon -- argon mcp`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}

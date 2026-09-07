@@ -57,6 +57,16 @@ func encodeState(state map[string]bson.M, compressor *wal.Compressor) (chunks []
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to canonicalize document %s: %w", k, err)
 		}
+		// Ordinary fields are canonicalized, but embedded _id documents
+		// have order-sensitive identity in MongoDB and must retain it.
+		if fields, ok := canonical.(bson.D); ok {
+			for i := range fields {
+				if fields[i].Key == "_id" {
+					fields[i].Value = state[k]["_id"]
+				}
+			}
+			canonical = fields
+		}
 		docRaw, err := bson.Marshal(canonical)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to marshal document %s: %w", k, err)
@@ -103,7 +113,16 @@ func decodeChunk(compressed []byte, compressor *wal.Compressor, state map[string
 		if err := bson.Unmarshal(f.Doc, &doc); err != nil {
 			return fmt.Errorf("failed to decode document %s: %w", f.Key, err)
 		}
-		state[f.Key] = doc
+		// The document is authoritative: old snapshots used keys which
+		// conflated ObjectIDs with equal-looking strings.
+		id, err := wal.DocumentIDFromImage(f.Doc)
+		if err != nil {
+			state[f.Key] = doc
+			offset += docLen
+			continue
+		}
+		doc["_id"] = id
+		state[wal.DocumentIDString(id)] = doc
 		offset += docLen
 	}
 	return nil

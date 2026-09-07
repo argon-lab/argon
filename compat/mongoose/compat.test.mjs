@@ -14,6 +14,10 @@ const uri = process.env.ARGON_BRANCH_URI;
 assert.ok(uri, "ARGON_BRANCH_URI must point at a checked-out branch");
 
 await mongoose.connect(uri);
+// Collection setup is explicit; the driver and ODM CRUD paths stay unmodified.
+await mongoose.connection.db.createCollection("products", {
+  changeStreamPreAndPostImages: { enabled: true },
+});
 
 const productSchema = new mongoose.Schema(
   {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -24,7 +23,7 @@ merge plan.`,
 			return fmt.Errorf("--project and --branch are required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -33,9 +32,15 @@ merge plan.`,
 			return err
 		}
 
+		if err := services.SyncBranch(cmd.Context(), branchID); err != nil {
+			return err
+		}
 		plan, err := services.Merge.Compute(branchID)
 		if err != nil {
 			return fmt.Errorf("diff failed: %w", err)
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"plan": plan})
 		}
 		fmt.Printf("Merging %s → %s\n", plan.SourceBranch, plan.TargetBranch)
 		for _, c := range plan.Changes {
@@ -68,7 +73,7 @@ var mergePreviewCmd = &cobra.Command{
 			return fmt.Errorf("--project and --branch are required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -77,9 +82,15 @@ var mergePreviewCmd = &cobra.Command{
 			return err
 		}
 
+		if err := services.SyncBranch(cmd.Context(), branchID); err != nil {
+			return err
+		}
 		plan, err := services.Merge.Preview(context.Background(), branchID)
 		if err != nil {
 			return fmt.Errorf("preview failed: %w", err)
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"plan": plan})
 		}
 		fmt.Printf("Merging %s → %s\n", plan.SourceBranch, plan.TargetBranch)
 		for _, c := range plan.Changes {
@@ -115,14 +126,27 @@ var mergeApplyCmd = &cobra.Command{
 			return fmt.Errorf("invalid plan ID %q", args[0])
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
 
+		plan, err := services.Merge.GetPlan(cmd.Context(), planID)
+		if err != nil {
+			return err
+		}
+		if err := services.SyncBranch(cmd.Context(), plan.SourceBranchID); err != nil {
+			return err
+		}
 		result, err := services.Merge.Apply(context.Background(), planID, strategy)
 		if err != nil {
 			return fmt.Errorf("apply failed: %w", err)
+		}
+		if err := services.SyncBranch(cmd.Context(), plan.TargetBranchID); err != nil {
+			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"plan_id": planID.Hex(), "applied": result.Applied, "conflicts_resolved": result.ConflictsResolved})
 		}
 		fmt.Printf("Merged: %d change(s) applied", result.Applied)
 		if result.ConflictsResolved > 0 {
@@ -142,7 +166,7 @@ var mergeListCmd = &cobra.Command{
 			return fmt.Errorf("--project is required")
 		}
 
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
@@ -154,6 +178,9 @@ var mergeListCmd = &cobra.Command{
 		plans, err := services.Merge.ListPlans(context.Background(), project.ID)
 		if err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"plans": plans})
 		}
 		if len(plans) == 0 {
 			fmt.Println("No merge plans.")

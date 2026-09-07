@@ -150,8 +150,11 @@ func (s *Service) Discard(ctx context.Context, branchID string) error {
 	if err != nil {
 		return fmt.Errorf("sandbox not found: %w", err)
 	}
+	if err := s.branches.RequireDeletable(branchID); err != nil {
+		return err
+	}
 	if branch.IsLive() {
-		if err := s.checkout.Release(ctx, branch.ID); err != nil {
+		if err := s.checkout.Discard(ctx, branch.ID); err != nil {
 			return fmt.Errorf("failed to release the sandbox: %w", err)
 		}
 	}

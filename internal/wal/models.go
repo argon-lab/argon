@@ -49,15 +49,16 @@ const EntrySchemaVersion = 2
 
 // Entry represents a single WAL entry
 type Entry struct {
-	ID            primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
-	SchemaVersion int                `bson:"v,omitempty" json:"v,omitempty"`
-	LSN           int64              `bson:"lsn" json:"lsn"`
-	Timestamp     time.Time          `bson:"timestamp" json:"timestamp"`
-	ProjectID     string             `bson:"project_id" json:"project_id"`
-	BranchID      string             `bson:"branch_id" json:"branch_id"`
-	Operation     OperationType      `bson:"operation" json:"operation"`
-	Collection    string             `bson:"collection,omitempty" json:"collection,omitempty"`
-	DocumentID    string             `bson:"document_id,omitempty" json:"document_id,omitempty"`
+	ID                 primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	SchemaVersion      int                `bson:"v,omitempty" json:"v,omitempty"`
+	LSN                int64              `bson:"lsn" json:"lsn"`
+	Timestamp          time.Time          `bson:"timestamp" json:"timestamp"`
+	ProjectID          string             `bson:"project_id" json:"project_id"`
+	BranchID           string             `bson:"branch_id" json:"branch_id"`
+	Operation          OperationType      `bson:"operation" json:"operation"`
+	Collection         string             `bson:"collection,omitempty" json:"collection,omitempty"`
+	DocumentID         string             `bson:"document_id,omitempty" json:"document_id,omitempty"`
+	DocumentKeyVersion int                `bson:"key_v,omitempty" json:"key_v,omitempty"`
 
 	// PostImage is the complete document after the operation. Required on
 	// every put; replaying a put is simply state[DocumentID] = PostImage.
@@ -141,15 +142,16 @@ func (r LSNRange) Contains(lsn int64) bool {
 // HeadLSN is the newest entry that belongs to the branch. Entries at or
 // below BaseLSN are inherited from the ancestry chain via ParentID.
 type Branch struct {
-	ID         string    `bson:"_id" json:"id"`
-	ProjectID  string    `bson:"project_id" json:"project_id"`
-	Name       string    `bson:"name" json:"name"`
-	ParentID   string    `bson:"parent_id,omitempty" json:"parent_id,omitempty"`
-	HeadLSN    int64     `bson:"head_lsn" json:"head_lsn"`
-	BaseLSN    int64     `bson:"base_lsn" json:"base_lsn"`
-	CreatedAt  time.Time `bson:"created_at" json:"created_at"`
-	CreatedLSN int64     `bson:"created_lsn" json:"created_lsn"`
-	IsDeleted  bool      `bson:"is_deleted" json:"is_deleted"`
+	ID              string    `bson:"_id" json:"id"`
+	ProjectID       string    `bson:"project_id" json:"project_id"`
+	Name            string    `bson:"name" json:"name"`
+	ParentID        string    `bson:"parent_id,omitempty" json:"parent_id,omitempty"`
+	HeadLSN         int64     `bson:"head_lsn" json:"head_lsn"`
+	BaseLSN         int64     `bson:"base_lsn" json:"base_lsn"`
+	CreatedAt       time.Time `bson:"created_at" json:"created_at"`
+	CreatedLSN      int64     `bson:"created_lsn" json:"created_lsn"`
+	IsDeleted       bool      `bson:"is_deleted" json:"is_deleted"`
+	MutationVersion int64     `bson:"mutation_version,omitempty" json:"mutation_version,omitempty"`
 
 	// DiscardedRanges records LSN windows abandoned by restore/reset
 	// operations. The entries stay in the WAL for audit, but materialization
@@ -162,9 +164,9 @@ type Branch struct {
 	// materialized into a real MongoDB database that applications connect
 	// to directly; the WAL is fed from its change stream instead of the
 	// SDK write path.
-	PhysicalDB     string `bson:"physical_db,omitempty" json:"physical_db,omitempty"`
-	State          string `bson:"state,omitempty" json:"state,omitempty"` // "" | BranchStateLive
-	CheckedOutLSN  int64  `bson:"checked_out_lsn,omitempty" json:"checked_out_lsn,omitempty"`
+	PhysicalDB    string `bson:"physical_db,omitempty" json:"physical_db,omitempty"`
+	State         string `bson:"state,omitempty" json:"state,omitempty"` // "" | BranchStateLive
+	CheckedOutLSN int64  `bson:"checked_out_lsn,omitempty" json:"checked_out_lsn,omitempty"`
 
 	// ExpiresAt marks an ephemeral sandbox branch: past this instant, a
 	// sweep releases and deletes it (storage reclaimed through the delete

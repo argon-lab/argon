@@ -3,8 +3,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/config"
-	"github.com/argon-lab/argon/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -19,12 +17,7 @@ var projectsCreateCmd = &cobra.Command{
 	Short: "Create a new project with time travel",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		features := config.GetFeatures()
-		if !features.EnableWAL {
-			fmt.Println("💡 Enabling WAL mode for time travel capabilities...")
-		}
-
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect to system: %w", err)
 		}
@@ -33,6 +26,10 @@ var projectsCreateCmd = &cobra.Command{
 		project, err := services.Projects.CreateProject(projectName)
 		if err != nil {
 			return fmt.Errorf("failed to create project: %w", err)
+		}
+
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"project": project})
 		}
 
 		fmt.Printf("✅ Created project '%s' with time travel capabilities\n", project.Name)
@@ -51,7 +48,7 @@ var projectsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all projects",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		services, err := walcli.NewServices()
+		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect to system: %w", err)
 		}
@@ -61,6 +58,9 @@ var projectsListCmd = &cobra.Command{
 			return fmt.Errorf("failed to list projects: %w", err)
 		}
 
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"projects": projects})
+		}
 		if len(projects) == 0 {
 			fmt.Println("No projects found.")
 			fmt.Println()
