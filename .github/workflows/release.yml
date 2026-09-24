@@ -39,7 +39,7 @@ jobs:
           # must identify the reviewed source that the reusable CI validates.
           test "$(git rev-parse "refs/tags/api/v${version}^{commit}")" = "$(git rev-parse HEAD)"
       - name: Check release tooling
-        run: node --test scripts/release-version.test.js npm/scripts/install.test.js
+        run: node --test scripts/release-version.test.js scripts/verify-npm-publication.test.mjs npm/scripts/install.test.js
 
   release:
     name: Build and publish verified binaries
@@ -115,6 +115,14 @@ jobs:
           dist_tag=latest
           if [[ "$RELEASE_VERSION" == *-* ]]; then dist_tag=next; fi
           npm publish --access public --tag "$dist_tag"
+      - name: Verify public registry visibility and a fresh installation
+        timeout-minutes: 20
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          args=(--version "$RELEASE_VERSION")
+          if [[ "$RELEASE_VERSION" == *-* ]]; then args+=(--allow-prerelease); fi
+          node scripts/verify-npm-publication.mjs "${args[@]}"
 
   publish-mcp:
     name: Publish to MCP Registry

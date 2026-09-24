@@ -111,7 +111,7 @@ jobs:
     - name: Validate release metadata and installer
       run: |
         node scripts/release-version.js --check
-        node --test scripts/release-version.test.js npm/scripts/install.test.js
+        node --test scripts/release-version.test.js scripts/verify-npm-publication.test.mjs npm/scripts/install.test.js
         npm pack --dry-run ./npm
 
     - name: Start MinIO (S3 chunk store backend)
