@@ -109,8 +109,9 @@ every pin's coverage. Consequences, stated plainly:
 - No snapshot → nothing is ever deleted, no matter how old.
 - Reclaiming entries ends time-travel/audit/undo below the cutoff — that
   is what a retention window means; pick it accordingly (default 7 days).
-- Pins punch permanent holes: a pinned state stays materializable forever
-  until the pin is deleted.
+- Existing pins protect the history needed to materialize their referenced
+  captured states. Deleting a pin releases that protection; pins do not replace
+  independent backups.
 - Deleting a branch reclaims its entries, snapshots and unshared chunks
   immediately (deletion is refused while the branch has live children or
   pins).

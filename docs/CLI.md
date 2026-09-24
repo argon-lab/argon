@@ -97,8 +97,10 @@ argon pin branch  -p P --name N --as NEW       durable branch from the pin
 argon pin sandbox -p P --name N [--ttl 1h]     TTL sandbox from the pin
 ```
 
-Pinned states survive GC and resets forever — pin an eval dataset once,
-fork a sandbox per run, get identical input every time.
+Pins protect their referenced captured states from GC and resets while they
+exist. Pin an eval dataset once and fork a sandbox per run for identical
+document input. Deleting the pin releases that protection; keep independent
+backups.
 
 ## Sandboxes — disposable agent branches
 

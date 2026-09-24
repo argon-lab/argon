@@ -74,6 +74,8 @@ argon restore reset -p myapp -b main --time 2026-07-07T09:00:00Z --backup pre-in
 
 Prefer clicking? `argon console` serves a local web console (UI + REST API),
 supervises capture, reaps expired sandboxes every minute, and opens your browser.
+The console's MIT-licensed source is in [web/](web/README.md); see the
+[rebuild instructions](CONTRIBUTING.md#console-source-and-reproducible-assets).
 For a complete managed workflow, run [the two-agent pinned dataset example](examples/pinned_agents.py).
 
 ## What you get
@@ -83,21 +85,21 @@ For a complete managed workflow, run [the two-agent pinned dataset example](exam
 | **Branching** | `argon branches create` | a metadata write — instant, zero copy |
 | **Real databases** | `argon checkout` / `argon proxy` | any driver, real mongod; proxy serves stable `mongodb://host/<project>~<branch>` URIs |
 | **Write capture** | `argon watch` | exact change-stream images → history, one actor label per branch |
-| **Time travel** | `argon time-travel query` | any historical state, by LSN or timestamp |
+| **Time travel** | `argon time-travel query` | query captured document states at retained LSNs; restore/pin also accept timestamps |
 | **Undo** | `argon undo --actor <a>` | revert a range or actor label; append-only, conflict-aware |
 | **Restore** | `argon restore preview/reset/branch` | rewind a released branch or fork retained history |
 | **Data PRs** | `argon merge preview/apply` | three-way merges as reviewable plans; conflicts never silent |
 | **Sandboxes** | `argon sandbox create --ttl 1h` | fork + checkout + TTL in one step — disposable agent workspaces |
-| **Dataset pins** | `argon pin create` / `pin sandbox` | immutable named states that survive GC and resets — reproducible evals |
+| **Dataset pins** | `argon pin create` / `pin sandbox` | named captured states protected from GC and resets while the pin exists |
 | **Web console** | `argon console` | local UI + REST API in one command |
 
 Data history covers document inserts, updates, replacements and deletes. Collection
 drop/rename produces degraded capture; indexes and collection options are not
 versioned. Native writes are asynchronous; control operations drain capture.
-Stop writers before release. Pins preserve states, while GC can expire audit
+Stop writers before release. Existing pins protect their referenced states, while GC can expire audit
 and undo history. See [operations](docs/OPERATIONS.md) for recovery and credentials.
 
-Storage retention uses snapshots + retention-window GC keep state plus a
+Storage retention uses snapshots + retention-window GC to keep state plus a
 window of history, not every write forever. Details and the consistency
 model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -105,16 +107,32 @@ model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 claude mcp add argon -- argon mcp        # 13 tools: sandbox, diff, merge, undo, pins
-pip install argon-agents                 # LangGraph checkpointer + Mem0, over REST
+# Install the v0.2.0 release wheel; PyPI currently has the older v0.1.0 API.
+python3 -m pip install 'argon-agents[langgraph] @ https://github.com/argon-lab/argon-agents/releases/download/v0.2.0/argon_agents-0.2.0-py3-none-any.whl'
 ```
 
+Start `argon console --no-browser` in another terminal, then:
+
 ```python
-saver = ArgonCheckpointSaver.from_sandbox(argon, "myapp")   # checkpoint on a disposable branch
-saver.merge()                                               # adopt the run — or .discard()
+from argon_agents import ArgonClient, ArgonCheckpointSaver
+
+argon = ArgonClient("http://127.0.0.1:1818")
+argon.get_or_create_project("myapp")
+saver = ArgonCheckpointSaver.from_sandbox(argon, "myapp")
+# Compile and run your LangGraph graph with checkpointer=saver, then review:
+plan = argon.merge_preview("myapp", saver.sandbox.branch)
+print(plan)
+# After reviewing this exact plan, apply it explicitly:
+# argon.merge_apply(plan["id"])
+# Or reject the run: saver.discard()
 
 argon.create_pin("myapp", "eval-v1")                        # pin the dataset once
 run = argon.sandbox_from_pin("myapp", "eval-v1")            # identical state, every eval run
 ```
+
+`saver.merge()` is a convenience call that previews and applies immediately;
+use the separate calls above when approval is required. Pins protect captured
+document state while they exist; keep independent backups.
 
 The full agent workflow: [docs/AGENTS.md](docs/AGENTS.md).
 
