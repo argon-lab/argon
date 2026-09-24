@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 )
 
 func TestDeleteKeysRoundTrip(t *testing.T) {

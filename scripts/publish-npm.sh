@@ -7,12 +7,17 @@ if ! git diff --quiet HEAD --; then
   echo 'Publish from a clean tagged checkout so the package matches its release binaries.' >&2
   exit 1
 fi
-release_tag=$(git describe --tags --exact-match HEAD)
+release_tag=$(git tag --points-at HEAD --list 'v*')
 case "$release_tag" in
-  v*) ;;
+  v*)
+    if [[ "$release_tag" == *$'\n'* ]]; then
+      echo 'HEAD has multiple root release tags; use an unambiguous release checkout.' >&2
+      exit 1
+    fi
+    ;;
   *) echo 'HEAD must have an exact v-prefixed release tag.' >&2; exit 1 ;;
 esac
-release_version=$(node scripts/release-version.js "$release_tag")
+release_version=$(node scripts/release-version.js "$release_tag" --check)
 node scripts/release-version.js --check
 npm whoami >/dev/null
 (

@@ -8,7 +8,7 @@ package server
 import (
 	"crypto/subtle"
 	"fmt"
-	"github.com/argon-lab/argon/pkg/version"
+	"github.com/argon-lab/argon/v2/pkg/version"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,7 +25,7 @@ import (
 )
 
 // Version shares the embedded release metadata with the CLI. Release builds
-// override github.com/argon-lab/argon/pkg/version.Build via -ldflags.
+// override github.com/argon-lab/argon/v2/pkg/version.Build via -ldflags.
 var Version = version.String()
 
 // Options are the cross-cutting server settings. The zero value is an open

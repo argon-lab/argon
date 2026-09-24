@@ -45,6 +45,44 @@ migration. Everything here reflects what the code does today.
 | `argon sandbox sweep -p P` | schedule for CLI-only use | reap expired sandboxes (pinned ones are skipped loudly) |
 | `argon gc -p P` | cron | reclaim covered, out-of-retention WAL entries |
 
+## Importing existing data
+
+`argon import database` copies ordinary documents with sequential cursor reads.
+Stop all source application writes, jobs and DDL before starting, and keep them
+stopped until completion. Pass `--source-quiesced` to acknowledge that contract;
+the command cannot prove that an external writer is paused. `--yes` only skips
+the target-creation confirmation. If writers resume during copying, consistency
+is outside the contract: discard that result and repeat from a quiesced source.
+This is not an online transactional clone or continuous source synchronization.
+Indexes, validators and collection options are not copied.
+
+```sh
+argon import preview --uri "$SOURCE_MONGODB_URI" --database myapp
+# Pause source writers and DDL now.
+argon import database --uri "$SOURCE_MONGODB_URI" --database myapp --project myapp --source-quiesced --yes
+# Source writers may resume after success.
+```
+
+Preflight verifies readable ordinary collections before creating the target;
+views/time-series collections and an absent/no-collection source are rejected.
+The reserved target is hidden from normal project lookup/listing until every
+collection succeeds. A handled error or cancellation removes that unpublished
+project, its branches, WAL and counter transactionally, so retrying its name
+starts cleanly. Cleanup uses a separate context when the copy was canceled.
+
+If the process is killed, or the metadata database was unavailable during
+cleanup, stop the original importer and recover explicitly:
+
+```sh
+argon import cleanup --project myapp --yes
+```
+
+This command accepts only an unfinished import; it refuses ordinary or completed
+projects. Do not run recovery concurrently with the original importer. Imports
+restart from the beginning; source snapshot/catch-up and resumable copies remain
+future capabilities. Destination metadata needs the normal writable replica set
+for transactional recovery, even when the quiesced source is standalone.
+
 ## Snapshot chunk stores
 
 Snapshots are content-addressed, zstd-compressed chunks (~4 MB),
@@ -71,8 +109,9 @@ every pin's coverage. Consequences, stated plainly:
 - No snapshot → nothing is ever deleted, no matter how old.
 - Reclaiming entries ends time-travel/audit/undo below the cutoff — that
   is what a retention window means; pick it accordingly (default 7 days).
-- Pins punch permanent holes: a pinned state stays materializable forever
-  until the pin is deleted.
+- Existing pins protect the history needed to materialize their referenced
+  captured states. Deleting a pin releases that protection; pins do not replace
+  independent backups.
 - Deleting a branch reclaims its entries, snapshots and unshared chunks
   immediately (deletion is refused while the branch has live children or
   pins).

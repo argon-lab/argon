@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/argon-lab/argon/pkg/walcli"
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 )
 
 const protocolVersion = "2024-11-05"

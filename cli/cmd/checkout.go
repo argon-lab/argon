@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/walcli"
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 

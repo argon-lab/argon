@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"

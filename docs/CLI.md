@@ -42,11 +42,19 @@ truth.
 
 ```
 argon import preview  --uri U --database D
-argon import database --uri U --database D --project P [--dry-run] [--yes]
+argon import database --uri U --database D --project P --source-quiesced [--yes]
+argon import database --uri U --database D --project P --dry-run
+argon import cleanup --project P --yes   # only after stopping a crashed importer
 argon import status
 ```
 
 Imports auto-snapshot, so reads never replay the whole import.
+Pause source writers and DDL throughout a real import; `--yes` does not replace
+`--source-quiesced`. Source preflight checks collection types/readability. The
+target stays unpublished until copying succeeds; ordinary failures clean up
+the reserved project and history. After a hard kill, stop the old process and
+use `import cleanup` before retrying the same name. Completed projects cannot
+be removed by cleanup. See [the import contract](OPERATIONS.md#importing-existing-data).
 
 ## History: time travel, undo, restore
 
@@ -89,8 +97,10 @@ argon pin branch  -p P --name N --as NEW       durable branch from the pin
 argon pin sandbox -p P --name N [--ttl 1h]     TTL sandbox from the pin
 ```
 
-Pinned states survive GC and resets forever — pin an eval dataset once,
-fork a sandbox per run, get identical input every time.
+Pins protect their referenced captured states from GC and resets while they
+exist. Pin an eval dataset once and fork a sandbox per run for identical
+document input. Deleting the pin releases that protection; keep independent
+backups.
 
 ## Sandboxes — disposable agent branches
 

@@ -227,4 +227,5 @@ type Project struct {
 	MainBranchID string    `bson:"main_branch_id" json:"main_branch_id"`
 	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
 	UseWAL       bool      `bson:"use_wal" json:"use_wal"`
+	Importing    bool      `bson:"importing,omitempty" json:"importing,omitempty"`
 }

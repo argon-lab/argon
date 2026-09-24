@@ -12,16 +12,16 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/argon-lab/argon/internal/importer"
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	projectwal "github.com/argon-lab/argon/internal/project/wal"
-	"github.com/argon-lab/argon/internal/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/importer"
+	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 )
 
 // TestImportPreview tests the import preview functionality
 func TestImportPreview(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Setup test databases
 	walDB := setupTestDB(t)
 	sourceDB := setupTestSourceDB(t, "test_source_import")
@@ -75,7 +75,7 @@ func TestImportPreview(t *testing.T) {
 // TestImportDatabaseDryRun tests the dry run import functionality
 func TestImportDatabaseDryRun(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Setup test databases
 	walDB := setupTestDB(t)
 	sourceDB := setupTestSourceDB(t, "test_source_import_dry")
@@ -98,11 +98,12 @@ func TestImportDatabaseDryRun(t *testing.T) {
 	// Test dry run import
 	sourceMongoURI := getTestMongoURI()
 	opts := importer.ImportOptions{
-		MongoURI:     sourceMongoURI,
-		DatabaseName: "test_source_import_dry",
-		ProjectName:  "test-import-project",
-		DryRun:       true,
-		BatchSize:    100,
+		SourceQuiesced: true,
+		MongoURI:       sourceMongoURI,
+		DatabaseName:   "test_source_import_dry",
+		ProjectName:    "test-import-project",
+		DryRun:         true,
+		BatchSize:      100,
 	}
 
 	result, err := importService.ImportDatabase(ctx, opts)
@@ -124,7 +125,7 @@ func TestImportDatabaseDryRun(t *testing.T) {
 // TestImportDatabaseActual tests the actual import functionality
 func TestImportDatabaseActual(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Setup test databases
 	walDB := setupTestDB(t)
 	sourceDB := setupTestSourceDB(t, "test_source_import_actual")
@@ -147,11 +148,12 @@ func TestImportDatabaseActual(t *testing.T) {
 	// Test actual import
 	sourceMongoURI := getTestMongoURI()
 	opts := importer.ImportOptions{
-		MongoURI:     sourceMongoURI,
-		DatabaseName: "test_source_import_actual",
-		ProjectName:  "test-import-project",
-		DryRun:       false,
-		BatchSize:    2, // Small batch for testing
+		SourceQuiesced: true,
+		MongoURI:       sourceMongoURI,
+		DatabaseName:   "test_source_import_actual",
+		ProjectName:    "test-import-project",
+		DryRun:         false,
+		BatchSize:      2, // Small batch for testing
 	}
 
 	result, err := importService.ImportDatabase(ctx, opts)
@@ -207,7 +209,7 @@ func TestImportDatabaseActual(t *testing.T) {
 // TestImportValidation tests input validation
 func TestImportValidation(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Setup test database
 	walDB := setupTestDB(t)
 
@@ -225,8 +227,9 @@ func TestImportValidation(t *testing.T) {
 
 	// Test missing URI
 	opts := importer.ImportOptions{
-		DatabaseName: "test",
-		ProjectName:  "test-project",
+		SourceQuiesced: true,
+		DatabaseName:   "test",
+		ProjectName:    "test-project",
 	}
 	_, err = importService.ImportDatabase(ctx, opts)
 	assert.Error(t, err)
@@ -234,8 +237,9 @@ func TestImportValidation(t *testing.T) {
 
 	// Test missing database name
 	opts = importer.ImportOptions{
-		MongoURI:    "mongodb://localhost:27017",
-		ProjectName: "test-project",
+		SourceQuiesced: true,
+		MongoURI:       "mongodb://localhost:27017",
+		ProjectName:    "test-project",
 	}
 	_, err = importService.ImportDatabase(ctx, opts)
 	assert.Error(t, err)
@@ -243,8 +247,9 @@ func TestImportValidation(t *testing.T) {
 
 	// Test missing project name
 	opts = importer.ImportOptions{
-		MongoURI:     "mongodb://localhost:27017",
-		DatabaseName: "test",
+		SourceQuiesced: true,
+		MongoURI:       "mongodb://localhost:27017",
+		DatabaseName:   "test",
 	}
 	_, err = importService.ImportDatabase(ctx, opts)
 	assert.Error(t, err)
@@ -254,7 +259,7 @@ func TestImportValidation(t *testing.T) {
 // TestImportDuplicateProject tests handling of duplicate project names
 func TestImportDuplicateProject(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Setup test database
 	walDB := setupTestDB(t)
 
@@ -276,10 +281,11 @@ func TestImportDuplicateProject(t *testing.T) {
 
 	// Try to import with same project name
 	opts := importer.ImportOptions{
-		MongoURI:     getTestMongoURI(),
-		DatabaseName: "test_db",
-		ProjectName:  "existing-project",
-		DryRun:       false,
+		SourceQuiesced: true,
+		MongoURI:       getTestMongoURI(),
+		DatabaseName:   "test_db",
+		ProjectName:    "existing-project",
+		DryRun:         false,
 	}
 
 	_, err = importService.ImportDatabase(ctx, opts)
@@ -290,7 +296,7 @@ func TestImportDuplicateProject(t *testing.T) {
 // TestImportInvalidDatabase tests handling of invalid database connections
 func TestImportInvalidDatabase(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Setup test database
 	walDB := setupTestDB(t)
 
@@ -323,7 +329,7 @@ func TestImportInvalidDatabase(t *testing.T) {
 // TestImportSystemCollections tests that system collections are properly filtered
 func TestImportSystemCollections(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Setup test databases
 	walDB := setupTestDB(t)
 	sourceDB := setupTestSourceDB(t, "test_source_import_system")
@@ -379,7 +385,6 @@ func createTestImportData(t *testing.T, db *mongo.Database) {
 	_, err = productsCollection.InsertMany(ctx, products)
 	require.NoError(t, err)
 }
-
 
 // setupTestSourceDB creates a separate source database for import testing
 func setupTestSourceDB(t *testing.T, dbName string) *mongo.Database {

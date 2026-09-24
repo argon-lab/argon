@@ -39,9 +39,9 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to ensure a wel
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.26.6+ (see `go.mod`)
 - Docker (for MongoDB and MinIO)
-- Node 20+ and Python 3.10+ only if you touch the driver-compatibility
+- Node.js 24 for the console (`web/`); Python 3.10+ for the driver-compatibility
   harness (`compat/`)
 
 ### MongoDB (replica set required)
@@ -70,11 +70,13 @@ golangci-lint run ./...           # run in each module you touched
 
 The S3 chunk-store tests are gated: they skip unless
 `ARGON_TEST_S3_ENDPOINT` / `ARGON_TEST_S3_BUCKET` (plus `AWS_*`
-credentials) point at an S3-compatible store. Locally, MinIO works:
+credentials) point at an S3-compatible store. For a disposable local test fixture, use the pinned historical MinIO image
+below. It is not a production storage recommendation; community binaries are
+[no longer maintained](https://github.com/minio/minio#source-only-distribution).
 
 ```bash
 docker run -d --name argon-minio -p 9010:9000 \
-  -e MINIO_ROOT_USER=argon -e MINIO_ROOT_PASSWORD=argon12345 minio/minio server /data
+  -e MINIO_ROOT_USER=argon -e MINIO_ROOT_PASSWORD=argon12345 quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
 ARGON_TEST_S3_ENDPOINT=http://localhost:9010 ARGON_TEST_S3_BUCKET=argon-test \
   AWS_ACCESS_KEY_ID=argon AWS_SECRET_ACCESS_KEY=argon12345 AWS_REGION=us-east-1 \
   go test ./tests/wal/ -run TestChunkStore -count=1
@@ -83,6 +85,15 @@ ARGON_TEST_S3_ENDPOINT=http://localhost:9010 ARGON_TEST_S3_BUCKET=argon-test \
 The driver-compatibility harness (`bash compat/run.sh`) runs real pymongo
 and mongoose workloads against a checked-out branch and verifies WAL
 convergence; CI runs it on every push.
+
+### Console source and reproducible assets
+
+The current console is public in [`web/`](web/README.md), under MIT. Run
+`bash scripts/sync-ui.sh` from this repository to rebuild the assets embedded
+in the Go binary. `bash scripts/sync-ui.sh --check` verifies the committed
+assets and their SHA-256 provenance. Commit source and built assets together.
+No private companion checkout is needed. CI tests the production console
+against the same engine commit, including Undo scope and expired sessions.
 
 ### Two rules the tests enforce
 
@@ -139,9 +150,10 @@ convergence; CI runs it on every push.
 
 ### Before Submitting
 
-- [ ] Run `make lint` to check code style
-- [ ] Run `make test` to ensure all tests pass
-- [ ] Run `make bench` if you've made performance-related changes
+- [ ] Run `go vet ./...` in each changed Go module
+- [ ] Run the engine, API and CLI tests described above
+- [ ] Run `bash scripts/sync-ui.sh --check` for console changes
+- [ ] Use the [benchmark suite](https://github.com/argon-lab/benchmarks) for performance claims
 - [ ] Update documentation for API changes
 - [ ] Add tests for new functionality
 - [ ] Rebase on latest main branch
@@ -305,10 +317,10 @@ We value all contributions! Contributors will be:
 export ARGON_LOG_LEVEL=debug
 
 # Run with race detector
-go run -race ./cmd/argon
+(cd cli && go run -race . console --no-browser)
 
-# Profile CPU usage
-go run ./cmd/argon --cpuprofile=cpu.prof
+# Profile engine tests
+go test ./tests/wal -run Test -cpuprofile=cpu.prof
 ```
 
 ### Common Issues
@@ -321,7 +333,7 @@ go run ./cmd/argon --cpuprofile=cpu.prof
 
 ```bash
 # Run specific tests
-go test -run TestBranchCreation ./engine
+go test ./tests/wal -run TestBranch -count=1
 
 # Update all dependencies
 go get -u ./...

@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/argon-lab/argon/api/server"
+	"github.com/argon-lab/argon/api/v2/server"
 	"github.com/spf13/cobra"
 )
 

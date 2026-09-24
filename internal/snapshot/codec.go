@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/argon-lab/argon/internal/mongoexpr"
-	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/mongoexpr"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 )
 

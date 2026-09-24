@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/checkout"
-	"github.com/argon-lab/argon/internal/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/checkout"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -207,6 +207,11 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 			}
 			entry, err := s.convertEvent(ctx, physical, branch, stream.Current)
 			if err != nil {
+				if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+					// The current event is not converted or checkpointed. Keep
+					// its safe predecessor so a restart can replay it intact.
+					return flushCanceled()
+				}
 				complete, token := batch, lastSafeToken
 				if len(batch) > 0 && marker.txnID() != "" && marker.txnID() == batch[len(batch)-1].TxnID {
 					complete, token = completePrefix(batch, lastSafeToken, transactionStartToken)
@@ -393,6 +398,9 @@ func (s *Service) ensurePrePostImages(ctx context.Context, physical *mongo.Datab
 }
 
 func imageSetupError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	if mongo.IsNetworkError(err) || mongo.IsTimeout(err) {
 		return err
 	}

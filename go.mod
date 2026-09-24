@@ -1,4 +1,4 @@
-module github.com/argon-lab/argon
+module github.com/argon-lab/argon/v2
 
 go 1.26.6
 

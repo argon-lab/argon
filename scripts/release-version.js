@@ -27,15 +27,25 @@ function syncVersion(root, input, check = false) {
   if (!npmPackage || server.name !== pkg.mcpName) {
     throw new Error('server.json must identify the npm package and match its mcpName');
   }
+  const modules = ['api/go.mod', 'cli/go.mod'].map(relative => {
+    const filename = path.join(root, relative);
+    const contents = fs.readFileSync(filename, 'utf8');
+    const required = [...contents.matchAll(/github\.com\/argon-lab\/argon\/(?:api\/)?v2 v([^\s]+)/g)];
+    if (!required.length) throw new Error(`${relative} must require the Go v2 module`);
+    return { filename, contents, required };
+  });
   if (check) {
-    if ([source, pkg.version, server.version, npmPackage.version].some(value => value !== version)) {
-      throw new Error('VERSION, npm/package.json, and server.json disagree; run node scripts/release-version.js');
+    if ([source, pkg.version, server.version, npmPackage.version, ...modules.flatMap(module => module.required.map(match => match[1]))].some(value => value !== version)) {
+      throw new Error('VERSION, npm/package.json, server.json, and companion Go requirements disagree; run node scripts/release-version.js');
     }
   } else {
     pkg.version = server.version = npmPackage.version = version;
     fs.writeFileSync(path.join(root, 'VERSION'), `${version}\n`);
     fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
     fs.writeFileSync(serverPath, `${JSON.stringify(server, null, 2)}\n`);
+    for (const module of modules) {
+      fs.writeFileSync(module.filename, module.contents.replace(/(github\.com\/argon-lab\/argon\/(?:api\/)?v2) v[^\s]+/g, `$1 v${version}`));
+    }
   }
   return version;
 }

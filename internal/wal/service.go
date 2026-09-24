@@ -21,12 +21,6 @@ type Service struct {
 	compressor *Compressor
 }
 
-// legacyIndexNames are indexes from earlier releases whose keys or options
-// conflict with the current definitions and must be dropped before creating
-// the new ones. Creating an index whose name matches an existing one with
-// different options fails, so these are removed up front.
-var legacyIndexNames = []string{"lsn_1", "project_id_1_lsn_1"}
-
 // NewService creates a new WAL service
 func NewService(db *mongo.Database) (*Service, error) {
 	// Initialize compressor with default config
@@ -45,10 +39,25 @@ func NewService(db *mongo.Database) (*Service, error) {
 
 	ctx := context.Background()
 
-	// Earlier releases enforced a globally unique lsn; LSNs are now scoped
-	// per project, so the old definitions conflict and must be dropped.
-	for _, name := range legacyIndexNames {
-		_, _ = s.collection.Indexes().DropOne(ctx, name)
+	// Only migrate incompatible legacy definitions. Dropping the current
+	// project/LSN index on every connection races another process's index
+	// creation (e.g. a CLI command starting alongside `argon watch`).
+	specs, err := s.collection.Indexes().ListSpecifications(ctx)
+	if err != nil {
+		_ = compressor.Close()
+		return nil, fmt.Errorf("inspect WAL indexes: %w", err)
+	}
+	for _, spec := range specs {
+		legacy := spec.Name == "lsn_1"
+		if spec.Name == "project_id_1_lsn_1" {
+			legacy = spec.Unique == nil || !*spec.Unique
+		}
+		if legacy {
+			if _, err := s.collection.Indexes().DropOne(ctx, spec.Name); err != nil {
+				_ = compressor.Close()
+				return nil, fmt.Errorf("migrate WAL index %s: %w", spec.Name, err)
+			}
+		}
 	}
 
 	indexes := []mongo.IndexModel{

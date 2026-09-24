@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/checkout"
-	"github.com/argon-lab/argon/internal/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/checkout"
+	"github.com/argon-lab/argon/v2/internal/wal"
 )
 
 // DefaultTTL bounds sandboxes that don't specify one.

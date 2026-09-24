@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/argon-lab/argon/internal/undo"
-	"github.com/argon-lab/argon/internal/wal"
-	"github.com/argon-lab/argon/internal/walwriter"
+	"github.com/argon-lab/argon/v2/internal/undo"
+	"github.com/argon-lab/argon/v2/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/walwriter"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 )

@@ -1,12 +1,66 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
 
 jobs:
+  console:
+    name: Public console build and browser regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            api/go.sum
+      - name: Verify public source reproduces embedded assets
+        run: bash scripts/sync-ui.sh --check
+      - name: Audit complete console dependency tree
+        run: npm audit --prefix web
+      - name: Start disposable MongoDB replica set
+        run: |
+          docker run -d --name console-mongo -p 127.0.0.1:27017:27017 mongo:7.0.43 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do docker exec console-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' && break; sleep 1; done
+          docker exec console-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+          for i in $(seq 1 30); do docker exec console-mongo mongosh --quiet --eval 'if(!db.hello().isWritablePrimary)quit(1)' && break; sleep 1; done
+          docker exec console-mongo mongosh --quiet --eval 'if(!db.hello().isWritablePrimary)quit(1)'
+      - name: Build the same engine commit with embedded UI
+        working-directory: api
+        run: go build -o /tmp/argon-console-api .
+      - name: Start production console in isolated demo mode
+        run: |
+          PORT=18081 ARGON_DEMO_MODE=1 ARGON_METADATA_DB=argon_console_ci /tmp/argon-console-api >/tmp/argon-console-engine.log 2>&1 &
+          for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:18081/api/v1/meta >/dev/null && break; sleep 1; done
+          curl --fail --silent http://127.0.0.1:18081/api/v1/meta
+      - name: Install browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Verify Undo, recovery, conflict review and responsive UI
+        working-directory: web
+        env:
+          CONSOLE_URL: http://127.0.0.1:18081
+        run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true # Optional evidence; the browser/build steps remain required.
+        with:
+          name: public-console-evidence
+          path: |
+            /tmp/argon-console-checks
+            /tmp/argon-console-engine.log
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -47,6 +101,9 @@ jobs:
     - name: Download dependencies
       run: go mod download
 
+    - name: Compile an external Go v2 consumer
+      run: bash scripts/check-go-module.sh
+
     - uses: actions/setup-node@v4
       with:
         node-version: '22'
@@ -61,7 +118,7 @@ jobs:
       run: |
         docker run -d --name ci-minio -p 9010:9000 \
           -e MINIO_ROOT_USER=argon -e MINIO_ROOT_PASSWORD=argon12345 \
-          minio/minio server /data
+          quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data
         for i in $(seq 1 30); do
           curl -sf http://localhost:9010/minio/health/live && break
           sleep 1

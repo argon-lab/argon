@@ -3,7 +3,7 @@ module argon-cli
 go 1.26.6
 
 require (
-	github.com/argon-lab/argon v0.0.0
+	github.com/argon-lab/argon/v2 v2.1.2
 	github.com/spf13/cobra v1.9.1
 )
 
@@ -32,10 +32,10 @@ require (
 	google.golang.org/protobuf v1.36.1 // indirect
 )
 
-replace github.com/argon-lab/argon => ../
+replace github.com/argon-lab/argon/v2 => ../
 
 require (
-	github.com/argon-lab/argon/api v0.0.0
+	github.com/argon-lab/argon/api/v2 v2.1.2
 	github.com/aws/aws-sdk-go-v2 v1.42.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.14 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.28 // indirect
@@ -72,4 +72,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/argon-lab/argon/api => ../api
+replace github.com/argon-lab/argon/api/v2 => ../api

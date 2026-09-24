@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/argon-lab/argon/pkg/walcli"
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )

@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"

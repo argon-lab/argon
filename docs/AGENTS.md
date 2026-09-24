@@ -2,7 +2,7 @@
 
 Give the agent a real MongoDB database that is secretly a disposable
 branch. Review what it did as a diff. Merge the good, undo the bad,
-reproduce any run from a pinned dataset.
+repeat runs from the same pinned document state.
 
 ```
 pin ──▶ sandbox (TTL) ──▶ agent writes via any driver ──▶ diff
@@ -43,8 +43,8 @@ argon sandbox discard …                       # or let the managed server swee
 
 ## Pins — reproducible evals
 
-A pin is a named, immutable branch state that survives GC and resets
-forever:
+A pin is a named, immutable reference to a captured branch state. Its
+referenced history is protected from GC and resets while the pin exists:
 
 ```bash
 argon pin create  -p myapp --name eval-v1 --note "golden dataset"
@@ -53,6 +53,8 @@ argon pin sandbox -p myapp --name eval-v1     # fresh sandbox per run
 
 Pin once, fork per run: identical input state every time, no matter what
 happened to the branch since. Delete the pin to release its history.
+Pins are not independent backups, and matching input data does not make an
+agent's output deterministic.
 
 ## MCP server
 
@@ -116,18 +118,31 @@ everything reclaimed after `ARGON_DEMO_TTL_MINUTES` (default 60).
 
 ## Python — argon-agents
 
-`pip install argon-agents` (add `[langgraph]` for the checkpointer):
+Install the v0.2.0 release wheel, with `[langgraph]` for the checkpointer.
+PyPI currently serves the older v0.1.0 API:
+
+```bash
+python3 -m pip install 'argon-agents[langgraph] @ https://github.com/argon-lab/argon-agents/releases/download/v0.2.0/argon_agents-0.2.0-py3-none-any.whl'
+```
+
+Start `argon console --no-browser` in another terminal. It listens on port
+1818; use port 8080 instead if you started the standalone API with `go run .`.
 
 ```python
 from argon_agents import ArgonClient, ArgonCheckpointSaver
 
-argon = ArgonClient("http://localhost:8080")
+argon = ArgonClient("http://127.0.0.1:1818")
+argon.get_or_create_project("myapp")
 
 # LangGraph: the official MongoDB checkpointer on a sandboxed branch
 saver = ArgonCheckpointSaver.from_sandbox(argon, "myapp", ttl_minutes=60)
-graph = builder.compile(checkpointer=saver)
-saver.fork(argon)     # branch the whole checkpoint history
-saver.merge()         # adopt the run — or saver.discard()
+# Compile and run your graph with checkpointer=saver.
+# Optional: forked_saver = saver.fork(argon) branches its checkpoint history.
+plan = argon.merge_preview("myapp", saver.sandbox.branch)
+print(plan)           # inspect document changes and conflicts
+# After reviewing this exact plan:
+# argon.merge_apply(plan["id"])
+# Or reject the run: saver.discard()
 
 # Mem0: sandboxed agent memory
 from argon_agents import sandboxed_mem0_config
@@ -140,6 +155,12 @@ run = argon.sandbox_from_pin("myapp", "eval-v1")
 
 LangGraph's checkpoint ids rewind steps *within* a thread; Argon adds
 fork/merge/undo/audit *across* the whole store.
+The `saver.merge()`, `sandbox.merge()` and `argon.merge()` convenience methods
+preview and apply immediately, without an approval pause. Use separate preview
+and apply calls for reviewed changes. The running API manages capture and TTL
+sweeps; materializing a sandbox copies data into a physical MongoDB database.
+Mem0 semantic vector retrieval also requires Atlas Search or a compatible
+MongoDB Search deployment and separately provisioned search indexes.
 
 ## Wire proxy
 

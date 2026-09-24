@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"testing"
@@ -25,6 +25,16 @@ func TestImageSetupIndexBuildIsRetryable(t *testing.T) {
 	denied := imageSetupError(mongo.CommandError{Name: "Unauthorized", Code: 13})
 	if !errors.As(denied, &gap) {
 		t.Fatal("permission failure must be visible as degraded capture")
+	}
+}
+
+func TestImageSetupCancellationIsNotACaptureGap(t *testing.T) {
+	for _, cancellation := range []error{context.Canceled, context.DeadlineExceeded} {
+		err := imageSetupError(fmt.Errorf("collection setup interrupted: %w", cancellation))
+		var gap *CaptureError
+		if !errors.Is(err, cancellation) || errors.As(err, &gap) {
+			t.Fatalf("cancellation lost its identity or became a permanent gap: %v", err)
+		}
 	}
 }
 

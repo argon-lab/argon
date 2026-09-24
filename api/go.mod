@@ -1,15 +1,15 @@
-module github.com/argon-lab/argon/api
+module github.com/argon-lab/argon/api/v2
 
 go 1.26.6
 
 require (
-	github.com/argon-lab/argon v0.0.0
+	github.com/argon-lab/argon/v2 v2.1.2
 	github.com/gin-gonic/gin v1.9.1
 	github.com/stretchr/testify v1.9.0
 	go.mongodb.org/mongo-driver v1.17.7
 )
 
-replace github.com/argon-lab/argon => ../
+replace github.com/argon-lab/argon/v2 => ../
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.42.1 // indirect

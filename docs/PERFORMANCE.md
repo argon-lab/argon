@@ -27,10 +27,18 @@ checkout, time to connect, first read/write, or native capture overhead.
 Snapshot/time-travel samples in that baseline do not establish p95/p99 read
 latency. The recorded engine revision must accompany reused figures.
 
-Still required: end-to-end sandbox startup, native write/capture latency,
-write throughput, divergence storage growth, multiple dataset sizes and
-concurrency levels. These workloads can use the public `WriterFor` API and
-managed capture; they are no longer blocked on the old public-writer issue.
+The later committed-engine matrix also measures end-to-end sandbox readiness,
+first query, native acknowledgment-to-capture delay, throughput, storage
+categories and small ancestry/concurrency cases. Inspect each run's exact
+engine source and raw samples in RESULTS.md; these are measurements for the
+recorded environment, not an SLA. A p99 computed from twenty observations
+does not establish production tail latency.
+
+Expanded dataset/concurrency/depth runs and longer recovery/soak runs need
+their own published evidence before drawing scale conclusions. Use the
+benchmark repository's current results and experiment plan to distinguish
+completed runs from runnable workloads. The public `WriterFor` API and managed
+capture already support these workloads.
 
 If you publish an Argon number anywhere — a README, a blog post, a talk —
 it must come from a linked RESULTS.md run. Regressions the local

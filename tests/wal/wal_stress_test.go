@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
