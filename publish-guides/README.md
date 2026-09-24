@@ -11,7 +11,7 @@ For example, to prepare 2.1.2:
 ```sh
 node scripts/release-version.js 2.1.2
 node scripts/release-version.js --check
-node --test scripts/release-version.test.js npm/scripts/install.test.js
+node --test scripts/release-version.test.js scripts/verify-npm-publication.test.mjs npm/scripts/install.test.js
 bash scripts/check-go-module.sh
 ```
 
@@ -37,14 +37,16 @@ The tag workflow calls the complete CI workflow **on the tagged source**, checks
 both tags and committed version metadata, then builds five platform binaries.
 Only successful validation permits GitHub release → npm → MCP publication.
 The npm step needs the configured `NPM_TOKEN`; MCP uses GitHub OIDC.
+After npm accepts the upload, the workflow allows up to 15 minutes for public
+registry propagation, checking every 30 seconds. It then installs into a fresh
+temporary prefix and cache, verifies the installed binary against the release's
+`SHA256SUMS`, and checks the actual CLI version before allowing MCP publication.
 
 ## Verify every channel
 
 ```sh
 bash scripts/check-go-module.sh v2.1.2 # external consumer; no local replaces
-npm view argonctl@2.1.2 version
-npm install --prefix /tmp/argon-release-check argonctl@2.1.2
-/tmp/argon-release-check/node_modules/.bin/argon --version
+node scripts/verify-npm-publication.mjs --version 2.1.2
 ```
 
 Verify the corresponding active version in the
@@ -59,7 +61,11 @@ from package publication.
 - [npm recovery](npm.md): use the clean tagged checkout and existing release
   assets; do not regenerate or replace an already published version.
 - MCP only: manually dispatch `publish-mcp.yml` with the already published npm
-  version. It verifies npm visibility before publishing.
+  version. It uses the same 15-minute visibility window before publishing. For
+  a metadata-only recovery check, run
+  `node scripts/verify-npm-publication.mjs --version 2.1.2 --metadata-only`.
+  An accepted npm upload can take time to appear; rerun verification or only the
+  failed MCP workflow after it becomes visible, never republish that version.
 - Python: `argon-agents` is released from its
   [own repository](https://github.com/argon-lab/argon-agents). Verify the actual
   [PyPI version](https://pypi.org/project/argon-agents/) before recommending an
