@@ -336,6 +336,7 @@ func init() {
 	_ = importStatusCmd.MarkFlagRequired("project")
 	importCleanupCmd.Flags().StringP("project", "p", "", "Unfinished import project name")
 	importCleanupCmd.Flags().Bool("yes", false, "Confirm the original importer is stopped and remove its unfinished data")
+	importCleanupCmd.Flags().StringP("output", "o", "table", "Output format: table, json")
 	_ = importCleanupCmd.MarkFlagRequired("project")
 }
 
