@@ -159,6 +159,9 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 			err = s.runStream(ctx, branchID, cfg, run)
 		}
 		if ctx.Err() != nil {
+			if errors.Is(err, ctx.Err()) {
+				return nil
+			}
 			return err
 		}
 		var gap *CaptureError

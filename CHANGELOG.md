@@ -20,6 +20,8 @@ entry — a synchronization barrier, not in-proxy capture).
 - Concurrent engine/CLI startup preserves the current unique WAL index instead
   of dropping and rebuilding it on every connection. Legacy definitions still
   migrate when needed.
+- Canceling capture while enabling images for a new collection preserves the
+  resumable boundary and stops cleanly instead of marking a permanent history gap.
 - Go consumers use valid `github.com/argon-lab/argon/v2` and
   `github.com/argon-lab/argon/api/v2` modules, with separate matching release tags.
 

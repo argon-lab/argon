@@ -28,6 +28,16 @@ func TestImageSetupIndexBuildIsRetryable(t *testing.T) {
 	}
 }
 
+func TestImageSetupCancellationIsNotACaptureGap(t *testing.T) {
+	for _, cancellation := range []error{context.Canceled, context.DeadlineExceeded} {
+		err := imageSetupError(fmt.Errorf("collection setup interrupted: %w", cancellation))
+		var gap *CaptureError
+		if !errors.Is(err, cancellation) || errors.As(err, &gap) {
+			t.Fatalf("cancellation lost its identity or became a permanent gap: %v", err)
+		}
+	}
+}
+
 func TestCancellationKeepsOnlyCompleteTransactionPrefix(t *testing.T) {
 	last := bson.Raw{2}
 	before := bson.Raw{1}

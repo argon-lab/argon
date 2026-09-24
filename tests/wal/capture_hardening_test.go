@@ -23,6 +23,56 @@ func captureContext(t *testing.T) context.Context {
 	return ctx
 }
 
+func TestCapture_CancelDuringNewCollectionSetupResumes(t *testing.T) {
+	ctx := captureContext(t)
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
+	var interrupted atomic.Bool
+	monitor := &event.CommandMonitor{Started: func(_ context.Context, e *event.CommandStartedEvent) {
+		if e.CommandName == "collMod" && e.Command.Lookup("collMod").StringValue() == "cancel_new" && interrupted.CompareAndSwap(false, true) {
+			cancelWatch()
+		}
+	}}
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(getTestMongoURI()).SetMonitor(monitor))
+	require.NoError(t, err)
+	db := client.Database(fmt.Sprintf("argon_capture_cancel_setup_%d", time.Now().UnixNano()))
+	t.Cleanup(func() { _ = db.Drop(context.Background()); _ = client.Disconnect(context.Background()) })
+	f := newIngestFixtureAt(t, "capture-cancel-setup", db)
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- f.ingest.Run(watchCtx, f.branchID, ingest.WithReady(ready)) }()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("capture startup: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	_, err = f.physical.Collection("cancel_new").InsertOne(ctx, bson.M{"_id": "pending", "n": 1})
+	require.NoError(t, err)
+	select {
+	case err := <-done:
+		require.NoError(t, err, "operator cancellation is not a permanent capture gap")
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.True(t, interrupted.Load(), "test must interrupt actual image setup")
+	for _, status := range f.ingest.Statuses() {
+		require.Equal(t, "stopped", status.State)
+		require.Empty(t, status.Error)
+	}
+	require.NoError(t, f.ingest.Start(ctx, f.branchID))
+	require.NoError(t, f.ingest.Stop(ctx, f.branchID))
+	branch, err := f.branches.GetBranchByID(f.branchID)
+	require.NoError(t, err)
+	entries, err := f.wal.GetBranchEntries(f.branchID, "cancel_new", 0, branch.HeadLSN)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "interrupted event must be captured exactly once after resuming")
+	state, err := f.matFull.MaterializeCollection(branch, "cancel_new")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, state["pending"]["n"])
+}
+
 func TestCapture_CanceledLargeTransactionResumesAsOneGroup(t *testing.T) {
 	ctx := captureContext(t)
 	watchCtx, cancelWatch := context.WithCancel(ctx)
