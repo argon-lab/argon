@@ -41,61 +41,47 @@ jobs:
       - name: Check release tooling
         run: node --test scripts/release-version.test.js npm/scripts/install.test.js
 
-  build:
-    name: Build binaries
+  release:
+    name: Build and publish verified binaries
     needs: [prepare, validate]
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
-        exclude:
-          - goos: windows
-            goarch: arm64
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
             cli/go.sum
             api/go.sum
-      - name: Build binary
+      # Cross-compile in one job. Final release assets are uploaded directly;
+      # publication does not depend on temporary Actions artifact storage.
+      - name: Build every supported platform
         working-directory: cli
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           mkdir -p ../dist
-          asset="argon-${GOOS}-${GOARCH}"
-          if [ "$GOOS" = windows ]; then asset="$asset.exe"; fi
-          go build -trimpath -ldflags="-s -w -X github.com/argon-lab/argon/v2/pkg/version.Build=$RELEASE_VERSION" -o "../dist/$asset" .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/
-          if-no-files-found: error
-
-  release:
-    name: Create release
-    needs: [prepare, validate, build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: binaries-*
-          path: dist/
-          merge-multiple: true
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            export GOOS="${target%/*}" GOARCH="${target#*/}"
+            asset="argon-${GOOS}-${GOARCH}"
+            if [ "$GOOS" = windows ]; then asset="$asset.exe"; fi
+            go build -trimpath -ldflags="-s -w -X github.com/argon-lab/argon/v2/pkg/version.Build=$RELEASE_VERSION" -o "../dist/$asset" .
+          done
+      - name: Record engine, public console and binary provenance
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/release-provenance.mjs dist
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum argon-* > SHA256SUMS
-      - name: Create release
+        run: sha256sum argon-* release-provenance.json > SHA256SUMS
+      - name: Create release with all required assets
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*

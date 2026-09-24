@@ -1,5 +1,5 @@
 // Serving the embedded web console. The SPA build is vendored into
-// ui/dist by scripts/sync-ui.sh (a placeholder page ships by default), so
+// ui/dist from public web/ source by scripts/sync-ui.sh, so
 // one binary carries both the control plane and its UI.
 
 package server

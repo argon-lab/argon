@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source": "web/",
+  "source_sha256": "f421a725ec85d0da3a72a0ecfbece1afe818da375ca5b15547510644f599bba5",
+  "source_file_count": 24,
+  "source_hash_algorithm": "sha256 of sorted UTF-8 relative path + NUL + file bytes + NUL; excludes node_modules, dist, .git, .env*, .DS_Store",
+  "package_lock_sha256": "feec0d977e121b0328cb3a4401ff7a2f95cc3d5703f602fe0447954ba3d08476",
+  "assets_sha256": {
+    "assets/index-BhokV2n7.css": "99c01facc6f052cb4e23e970e9405b6aff7b2e33f8bb085a69e26728bff3ffa6",
+    "assets/index-s0_H-giz.js": "49ef0e8870ea9e46c3ce5dd4923a02c468d30978b02033484567d31b93f88a4a",
+    "index.html": "b048592e04fe63c4fc06b98ff4b01089810d30cdae67ff8070c89bb90f7fd6bd"
+  }
+}

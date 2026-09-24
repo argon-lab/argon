@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-brand-dark text-brand-text antialiased;
+}
+
+/* The guided tour rings the panel it's describing. */
+.tour-ring {
+  box-shadow:
+    0 0 0 1px #96a7ff,
+    0 0 0 6px rgba(150, 167, 255, 0.18);
+}
+
+/* The tour card animates in on every (re)open, so clicking "guided tour"
+   always produces visible motion — even when a card is already showing. */
+@keyframes tourIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.tour-card {
+  animation: tourIn 0.3s ease-out;
+}
+
+/* Preserve the complete document/actor text without widening mobile pages. */
+@media (max-width: 640px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  th,
+  td {
+    min-width: 4rem;
+    padding-right: 0.75rem;
+  }
+}
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #96a7ff;
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
+  }
+}

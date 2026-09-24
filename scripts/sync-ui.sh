@@ -1,36 +1,32 @@
 #!/usr/bin/env bash
-# Vendor the console SPA build into api/server/ui/dist, where go:embed
-# picks it up — one binary then serves both the API and the UI
-# (`argon console`, or the standalone api server).
-#
-# The SPA source lives in the argon-cloud repo (web/). Point at a local
-# checkout with $1 or ARGON_CONSOLE_SRC; a placeholder page ships in the
-# repo for builds without the UI.
+# Rebuild the public console source embedded by go:embed. --check verifies
+# committed assets without changing them. An explicit source path supports
+# development mirrors; no private repository is required.
 set -euo pipefail
 
-SRC="${1:-${ARGON_CONSOLE_SRC:-$HOME/dev/argon-cloud/web}}"
-DEST="$(cd "$(dirname "$0")/.." && pwd)/api/server/ui/dist"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CHECK=false
+if [ "${1:-}" = --check ]; then CHECK=true; shift; fi
+SRC="${1:-${ARGON_CONSOLE_SRC:-$ROOT/web}}"
+DEST="$ROOT/api/server/ui/dist"
+STAGING="$(mktemp -d)"
+trap 'rm -rf "$STAGING"' EXIT
 
-if [ ! -f "$SRC/package.json" ]; then
-    echo "no console SPA source at $SRC (clone argon-cloud or set ARGON_CONSOLE_SRC)" >&2
+if [ ! -f "$SRC/package-lock.json" ]; then
+    echo "console source requires package-lock.json at $SRC" >&2
     exit 1
 fi
 
 (cd "$SRC" && npm ci --no-audit --no-fund && npm run build)
-if [ ! -f "$SRC/dist/index.html" ]; then
-    echo "build produced no dist/index.html" >&2
-    exit 1
-fi
-
-rm -rf "$DEST"
-mkdir -p "$DEST"
-cp -R "$SRC/dist/." "$DEST/"
-if sha="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null)"; then
-    source_tree="$(git -C "$SRC" diff HEAD -- . ':!dist' | shasum -a 256 | awk '{print $1}')"
-    if [ -n "$(git -C "$SRC" status --porcelain -- . ':!dist')" ]; then sha="$sha+working-tree"; fi
+test -f "$SRC/dist/index.html"
+cp -R "$SRC/dist/." "$STAGING/"
+node "$ROOT/scripts/ui-provenance.mjs" "$SRC" "$STAGING"
+if "$CHECK"; then
+    diff -rq "$DEST" "$STAGING"
+    echo "embedded console matches public source and lockfile"
 else
-    sha="unknown"
-    source_tree="unknown"
+    rm -rf "$DEST"
+    mkdir -p "$DEST"
+    cp -R "$STAGING/." "$DEST/"
+    echo "vendored console from $SRC into $DEST"
 fi
-printf '%s\nsource-diff-sha256=%s\n' "$sha" "$source_tree" >"$DEST/.source"
-echo "vendored console UI from $SRC ($sha) into $DEST"
