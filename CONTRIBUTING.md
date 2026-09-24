@@ -70,11 +70,13 @@ golangci-lint run ./...           # run in each module you touched
 
 The S3 chunk-store tests are gated: they skip unless
 `ARGON_TEST_S3_ENDPOINT` / `ARGON_TEST_S3_BUCKET` (plus `AWS_*`
-credentials) point at an S3-compatible store. Locally, MinIO works:
+credentials) point at an S3-compatible store. For a disposable local test fixture, use the pinned historical MinIO image
+below. It is not a production storage recommendation; community binaries are
+[no longer maintained](https://github.com/minio/minio#source-only-distribution).
 
 ```bash
 docker run -d --name argon-minio -p 9010:9000 \
-  -e MINIO_ROOT_USER=argon -e MINIO_ROOT_PASSWORD=argon12345 minio/minio server /data
+  -e MINIO_ROOT_USER=argon -e MINIO_ROOT_PASSWORD=argon12345 quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
 ARGON_TEST_S3_ENDPOINT=http://localhost:9010 ARGON_TEST_S3_BUCKET=argon-test \
   AWS_ACCESS_KEY_ID=argon AWS_SECRET_ACCESS_KEY=argon12345 AWS_REGION=us-east-1 \
   go test ./tests/wal/ -run TestChunkStore -count=1
