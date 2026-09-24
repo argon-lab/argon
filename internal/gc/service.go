@@ -36,9 +36,9 @@ import (
 	"math"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/snapshot"
-	"github.com/argon-lab/argon/internal/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/snapshot"
+	"github.com/argon-lab/argon/v2/internal/wal"
 )
 
 // Config tunes garbage collection.

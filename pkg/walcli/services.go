@@ -7,24 +7,24 @@ import (
 	"strings"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/checkout"
-	"github.com/argon-lab/argon/internal/gc"
-	"github.com/argon-lab/argon/internal/importer"
-	"github.com/argon-lab/argon/internal/ingest"
-	"github.com/argon-lab/argon/internal/materializer"
-	"github.com/argon-lab/argon/internal/merge"
-	"github.com/argon-lab/argon/internal/migrate"
-	"github.com/argon-lab/argon/internal/pin"
-	projectwal "github.com/argon-lab/argon/internal/project/wal"
-	"github.com/argon-lab/argon/internal/restore"
-	"github.com/argon-lab/argon/internal/sandbox"
-	"github.com/argon-lab/argon/internal/snapshot"
-	"github.com/argon-lab/argon/internal/timetravel"
-	"github.com/argon-lab/argon/internal/undo"
-	"github.com/argon-lab/argon/internal/wal"
-	"github.com/argon-lab/argon/internal/walwriter"
-	"github.com/argon-lab/argon/internal/wireproxy"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/checkout"
+	"github.com/argon-lab/argon/v2/internal/gc"
+	"github.com/argon-lab/argon/v2/internal/importer"
+	"github.com/argon-lab/argon/v2/internal/ingest"
+	"github.com/argon-lab/argon/v2/internal/materializer"
+	"github.com/argon-lab/argon/v2/internal/merge"
+	"github.com/argon-lab/argon/v2/internal/migrate"
+	"github.com/argon-lab/argon/v2/internal/pin"
+	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
+	"github.com/argon-lab/argon/v2/internal/restore"
+	"github.com/argon-lab/argon/v2/internal/sandbox"
+	"github.com/argon-lab/argon/v2/internal/snapshot"
+	"github.com/argon-lab/argon/v2/internal/timetravel"
+	"github.com/argon-lab/argon/v2/internal/undo"
+	"github.com/argon-lab/argon/v2/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/walwriter"
+	"github.com/argon-lab/argon/v2/internal/wireproxy"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -365,29 +365,13 @@ func (s *Services) ImportPreview(ctx context.Context, mongoURI, databaseName str
 }
 
 // ImportDatabase wraps the importer database functionality for CLI use
-func (s *Services) ImportDatabase(ctx context.Context, mongoURI, databaseName, projectName string, dryRun bool, batchSize int) (interface{}, error) {
-	// Use a map to avoid importing the internal types
-	opts := map[string]interface{}{
-		"mongo_uri":     mongoURI,
-		"database_name": databaseName,
-		"project_name":  projectName,
-		"dry_run":       dryRun,
-		"batch_size":    batchSize,
-	}
-
-	// Create a struct that matches the internal ImportOptions
-	return s.callImportDatabase(ctx, opts)
-}
-
-// callImportDatabase creates the proper options struct and calls the service
-func (s *Services) callImportDatabase(ctx context.Context, opts map[string]interface{}) (interface{}, error) {
-	// Import the internal package here where it's allowed
+func (s *Services) ImportDatabase(ctx context.Context, mongoURI, databaseName, projectName string, dryRun bool, batchSize int, sourceQuiesced ...bool) (interface{}, error) {
+	// The optional acknowledgment preserves source compatibility while failing
+	// closed for writes until a caller confirms the source is quiesced.
 	importOpts := importer.ImportOptions{
-		MongoURI:     opts["mongo_uri"].(string),
-		DatabaseName: opts["database_name"].(string),
-		ProjectName:  opts["project_name"].(string),
-		DryRun:       opts["dry_run"].(bool),
-		BatchSize:    opts["batch_size"].(int),
+		MongoURI: mongoURI, DatabaseName: databaseName, ProjectName: projectName,
+		DryRun: dryRun, BatchSize: batchSize,
+		SourceQuiesced: len(sourceQuiesced) > 0 && sourceQuiesced[0],
 	}
 
 	return s.Importer.ImportDatabase(ctx, importOpts)

@@ -12,6 +12,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate the tagged source
+    uses: ./.github/workflows/ci.yml
+
   prepare:
     name: Validate release version
     runs-on: ubuntu-latest
@@ -19,6 +23,8 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -27,15 +33,17 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          version=$(node scripts/release-version.js "$RELEASE_TAG")
+          version=$(node scripts/release-version.js "$RELEASE_TAG" --check)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          node scripts/release-version.js --check
+          # Nested Go modules need their own semantic-version tag. Both tags
+          # must identify the reviewed source that the reusable CI validates.
+          test "$(git rev-parse "refs/tags/api/v${version}^{commit}")" = "$(git rev-parse HEAD)"
       - name: Check release tooling
         run: node --test scripts/release-version.test.js npm/scripts/install.test.js
 
   build:
     name: Build binaries
-    needs: prepare
+    needs: [prepare, validate]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -65,7 +73,7 @@ jobs:
           mkdir -p ../dist
           asset="argon-${GOOS}-${GOARCH}"
           if [ "$GOOS" = windows ]; then asset="$asset.exe"; fi
-          go build -trimpath -ldflags="-s -w -X github.com/argon-lab/argon/pkg/version.Build=$RELEASE_VERSION" -o "../dist/$asset" .
+          go build -trimpath -ldflags="-s -w -X github.com/argon-lab/argon/v2/pkg/version.Build=$RELEASE_VERSION" -o "../dist/$asset" .
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -74,7 +82,7 @@ jobs:
 
   release:
     name: Create release
-    needs: [prepare, build]
+    needs: [prepare, validate, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/argon-lab/argon/internal/walwriter"
-	"github.com/argon-lab/argon/internal/gc"
+	"github.com/argon-lab/argon/v2/internal/walwriter"
+	"github.com/argon-lab/argon/v2/internal/gc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"

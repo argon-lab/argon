@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 
 STAMP=$(date +%s)
 echo "=== building tools ==="
-go build -o /tmp/argonctl ./cli 2>/dev/null || (cd cli && go build -o /tmp/argonctl .)
+(cd cli && go build -o /tmp/argonctl .)
 go build -o /tmp/compat-verify ./cmd/compat-verify
 
 run_driver() {

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/argon-lab/argon/internal/materializer"
-	"github.com/argon-lab/argon/internal/snapshot"
-	"github.com/argon-lab/argon/internal/walwriter"
+	"github.com/argon-lab/argon/v2/internal/materializer"
+	"github.com/argon-lab/argon/v2/internal/snapshot"
+	"github.com/argon-lab/argon/v2/internal/walwriter"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 )

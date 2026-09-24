@@ -3,7 +3,7 @@ package materializer
 import (
 	"testing"
 
-	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )

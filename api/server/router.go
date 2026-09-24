@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/argon-lab/argon/pkg/walcli"
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -305,16 +305,22 @@ func (r *Router) createBranch(c *gin.Context) {
 		abortErr(c, http.StatusBadRequest, err)
 		return
 	}
-	parentID := ""
-	if body.From != "" {
-		parent, err := r.services.Branches.GetBranch(projectID, body.From)
-		if err != nil {
-			abortErr(c, http.StatusNotFound, fmt.Errorf("parent branch %q not found", body.From))
-			return
-		}
-		parentID = parent.ID
+	if body.From == "" {
+		body.From = "main"
 	}
-	branch, err := r.services.Branches.CreateBranch(projectID, body.Name, parentID)
+	parent, err := r.services.Branches.GetBranch(projectID, body.From)
+	if err != nil {
+		abortErr(c, http.StatusNotFound, fmt.Errorf("parent branch %q not found", body.From))
+		return
+	}
+	// The fork point is the parent's durable WAL head. A native write may
+	// already be acknowledged while capture is behind, so drain before
+	// CreateBranch reloads and fixes that head for the child's lifetime.
+	if err := r.services.SyncBranch(c.Request.Context(), parent.ID); err != nil {
+		abortErr(c, http.StatusServiceUnavailable, err)
+		return
+	}
+	branch, err := r.services.Branches.CreateBranch(projectID, body.Name, parent.ID)
 	if err != nil {
 		abortErr(c, http.StatusConflict, err)
 		return

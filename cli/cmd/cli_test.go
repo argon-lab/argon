@@ -83,6 +83,18 @@ func TestCLIStatusConnectionFailureIsJSONAndNonzero(t *testing.T) {
 	}
 }
 
+func TestCLIImportRequiresStoppedSourceBeforeConnecting(t *testing.T) {
+	_, stderr, err := invokeCLI(t, "mongodb://127.0.0.1:1", "import", "database",
+		"--uri", "mongodb://127.0.0.1:1", "--database", "source", "--project", "target", "--yes")
+	if err == nil || !strings.Contains(stderr, "--source-quiesced") {
+		t.Fatalf("import must reject a missing source acknowledgment before connecting: %v %s", err, stderr)
+	}
+	_, stderr, err = invokeCLI(t, "mongodb://127.0.0.1:1", "import", "cleanup", "--project", "target")
+	if err == nil || !strings.Contains(stderr, "stop the original importer") {
+		t.Fatalf("cleanup must require stopped-importer confirmation: %v %s", err, stderr)
+	}
+}
+
 func TestCLIPinnedWorkflowJSON(t *testing.T) {
 	uri := os.Getenv("ARGON_TEST_MONGODB_URI")
 	if uri == "" {

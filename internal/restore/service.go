@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/materializer"
-	"github.com/argon-lab/argon/internal/timetravel"
-	"github.com/argon-lab/argon/internal/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/materializer"
+	"github.com/argon-lab/argon/v2/internal/timetravel"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 

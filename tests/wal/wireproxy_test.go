@@ -6,8 +6,8 @@ import (
 	"net"
 	"testing"
 
-	projectwal "github.com/argon-lab/argon/internal/project/wal"
-	"github.com/argon-lab/argon/internal/wireproxy"
+	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
+	"github.com/argon-lab/argon/v2/internal/wireproxy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"

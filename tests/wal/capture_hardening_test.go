@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/argon-lab/argon/internal/ingest"
-	"github.com/argon-lab/argon/internal/snapshot"
+	"github.com/argon-lab/argon/v2/internal/ingest"
+	"github.com/argon-lab/argon/v2/internal/snapshot"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/event"

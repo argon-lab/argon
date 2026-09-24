@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -60,7 +62,8 @@ time travel, branching, and other Argon features on your existing data.
 Available subcommands:
   preview  - Preview what would be imported
   database - Import an existing MongoDB database
-  status   - Check status of import operations`,
+  status   - Check status of import operations
+  cleanup  - Recover an unpublished import after its process stopped`,
 }
 
 // importPreviewCmd previews what would be imported
@@ -125,16 +128,23 @@ var importDatabaseCmd = &cobra.Command{
 This creates a new Argon project and imports all data from the source
 database, enabling time travel and branching capabilities.
 
+Stop source application writers and DDL first, keep them stopped until this
+command finishes, and acknowledge this with --source-quiesced. This copies
+ordinary documents; it is not a consistent online clone and does not copy
+indexes or collection options. Failed imports are cleaned up automatically.
+
 Example:
-  argon import database --uri "mongodb://localhost:27017" --database "myapp" --project "imported-myapp"`,
+  argon import database --uri "mongodb://localhost:27017" --database "myapp" --project "imported-myapp" --source-quiesced`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
 
 		// Get flags
 		mongoURI, _ := cmd.Flags().GetString("uri")
 		databaseName, _ := cmd.Flags().GetString("database")
 		projectName, _ := cmd.Flags().GetString("project")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		sourceQuiesced, _ := cmd.Flags().GetBool("source-quiesced")
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
 		outputFormat, _ := cmd.Flags().GetString("output")
 
@@ -146,6 +156,9 @@ Example:
 		}
 		if projectName == "" {
 			return fmt.Errorf("--project flag is required")
+		}
+		if !dryRun && !sourceQuiesced {
+			return fmt.Errorf("pause source writes and DDL, then pass --source-quiesced; --yes only confirms creating the target project")
 		}
 
 		// Initialize services
@@ -188,7 +201,7 @@ Example:
 			fmt.Fprintln(cmd.ErrOrStderr(), "   (DRY RUN - no changes will be made)")
 		}
 
-		resultData, err := services.ImportDatabase(ctx, opts.MongoURI, opts.DatabaseName, opts.ProjectName, opts.DryRun, opts.BatchSize)
+		resultData, err := services.ImportDatabase(ctx, opts.MongoURI, opts.DatabaseName, opts.ProjectName, opts.DryRun, opts.BatchSize, sourceQuiesced)
 		if err != nil {
 			return fmt.Errorf("failed to import database: %w", err)
 		}
@@ -203,6 +216,33 @@ Example:
 		default:
 			return printImportResult(result, dryRun)
 		}
+	},
+}
+
+var importCleanupCmd = &cobra.Command{
+	Use:   "cleanup",
+	Short: "Remove an unfinished import after its process has stopped",
+	Long: `Recover a project name left reserved by a killed or crashed import.
+Stop the original importer before running this command with --yes.
+Only unpublished import data is removed; completed projects are refused.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		confirmed, _ := cmd.Flags().GetBool("yes")
+		if !confirmed {
+			return fmt.Errorf("stop the original importer, then pass --yes to remove its unfinished data")
+		}
+		name, _ := cmd.Flags().GetString("project")
+		services, err := newCommandServices(cmd)
+		if err != nil {
+			return err
+		}
+		if err := services.Projects.CleanupImport(cmd.Context(), name); err != nil {
+			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"project": name, "cleaned": true})
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Removed unfinished import %q; the name can be reused.\n", name)
+		return nil
 	},
 }
 
@@ -269,6 +309,7 @@ func init() {
 	importCmd.AddCommand(importPreviewCmd)
 	importCmd.AddCommand(importDatabaseCmd)
 	importCmd.AddCommand(importStatusCmd)
+	importCmd.AddCommand(importCleanupCmd)
 
 	// Preview command flags
 	importPreviewCmd.Flags().StringP("uri", "u", "", "MongoDB connection URI (required)")
@@ -282,6 +323,7 @@ func init() {
 	importDatabaseCmd.Flags().StringP("database", "d", "", "Database name to import (required)")
 	importDatabaseCmd.Flags().StringP("project", "p", "", "Argon project name to create (required)")
 	importDatabaseCmd.Flags().Bool("dry-run", false, "Preview import without making changes")
+	importDatabaseCmd.Flags().Bool("source-quiesced", false, "Confirm source writers and DDL are paused until the import finishes")
 	importDatabaseCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
 	importDatabaseCmd.Flags().Int("batch-size", 1000, "Number of documents to process in each batch")
 	importDatabaseCmd.Flags().StringP("output", "o", "table", "Output format: table, json")
@@ -292,6 +334,9 @@ func init() {
 	// Status command flags
 	importStatusCmd.Flags().StringP("project", "p", "", "Project name to check status (required)")
 	_ = importStatusCmd.MarkFlagRequired("project")
+	importCleanupCmd.Flags().StringP("project", "p", "", "Unfinished import project name")
+	importCleanupCmd.Flags().Bool("yes", false, "Confirm the original importer is stopped and remove its unfinished data")
+	_ = importCleanupCmd.MarkFlagRequired("project")
 }
 
 // printImportPreview prints the import preview in a user-friendly format
@@ -319,7 +364,7 @@ func printImportPreview(preview *ImportPreview) error {
 	}
 
 	fmt.Printf("💡 Next steps:\n")
-	fmt.Printf("   Run import: argon import database --uri <uri> --database %s --project <project-name>\n", preview.DatabaseName)
+	fmt.Printf("   Stop source writers, then run: argon import database --uri <uri> --database %s --project <project-name> --source-quiesced\n", preview.DatabaseName)
 
 	return nil
 }

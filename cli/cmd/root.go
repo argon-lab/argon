@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/argon-lab/argon/pkg/version"
+	"github.com/argon-lab/argon/v2/pkg/version"
 	"github.com/spf13/cobra"
 )
 

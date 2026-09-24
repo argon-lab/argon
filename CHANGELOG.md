@@ -11,6 +11,32 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.1.2] - 2026-09-24
+
+### Fixed
+
+- REST branch creation drains the live parent's capture before fixing its fork
+  point and refuses degraded history; omitted `from` defaults to `main`.
+- Concurrent engine/CLI startup preserves the current unique WAL index instead
+  of dropping and rebuilding it on every connection. Legacy definitions still
+  migrate when needed.
+- Go consumers use valid `github.com/argon-lab/argon/v2` and
+  `github.com/argon-lab/argon/api/v2` modules, with separate matching release tags.
+
+### Import and release hardening
+
+- Real imports require `--source-quiesced`: stop source writes and DDL for the
+  entire copy. Preflight rejects unreadable/unsupported collections before
+  creating target data. Imports remain hidden until successful completion.
+- Failed or canceled imports remove their unpublished project/history so the
+  name can be retried. `argon import cleanup --project P --yes` recovers an
+  unfinished import after a killed process; completed projects are protected.
+- Release publication depends on the complete CI suite for the exact tagged
+  source, consistent committed version metadata and matching root/API tags.
+  CI also compiles an external Go consumer of both v2 modules.
+- Publishing and performance documentation now describes the actual release
+  flow, source-quiescence contract and completed small-scale benchmark evidence.
+
 ## [2.1.1] - 2026-09-07
 
 ### Fixed

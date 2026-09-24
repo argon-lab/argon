@@ -1,51 +1,29 @@
-# Publishing to Homebrew
+# Homebrew release update
 
-## Prerequisites
-- GitHub releases with tagged versions
-- Built binaries for macOS (Intel and Apple Silicon)
+The public [argon-lab/homebrew-tap](https://github.com/argon-lab/homebrew-tap)
+formula builds `cli/` from the reviewed source archive. It requires Go at build
+time and exposes both `argon` and `argonctl`. There are currently no bottles.
 
-## Steps to Publish
+After the engine's tag validation/release succeeds, update `argonctl.rb` in the
+tap repository using the **same archive URL as the formula**:
 
-### 1. Create a New Release
-```bash
-# Tag the release
-git tag v1.0.0
-git push origin v1.0.0
-
-# Create GitHub release with binaries
-# Upload argon-darwin-amd64 and argon-darwin-arm64
+```sh
+curl --fail --location https://github.com/argon-lab/argon/archive/refs/tags/v2.1.2.tar.gz | shasum -a 256
 ```
 
-### 2. Update Formula
-```bash
-# Get the SHA256 of the release tarball
-curl -L https://api.github.com/repos/argon-lab/argon/tarball/v1.0.0 | shasum -a 256
+Set its `url` and `sha256`; the linker version symbol for v2 is
+`github.com/argon-lab/argon/v2/pkg/version.Build`. Keep this synchronized with
+the source module path. Review the formula diff and test in a disposable tap or
+clean runner before publishing the tap change:
 
-# Update homebrew-tap/argonctl.rb with new version and SHA256
+```sh
+brew install --build-from-source argon-lab/tap/argonctl
+brew test argon-lab/tap/argonctl
+argon --version
+argonctl --version
 ```
 
-### 3. Test Locally
-```bash
-# Test the formula
-brew install --build-from-source ./homebrew-tap/argonctl.rb
-brew test argonctl
-brew audit --new --formula ./homebrew-tap/argonctl.rb
-```
-
-### 4. Publish
-```bash
-cd homebrew-tap
-git add argonctl.rb
-git commit -m "Update argonctl to v1.0.0"
-git push
-```
-
-### 5. Users Install
-```bash
-brew install argon-lab/tap/argonctl
-```
-
-## Maintenance
-- Update formula for each new release
-- Consider using GitHub Actions for automated updates
-- Add bottle (pre-compiled binary) support for faster installs
+Both binaries must report the exact new version. A matching archive checksum
+alone does not replace the build and formula tests. Commit and push the reviewed
+tap update only after those checks pass. Package publication does not deploy the
+hosted demo.

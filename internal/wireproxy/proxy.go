@@ -41,7 +41,7 @@ import (
 	"sync"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"go.mongodb.org/mongo-driver/bson"
 )
 

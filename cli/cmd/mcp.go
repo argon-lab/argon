@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/argon-lab/argon/pkg/mcpserver"
+	"github.com/argon-lab/argon/v2/pkg/mcpserver"
 	"github.com/spf13/cobra"
 )
 

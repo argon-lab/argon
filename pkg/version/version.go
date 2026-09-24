@@ -4,11 +4,11 @@ package version
 import (
 	"strings"
 
-	"github.com/argon-lab/argon"
+	"github.com/argon-lab/argon/v2"
 )
 
 // Build overrides VERSION in release builds. Set it with:
-// -ldflags "-X github.com/argon-lab/argon/pkg/version.Build=2.0.1".
+// -ldflags "-X github.com/argon-lab/argon/v2/pkg/version.Build=2.0.1".
 var Build string
 
 // String returns the release tag version, or VERSION for a source build.

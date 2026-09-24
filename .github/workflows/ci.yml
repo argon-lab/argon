@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [ master, main ]
   pull_request:
@@ -46,6 +47,9 @@ jobs:
     
     - name: Download dependencies
       run: go mod download
+
+    - name: Compile an external Go v2 consumer
+      run: bash scripts/check-go-module.sh
 
     - uses: actions/setup-node@v4
       with:

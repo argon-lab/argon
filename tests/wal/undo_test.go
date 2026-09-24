@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/argon-lab/argon/internal/walwriter"
-	"github.com/argon-lab/argon/internal/undo"
+	"github.com/argon-lab/argon/v2/internal/walwriter"
+	"github.com/argon-lab/argon/v2/internal/undo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"

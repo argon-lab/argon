@@ -42,11 +42,19 @@ truth.
 
 ```
 argon import preview  --uri U --database D
-argon import database --uri U --database D --project P [--dry-run] [--yes]
+argon import database --uri U --database D --project P --source-quiesced [--yes]
+argon import database --uri U --database D --project P --dry-run
+argon import cleanup --project P --yes   # only after stopping a crashed importer
 argon import status
 ```
 
 Imports auto-snapshot, so reads never replay the whole import.
+Pause source writers and DDL throughout a real import; `--yes` does not replace
+`--source-quiesced`. Source preflight checks collection types/readability. The
+target stays unpublished until copying succeeds; ordinary failures clean up
+the reserved project and history. After a hard kill, stop the old process and
+use `import cleanup` before retrying the same name. Completed projects cannot
+be removed by cleanup. See [the import contract](OPERATIONS.md#importing-existing-data).
 
 ## History: time travel, undo, restore
 

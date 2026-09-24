@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/argon-lab/argon/internal/materializer"
-	"github.com/argon-lab/argon/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/materializer"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 )
 

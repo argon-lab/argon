@@ -359,9 +359,11 @@ Current limitations (deliberate scope):
   snapshots cover them; snapshot chunks can additionally live in an
   S3-compatible or filesystem chunk store (see "Chunk store backends"
   above). GCS is not yet a backend.
-- Published benchmarks still need native capture overhead, end-to-end sandbox
-  readiness and divergence storage growth. The public `WriterFor` write API
-  exists; the old public-writer issue is no longer a blocker.
+- The published small-scale benchmark matrix includes native capture delay,
+  end-to-end sandbox readiness and divergence storage categories. Expanded
+  dataset/concurrency/depth matrices and longer recovery runs remain separate
+  evidence: do not generalize small runs or twenty-sample p99 values into
+  production latency guarantees. The public `WriterFor` API is available.
 
 Performance characteristics are measured by the public benchmark suite at
 https://github.com/argon-lab/benchmarks — reproducible with

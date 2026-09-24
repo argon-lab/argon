@@ -19,8 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/argon-lab/argon/api/server"
-	"github.com/argon-lab/argon/pkg/walcli"
+	"github.com/argon-lab/argon/api/v2/server"
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 )
 
 func main() {

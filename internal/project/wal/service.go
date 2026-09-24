@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	"github.com/argon-lab/argon/internal/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -103,7 +103,7 @@ func (s *ProjectService) GetProject(projectID string) (*wal.Project, error) {
 	ctx := context.Background()
 	var project wal.Project
 
-	err := s.collection.FindOne(ctx, bson.M{"_id": projectID}).Decode(&project)
+	err := s.collection.FindOne(ctx, bson.M{"_id": projectID, "importing": bson.M{"$ne": true}}).Decode(&project)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, errors.New("project not found")
@@ -119,7 +119,7 @@ func (s *ProjectService) GetProjectByName(name string) (*wal.Project, error) {
 	ctx := context.Background()
 	var project wal.Project
 
-	err := s.collection.FindOne(ctx, bson.M{"name": name}).Decode(&project)
+	err := s.collection.FindOne(ctx, bson.M{"name": name, "importing": bson.M{"$ne": true}}).Decode(&project)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, errors.New("project not found")
@@ -143,7 +143,7 @@ func (s *ProjectService) GetProjectIDByName(name string) (string, error) {
 // ListProjects lists all WAL-enabled projects
 func (s *ProjectService) ListProjects() ([]*wal.Project, error) {
 	ctx := context.Background()
-	cursor, err := s.collection.Find(ctx, bson.M{"use_wal": true})
+	cursor, err := s.collection.Find(ctx, bson.M{"use_wal": true, "importing": bson.M{"$ne": true}})
 	if err != nil {
 		return nil, err
 	}

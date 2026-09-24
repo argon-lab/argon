@@ -2,16 +2,18 @@ package importer
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	branchwal "github.com/argon-lab/argon/internal/branch/wal"
-	projectwal "github.com/argon-lab/argon/internal/project/wal"
-	"github.com/argon-lab/argon/internal/wal"
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 )
 
 // ImportService handles importing existing MongoDB databases into Argon WAL system
@@ -35,11 +37,11 @@ func (s *ImportService) SetImportedHook(hook func(branch *wal.Branch)) {
 
 // ImportPreview contains information about what would be imported
 type ImportPreview struct {
-	DatabaseName    string            `json:"database_name"`
-	Collections     []CollectionInfo  `json:"collections"`
-	TotalDocuments  int64             `json:"total_documents"`
-	EstimatedSize   int64             `json:"estimated_size_bytes"`
-	EstimatedWALEntries int64         `json:"estimated_wal_entries"`
+	DatabaseName        string           `json:"database_name"`
+	Collections         []CollectionInfo `json:"collections"`
+	TotalDocuments      int64            `json:"total_documents"`
+	EstimatedSize       int64            `json:"estimated_size_bytes"`
+	EstimatedWALEntries int64            `json:"estimated_wal_entries"`
 }
 
 // CollectionInfo contains details about a collection to be imported
@@ -57,18 +59,21 @@ type ImportOptions struct {
 	ProjectName  string `json:"project_name"`
 	DryRun       bool   `json:"dry_run"`
 	BatchSize    int    `json:"batch_size"`
+	// SourceQuiesced confirms application writers and DDL are stopped for
+	// the entire import. Ordinary cursor reads are not an online snapshot.
+	SourceQuiesced bool `json:"source_quiesced"`
 }
 
 // ImportResult contains the result of an import operation
 type ImportResult struct {
-	ProjectID       string            `json:"project_id"`
-	BranchID        string            `json:"branch_id"`
-	ImportedDocs    int64             `json:"imported_documents"`
-	WALEntries      int64             `json:"wal_entries_created"`
-	Collections     []string          `json:"imported_collections"`
-	Duration        time.Duration     `json:"duration"`
-	StartLSN        int64             `json:"start_lsn"`
-	EndLSN          int64             `json:"end_lsn"`
+	ProjectID    string        `json:"project_id"`
+	BranchID     string        `json:"branch_id"`
+	ImportedDocs int64         `json:"imported_documents"`
+	WALEntries   int64         `json:"wal_entries_created"`
+	Collections  []string      `json:"imported_collections"`
+	Duration     time.Duration `json:"duration"`
+	StartLSN     int64         `json:"start_lsn"`
+	EndLSN       int64         `json:"end_lsn"`
 }
 
 // NewImportService creates a new import service
@@ -95,7 +100,7 @@ func (s *ImportService) PreviewImport(ctx context.Context, mongoURI, databaseNam
 	}
 
 	db := client.Database(databaseName)
-	
+
 	// List all collections
 	collectionNames, err := db.ListCollectionNames(ctx, bson.D{})
 	if err != nil {
@@ -115,7 +120,7 @@ func (s *ImportService) PreviewImport(ctx context.Context, mongoURI, databaseNam
 		}
 
 		collection := db.Collection(collName)
-		
+
 		// Get document count
 		docCount, err := collection.EstimatedDocumentCount(ctx)
 		if err != nil {
@@ -127,7 +132,7 @@ func (s *ImportService) PreviewImport(ctx context.Context, mongoURI, databaseNam
 		err = db.RunCommand(ctx, bson.D{
 			{Key: "collStats", Value: collName},
 		}).Decode(&stats)
-		
+
 		sizeBytes := int64(0)
 		if err == nil {
 			if size, ok := stats["size"].(int32); ok {
@@ -167,7 +172,7 @@ func (s *ImportService) PreviewImport(ctx context.Context, mongoURI, databaseNam
 }
 
 // ImportDatabase imports an existing MongoDB database into Argon WAL system
-func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) (*ImportResult, error) {
+func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) (_ *ImportResult, err error) {
 	startTime := time.Now()
 
 	// Validate options
@@ -192,33 +197,43 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	}
 
 	sourceDB := sourceClient.Database(opts.DatabaseName)
-
-	// Check if project already exists
+	// Preserve the actionable target-name error before scanning source
+	// collections or creating target metadata.
 	existingProject, err := s.projectService.GetProjectByName(opts.ProjectName)
 	if err == nil && existingProject != nil {
 		return nil, fmt.Errorf("project '%s' already exists", opts.ProjectName)
+	}
+	// Check collection types and read permissions before reserving a target
+	// project. Views/time-series options cannot be reproduced by this importer.
+	collectionNames, err := importCollections(ctx, sourceDB)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create new project if not in dry run mode
 	var project *wal.Project
 	var branch *wal.Branch
 	if !opts.DryRun {
-		project, err = s.projectService.CreateProject(opts.ProjectName)
+		project, err = s.projectService.BeginImport(ctx, opts.ProjectName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create project: %w", err)
 		}
+		defer func() {
+			if err == nil {
+				return
+			}
+			cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if cleanupErr := s.projectService.AbortImport(cleanup, project.ID); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("cleanup incomplete for %q; stop this importer, then run argon import cleanup --project %q --yes: %w", opts.ProjectName, opts.ProjectName, cleanupErr))
+			}
+		}()
 
 		// Get the default main branch
 		branch, err = s.branchService.GetBranch(project.ID, "main")
 		if err != nil {
 			return nil, fmt.Errorf("failed to get main branch: %w", err)
 		}
-	}
-
-	// Get list of collections to import
-	collectionNames, err := sourceDB.ListCollectionNames(ctx, bson.D{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list collections: %w", err)
 	}
 
 	result := &ImportResult{
@@ -262,6 +277,12 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 
 	if !opts.DryRun {
 		result.EndLSN = s.walService.GetCurrentLSN(project.ID)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := s.projectService.CompleteImport(ctx, project.ID); err != nil {
+			return nil, fmt.Errorf("failed to publish imported project: %w", err)
+		}
 		if s.onImported != nil {
 			branch, err := s.branchService.GetBranchByID(branch.ID)
 			if err == nil {
@@ -272,6 +293,43 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 
 	result.Duration = time.Since(startTime)
 	return result, nil
+}
+
+func importCollections(ctx context.Context, db *mongo.Database) ([]string, error) {
+	cursor, err := db.ListCollections(ctx, bson.D{})
+	if err != nil {
+		return nil, fmt.Errorf("source collection preflight: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var names []string
+	for cursor.Next(ctx) {
+		var spec struct {
+			Name string `bson:"name"`
+			Type string `bson:"type"`
+		}
+		if err := cursor.Decode(&spec); err != nil {
+			return nil, err
+		}
+		if isSystemCollection(spec.Name) {
+			continue
+		}
+		if spec.Type != "collection" {
+			return nil, fmt.Errorf("source collection %q has unsupported type %q; import ordinary collections only", spec.Name, spec.Type)
+		}
+		// Limit-one verifies source read permission without copying data yet.
+		if err := db.Collection(spec.Name).FindOne(ctx, bson.D{}).Err(); err != nil && err != mongo.ErrNoDocuments {
+			return nil, fmt.Errorf("source collection %q is not readable: %w", spec.Name, err)
+		}
+		names = append(names, spec.Name)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("source database %q has no importable collections; check its name and permissions", db.Name())
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // importCollection imports a single collection into the WAL system.
@@ -295,6 +353,9 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 
 	// Process documents in batches
 	for cursor.Next(ctx) {
+		if err := ctx.Err(); err != nil {
+			return importedCount, walEntriesCount, err
+		}
 		var doc bson.M
 		if err := cursor.Decode(&doc); err != nil {
 			return importedCount, walEntriesCount, fmt.Errorf("failed to decode document: %w", err)
@@ -381,6 +442,9 @@ func (s *ImportService) validateImportOptions(opts ImportOptions) error {
 	if opts.ProjectName == "" {
 		return fmt.Errorf("project_name is required")
 	}
+	if !opts.DryRun && !opts.SourceQuiesced {
+		return fmt.Errorf("source writes and DDL must be paused for the entire import; set source_quiesced (CLI: --source-quiesced) after stopping writers")
+	}
 	return nil
 }
 
@@ -393,7 +457,7 @@ func isSystemCollection(name string) bool {
 		"config.",
 		"argon_wal.", // Don't import our own WAL collections
 	}
-	
+
 	for _, prefix := range systemPrefixes {
 		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
 			return true

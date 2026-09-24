@@ -51,8 +51,8 @@ main ──branch──▶ experiment ──checkout──▶ mongodb://…  ←
 ```
 
 ```bash
-# 0 · Bring your data in ("git clone") — or: argon projects create myapp
-argon import database --uri mongodb://localhost:27017 --database myapp --project myapp
+# 0 · Stop source writers and DDL for the import — or: argon projects create myapp
+argon import database --uri mongodb://localhost:27017 --database myapp --project myapp --source-quiesced
 
 # 1 · Branch — instant, no copy
 argon branches create experiment -p myapp
