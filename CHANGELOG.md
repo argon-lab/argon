@@ -24,6 +24,10 @@ entry — a synchronization barrier, not in-proxy capture).
   resumable boundary and stops cleanly instead of marking a permanent history gap.
 - Go consumers use valid `github.com/argon-lab/argon/v2` and
   `github.com/argon-lab/argon/api/v2` modules, with separate matching release tags.
+- Console Undo applies the exact actor and bounded LSN range just reviewed;
+  changing scope invalidates review, including delayed preview responses.
+- Expired/reset demo sessions offer a fresh start, clear stale queries and
+  recover old deep links. Late old-session failures cannot end a renewed session.
 
 ### Import and release hardening
 
@@ -36,6 +40,9 @@ entry — a synchronization barrier, not in-proxy capture).
 - Release publication depends on the complete CI suite for the exact tagged
   source, consistent committed version metadata and matching root/API tags.
   CI also compiles an external Go consumer of both v2 modules.
+- The MIT console source is public in `web/`. Locked builds reproduce the
+  embedded assets; browser regressions run against the same engine commit.
+  Release provenance records engine/UI source and every binary checksum.
 - Publishing and performance documentation now describes the actual release
   flow, source-quiescence contract and completed small-scale benchmark evidence.
 
