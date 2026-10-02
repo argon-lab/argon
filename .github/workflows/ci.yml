@@ -116,14 +116,21 @@ jobs:
 
     - name: Start MinIO (S3 chunk store backend)
       run: |
-        docker run -d --name ci-minio -p 9010:9000 \
-          -e MINIO_ROOT_USER=argon -e MINIO_ROOT_PASSWORD=argon12345 \
-          quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data
+        # Build the same official RELEASE.2025-09-07T16-13-09Z source:
+        # the historical container registries no longer allow anonymous pulls.
+        GOBIN="$RUNNER_TEMP/minio-bin" go install github.com/minio/minio@07c3a429bfed433e49018cb0f78a52145d4bedeb
+        mkdir -p "$RUNNER_TEMP/minio-data"
+        MINIO_ROOT_USER=argon MINIO_ROOT_PASSWORD=argon12345 \
+          "$RUNNER_TEMP/minio-bin/minio" server "$RUNNER_TEMP/minio-data" \
+          --address 127.0.0.1:9010 >"$RUNNER_TEMP/minio.log" 2>&1 &
         for i in $(seq 1 30); do
           curl -sf http://localhost:9010/minio/health/live && break
           sleep 1
         done
-        curl -fsS http://localhost:9010/minio/health/live
+        if ! curl -fsS http://localhost:9010/minio/health/live; then
+          cat "$RUNNER_TEMP/minio.log"
+          exit 1
+        fi
 
     - name: Run tests
       env:
