@@ -107,8 +107,8 @@ model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 claude mcp add argon -- argon mcp        # 13 tools: sandbox, diff, merge, undo, pins
-# Install the v0.2.0 release wheel; PyPI currently has the older v0.1.0 API.
-python3 -m pip install 'argon-agents[langgraph] @ https://github.com/argon-lab/argon-agents/releases/download/v0.2.0/argon_agents-0.2.0-py3-none-any.whl'
+# Install the published Python SDK and LangGraph adapter.
+python3 -m pip install 'argon-agents[langgraph]==0.2.0'
 ```
 
 Start `argon console --no-browser` in another terminal, then:
