@@ -56,11 +56,17 @@ export async function verifyCleanInstall(version, deadline, deps = {}) {
   try {
     const prefix = join(root, 'prefix');
     const cache = join(root, 'cache');
-    const userconfig = join(root, 'npmrc');
+    const userconfig = join(root, 'user.npmrc');
+    const globalconfig = join(root, 'global.npmrc');
     await mkdir(prefix);
     await writeFile(userconfig, '');
+    await writeFile(globalconfig, '');
+    await writeFile(join(prefix, 'package.json'), JSON.stringify({
+      name: 'argon-publication-verification', private: true,
+      allowScripts: { [`argonctl@${version}`]: true },
+    }));
     await run('npm', ['install', '--prefix', prefix, '--cache', cache,
-      '--registry', REGISTRY, '--userconfig', userconfig, '--ignore-scripts=false',
+      '--registry', REGISTRY, '--userconfig', userconfig, '--globalconfig', globalconfig, '--ignore-scripts=false',
       '--no-audit', '--no-fund', '--foreground-scripts', `argonctl@${version}`],
     { cwd: root, encoding: 'utf8', timeout: remaining(deadline, now), maxBuffer: 2 * 1024 * 1024 });
     const packageRoot = join(prefix, 'node_modules', 'argonctl');

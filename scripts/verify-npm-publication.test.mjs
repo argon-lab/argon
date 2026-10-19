@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import installer from '../npm/scripts/install.js';
@@ -62,6 +62,13 @@ async function installFixture(t, { checksumValid = true, cliVersion = '2.1.1' } 
         assert(args.includes('--ignore-scripts=false'));
         const prefix = args[args.indexOf('--prefix') + 1];
         const cache = args[args.indexOf('--cache') + 1];
+        const policy = JSON.parse(await readFile(join(prefix, 'package.json'), 'utf8'));
+        assert.equal(policy.private, true);
+        assert.deepEqual(policy.allowScripts, { 'argonctl@2.1.1': true });
+        assert.equal(args.some(arg => arg.startsWith('--allow-scripts') || arg === '--dangerously-allow-all-scripts'), false);
+        const globalconfig = args[args.indexOf('--globalconfig') + 1];
+        assert.equal(dirname(globalconfig), root);
+        assert.equal(await readFile(globalconfig, 'utf8'), '');
         assert.equal(dirname(prefix), root);
         assert.equal(dirname(cache), root);
         await assert.rejects(access(cache));

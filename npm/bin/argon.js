@@ -12,7 +12,7 @@ const binaryName = process.platform === 'win32' ? 'argon-bin.exe' : 'argon-bin';
 const binaryPath = path.join(__dirname, binaryName);
 
 if (!fs.existsSync(binaryPath)) {
-  console.error('The Argon binary is missing. Reinstall with: npm install -g argonctl');
+  console.error('The Argon binary is missing. Reinstall with: npm install -g argonctl --allow-scripts=argonctl');
   console.error('(The installer downloads it from https://github.com/argon-lab/argon/releases)');
   process.exit(1);
 }

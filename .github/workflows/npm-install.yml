@@ -9,6 +9,7 @@ on:
       - docs/QUICK_START.md
       - npm/**
       - scripts/verify-npm-install.mjs
+      - scripts/verify-npm-publication*
       - .github/workflows/npm-install.yml
   pull_request:
     paths:
@@ -16,6 +17,7 @@ on:
       - docs/QUICK_START.md
       - npm/**
       - scripts/verify-npm-install.mjs
+      - scripts/verify-npm-publication*
       - .github/workflows/npm-install.yml
 
 permissions:

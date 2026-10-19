@@ -4,11 +4,20 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { verifyCleanInstall } from "./verify-npm-publication.mjs";
 
 const npmCli = process.env.NPM_CLI_PATH;
 assert.ok(npmCli, "Set NPM_CLI_PATH to the selected npm installation's bin/npm-cli.js");
 const npxCli = join(dirname(npmCli), "npx-cli.js");
-const { version } = JSON.parse(readFileSync(new URL("../npm/package.json", import.meta.url)));
+// Test the current public baseline even while source prepares a new release.
+const metadataResponse = await fetch("https://registry.npmjs.org/argonctl/latest", {
+  signal: AbortSignal.timeout(30000),
+});
+assert.ok(metadataResponse.ok, `Public npm metadata: HTTP ${metadataResponse.status}`);
+const metadata = await metadataResponse.json();
+assert.equal(metadata.name, "argonctl");
+const { version } = metadata;
+assert.match(version, /^\d+\.\d+\.\d+$/);
 const requirement = `argonctl@${version}`;
 const readme = readFileSync(new URL("../npm/README.md", import.meta.url), "utf8");
 const globalArgs = readme.match(/^npm install -g (.+)$/m)?.[1].split(/\s+/);
@@ -68,7 +77,16 @@ try {
     ...config(npxDir), ...pinPackage(npxArgs),
   ], npxDir);
   assertVersion(npxVersion);
-  console.log(JSON.stringify({ npm: npmVersion, package: requirement, globalVersion, npxVersion }));
+  const publication = await verifyCleanInstall(version, Date.now() + 180000, {
+    run: async (command, args, options) => {
+      const result = spawnSync(command === "npm" ? process.execPath : command,
+        command === "npm" ? [npmCli, ...args] : args, { ...options, env });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      return { stdout: result.stdout, stderr: result.stderr };
+    },
+  });
+  console.log(JSON.stringify({ npm: npmVersion, package: requirement, globalVersion, npxVersion, publication }));
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
