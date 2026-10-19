@@ -4,11 +4,21 @@ Argon creates versioned MongoDB sandboxes for branches, time travel, merges, and
 
 ## Installation
 
-Requires Node.js 18 or newer. The installer downloads the matching release binary for macOS or Linux (x64/arm64), or Windows (x64).
+Use Node.js 24 LTS with npm 11.16 or newer. The installer downloads the matching release binary for macOS or Linux (x64/arm64), or Windows (x64).
 
 ```bash
-npm install -g argonctl
+npm install -g argonctl --allow-scripts=argonctl
 argon --version
+```
+
+The package-scoped approval lets npm 12 run Argon's binary installer. It applies
+only to this command and does not change your global script policy. See
+[npm's install-script documentation](https://docs.npmjs.com/cli/v12/commands/npm-install-scripts/).
+
+For one command without a global installation:
+
+```bash
+npx --yes --allow-scripts=argonctl argonctl --version
 ```
 
 ## Usage

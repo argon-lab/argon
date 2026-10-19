@@ -1,0 +1,49 @@
+name: Public npm installation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, main]
+    paths:
+      - README.md
+      - docs/QUICK_START.md
+      - npm/**
+      - server.json
+      - scripts/verify-npm-install.mjs
+      - scripts/verify-npm-publication*
+      - .github/workflows/npm-install.yml
+  pull_request:
+    paths:
+      - README.md
+      - docs/QUICK_START.md
+      - npm/**
+      - server.json
+      - scripts/verify-npm-install.mjs
+      - scripts/verify-npm-publication*
+      - .github/workflows/npm-install.yml
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: npm ${{ matrix.npm }} global and npx
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        npm: ["11.16.0", "12.2.0"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install the selected npm into a temporary directory
+        run: npm install --prefix "$RUNNER_TEMP/argon-npm-cli" --ignore-scripts --no-audit --no-fund "npm@${{ matrix.npm }}"
+      - name: Verify global, npx, MCP registry and publication installation
+        run: node scripts/verify-npm-install.mjs
+        env:
+          NPM_CLI_PATH: ${{ runner.temp }}/argon-npm-cli/node_modules/npm/bin/npm-cli.js

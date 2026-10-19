@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -57,4 +58,12 @@ test('platform support matches the published binary matrix', () => {
   assert.equal(getPlatform('darwin', 'arm64'), 'darwin-arm64');
   assert.equal(getPlatform('win32', 'x64'), 'windows-amd64');
   assert.throws(() => getPlatform('win32', 'arm64'), /Unsupported platform/);
+});
+
+test('missing binary reports the package-scoped installer approval command', t => {
+  const launcher = destination(t);
+  fs.copyFileSync(path.join(__dirname, '../bin/argon.js'), launcher);
+  const result = spawnSync(process.execPath, [launcher, '--version'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /npm install -g argonctl --allow-scripts=argonctl/);
 });
