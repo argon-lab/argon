@@ -11,6 +11,26 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.1.3] - 2026-10-19
+
+### Security
+
+- Build with Go 1.26.9 and update the API/CLI HTTP dependencies to
+  `golang.org/x/net` 0.60.0, addressing the October 2026 reachable
+  standard-library and HTTP vulnerabilities. Source builds on the Go 1.27
+  line require 1.27.2 or newer.
+- Remove vulnerable Tailwind 3 build dependencies and update source-map-js
+  to 1.2.2. Full npm auditing and reachable Go vulnerability gates remain
+  required.
+
+### Changed
+
+- The embedded console uses Tailwind CSS 4.3.3 with the existing brand theme,
+  button affordances and keyboard focus styling. Its browser baseline is
+  Safari 16.4+, Chrome 111+, and Firefox 128+.
+- CI uses the same immutable MongoDB 7.0.45 image for every replica-set
+  fixture and records container logs when startup fails.
+
 ## [2.1.2] - 2026-09-24
 
 ### Fixed
