@@ -23,6 +23,41 @@ try {
   await page
     .getByRole("button", { name: "run agent session", exact: true })
     .waitFor();
+  // A CSS toolchain upgrade must preserve the rendered theme and affordances,
+  // including utilities whose names still compile when their defaults change.
+  const launch = page.getByRole("button", {
+    name: "run agent session",
+    exact: true,
+  });
+  const theme = await launch.evaluate((button) => {
+    const body = getComputedStyle(document.body);
+    const action = getComputedStyle(button);
+    return {
+      background: body.backgroundColor,
+      text: body.color,
+      bodyFont: body.fontFamily,
+      buttonFont: action.fontFamily,
+      buttonSize: action.fontSize,
+      buttonCursor: action.cursor,
+      buttonBorder: action.borderTopColor,
+    };
+  });
+  assert.equal(theme.background, "rgb(11, 14, 20)");
+  assert.equal(theme.text, "rgb(232, 235, 242)");
+  assert.match(theme.bodyFont, /Inter/);
+  assert.match(theme.buttonFont, /ui-monospace/);
+  assert.equal(theme.buttonSize, "12px");
+  assert.equal(theme.buttonCursor, "pointer");
+  assert.equal(theme.buttonBorder, "rgb(150, 167, 255)");
+  await launch.focus();
+  assert.deepEqual(
+    await launch.evaluate((button) => {
+      const style = getComputedStyle(button);
+      return [style.outlineStyle, style.outlineWidth, style.outlineColor];
+    }),
+    ["solid", "2px", "rgb(150, 167, 255)"],
+    "keyboard focus stays visible after CSS compilation",
+  );
   assert.equal(events.length, 0);
   assert.equal(
     await page

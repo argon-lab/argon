@@ -208,7 +208,7 @@ export function TextInput({
 }) {
   return (
     <input
-      className={`border border-brand-edge bg-brand-dark px-2 py-1.5 font-mono text-xs text-brand-text placeholder:text-brand-muted focus:border-brand-primary focus:outline-none ${width}`}
+      className={`border border-brand-edge bg-brand-dark px-2 py-1.5 font-mono text-xs text-brand-text placeholder:text-brand-muted focus:border-brand-primary focus:outline-hidden ${width}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}

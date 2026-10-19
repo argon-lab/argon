@@ -38,7 +38,8 @@ argon doctor
 ```
 
 Use a current supported MongoDB patch release in production. Source builds use
-Go 1.26.6 or newer, as declared in `go.mod`.
+Go 1.26.9 or newer, as declared in `go.mod`. Use a patched toolchain:
+Go 1.27.0–1.27.1 also contain the October 2026 standard-library vulnerabilities.
 
 ## The flow
 

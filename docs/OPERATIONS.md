@@ -19,7 +19,7 @@ migration. Everything here reflects what the code does today.
   Use a current supported MongoDB patch release; the `mongo:7` example follows
   the latest available 7.x patch.
 
-- **Source builds require Go 1.26.6 or newer.** Root, CLI and API modules declare
+- **Source builds require Go 1.26.9 or newer (1.27.2+ on the Go 1.27 line).** Root, CLI and API modules declare
   the same minimum toolchain. CI scans all three modules with official
   `govulncheck` against the current vulnerability database and fails on reachable
   vulnerabilities. Reproduce it with

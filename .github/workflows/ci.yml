@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [ master, main ]
 
+env:
+  MONGODB_IMAGE: mongo:7.0.45@sha256:c53852c00c23ca9f23fc39690350ffa9a80e3642fe8f96879726d8da0abe80a7
+
 jobs:
   console:
     name: Public console build and browser regression
@@ -31,7 +34,8 @@ jobs:
         run: npm audit --prefix web
       - name: Start disposable MongoDB replica set
         run: |
-          docker run -d --name console-mongo -p 127.0.0.1:27017:27017 mongo:7.0.43 --replSet rs0 --bind_ip_all
+          trap 'docker logs console-mongo >&2 || true' ERR
+          docker run -d --name console-mongo -p 127.0.0.1:27017:27017 "$MONGODB_IMAGE" --replSet rs0 --bind_ip_all
           for i in $(seq 1 30); do docker exec console-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' && break; sleep 1; done
           docker exec console-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
           for i in $(seq 1 30); do docker exec console-mongo mongosh --quiet --eval 'if(!db.hello().isWritablePrimary)quit(1)' && break; sleep 1; done
@@ -72,7 +76,8 @@ jobs:
     # containers can't be configured as — hence docker run.
     - name: Start MongoDB (single-node replica set)
       run: |
-        docker run -d --name ci-mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+        trap 'docker logs ci-mongo >&2 || true' ERR
+        docker run -d --name ci-mongo -p 27017:27017 "$MONGODB_IMAGE" --replSet rs0 --bind_ip_all
         for i in $(seq 1 30); do
           docker exec ci-mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' && break
           sleep 1
@@ -177,7 +182,8 @@ jobs:
 
     - name: Start MongoDB (single-node replica set)
       run: |
-        docker run -d --name compat-mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+        trap 'docker logs compat-mongo >&2 || true' ERR
+        docker run -d --name compat-mongo -p 27017:27017 "$MONGODB_IMAGE" --replSet rs0 --bind_ip_all
         for i in $(seq 1 30); do
           docker exec compat-mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' && break
           sleep 1
