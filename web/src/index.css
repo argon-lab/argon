@@ -1,6 +1,37 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss" source(none);
+@source "../index.html";
+@source "./";
+
+@theme {
+  --color-brand-dark: #0b0e14;
+  --color-brand-surface: #111521;
+  --color-brand-edge: #222838;
+  --color-brand-muted: #8f9bb3;
+  --color-brand-primary: #96a7ff;
+  --color-brand-secondary: #6d7fe0;
+  --color-brand-text: #e8ebf2;
+  --color-brand-text-darker: #9aa3b5;
+
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono:
+    ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+/* Preserve the v3 defaults for borders and enabled button affordances. */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: #e5e7eb;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
 
 body {
   @apply bg-brand-dark text-brand-text antialiased;

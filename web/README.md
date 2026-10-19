@@ -1,6 +1,10 @@
 # Argon Console SPA
 
 The REST engine serves this build as its embedded console. Use Node.js 22.12+.
+Tailwind CSS 4 uses the PostCSS plugin and the brand/font theme in
+`src/index.css`. Its browser baseline is Safari 16.4+, Chrome 111+, and
+Firefox 128+; CI exercises Chromium. Keep class scanning scoped to `src/` and
+`index.html` when updating the CSS toolchain.
 
 ```bash
 npm ci
@@ -20,7 +24,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-`CONSOLE_URL` defaults to `http://127.0.0.1:15173`. The test drives a same-pin planner/executor scenario, conflict review with an explicit target-wins merge, actor undo and an assertion that the document price is restored to 49. It checks desktop/mobile overflow, no native endpoint calls or URIs in demo mode, and opt-in enum-only completion events. Screenshots go to `/tmp/argon-console-checks` (`ARTIFACT_DIR` override).
+`CONSOLE_URL` defaults to `http://127.0.0.1:15173`. The test drives a same-pin planner/executor scenario, conflict review with an explicit target-wins merge, actor undo and an assertion that the document price is restored to 49. It checks brand colors, typography, keyboard focus, desktop/mobile overflow, no native endpoint calls or URIs in demo mode, and opt-in enum-only completion events. Screenshots go to `/tmp/argon-console-checks` (`ARTIFACT_DIR` override).
 
 For native capture health, run the SPA against a non-demo local API and inspect a checked-out branch. The page shows lifecycle state, actor, errors, last checkpoint and the last observed capture delay. The delay is not advertised as current queue lag. A branch database can be live while capture is stopped; the UI distinguishes them.
 
