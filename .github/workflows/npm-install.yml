@@ -8,6 +8,7 @@ on:
       - README.md
       - docs/QUICK_START.md
       - npm/**
+      - server.json
       - scripts/verify-npm-install.mjs
       - scripts/verify-npm-publication*
       - .github/workflows/npm-install.yml
@@ -16,6 +17,7 @@ on:
       - README.md
       - docs/QUICK_START.md
       - npm/**
+      - server.json
       - scripts/verify-npm-install.mjs
       - scripts/verify-npm-publication*
       - .github/workflows/npm-install.yml
@@ -41,7 +43,7 @@ jobs:
           node-version: 24
       - name: Install the selected npm into a temporary directory
         run: npm install --prefix "$RUNNER_TEMP/argon-npm-cli" --ignore-scripts --no-audit --no-fund "npm@${{ matrix.npm }}"
-      - name: Verify the published CLI with global installation and npx
+      - name: Verify global, npx, MCP registry and publication installation
         run: node scripts/verify-npm-install.mjs
         env:
           NPM_CLI_PATH: ${{ runner.temp }}/argon-npm-cli/node_modules/npm/bin/npm-cli.js

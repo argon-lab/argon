@@ -19,6 +19,15 @@ assert.equal(metadata.name, "argonctl");
 const { version } = metadata;
 assert.match(version, /^\d+\.\d+\.\d+$/);
 const requirement = `argonctl@${version}`;
+const server = JSON.parse(readFileSync(new URL("../server.json", import.meta.url)));
+const mcpPackage = server.packages.find((pkg) => pkg.registryType === "npm");
+assert.equal(mcpPackage.identifier, metadata.name);
+assert.equal(mcpPackage.runtimeHint, "npx");
+const runtimeArgs = mcpPackage.runtimeArguments.flatMap((arg) => {
+  assert.equal(typeof arg.value, "string");
+  return arg.type === "named" ? [arg.name, arg.value] : [arg.value];
+});
+assert.ok(mcpPackage.packageArguments.some((arg) => arg.value === "mcp"));
 const readme = readFileSync(new URL("../npm/README.md", import.meta.url), "utf8");
 const globalArgs = readme.match(/^npm install -g (.+)$/m)?.[1].split(/\s+/);
 const npxArgs = readme.match(/^npx (.+)$/m)?.[1].split(/\s+/);
@@ -77,6 +86,14 @@ try {
     ...config(npxDir), ...pinPackage(npxArgs),
   ], npxDir);
   assertVersion(npxVersion);
+  const registryDir = join(root, "registry");
+  mkdirSync(registryDir);
+  // Substitute --version for MCP startup so no MongoDB deployment is required.
+  const registryVersion = run(npxCli, [
+    ...config(registryDir), "--yes", ...runtimeArgs,
+    `${mcpPackage.identifier}@${version}`, "--version",
+  ], registryDir);
+  assertVersion(registryVersion);
   const publication = await verifyCleanInstall(version, Date.now() + 180000, {
     run: async (command, args, options) => {
       const result = spawnSync(command === "npm" ? process.execPath : command,
@@ -86,7 +103,7 @@ try {
       return { stdout: result.stdout, stderr: result.stderr };
     },
   });
-  console.log(JSON.stringify({ npm: npmVersion, package: requirement, globalVersion, npxVersion, publication }));
+  console.log(JSON.stringify({ npm: npmVersion, package: requirement, globalVersion, npxVersion, registryVersion, publication }));
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
