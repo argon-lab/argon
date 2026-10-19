@@ -27,9 +27,12 @@ Three ideas, thirty seconds:
 
 ## Install
 
+For npm, use Node.js 24 LTS with npm 11.16 or newer. The package-scoped
+approval allows the installer to download Argon's binary on npm 12.
+
 ```bash
 brew install argon-lab/tap/argonctl      # macOS
-npm install -g argonctl                  # cross-platform
+npm install -g argonctl --allow-scripts=argonctl # cross-platform
 
 # MongoDB must run as a replica set (one-node is fine):
 docker run -d --name argon-mongo -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0

@@ -5,8 +5,11 @@ managed API/console process for write capture and sandbox expiry.
 
 ## Install and check MongoDB
 
+For npm, use Node.js 24 LTS with npm 11.16 or newer. The package-scoped
+approval allows npm 12 to download the CLI binary during installation.
+
 ```bash
-npm install -g argonctl
+npm install -g argonctl --allow-scripts=argonctl
 # macOS alternative: brew install argon-lab/tap/argonctl
 
 docker run -d --name argon-mongo -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0
