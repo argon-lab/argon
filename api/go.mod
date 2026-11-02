@@ -1,9 +1,9 @@
 module github.com/argon-lab/argon/api/v2
 
-go 1.26.9
+go 1.26.10
 
 require (
-	github.com/argon-lab/argon/v2 v2.1.3
+	github.com/argon-lab/argon/v2 v2.1.4
 	github.com/gin-gonic/gin v1.9.1
 	github.com/stretchr/testify v1.9.0
 	go.mongodb.org/mongo-driver v1.17.7

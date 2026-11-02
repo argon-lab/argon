@@ -39,7 +39,7 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to ensure a wel
 
 ### Prerequisites
 
-- Go 1.26.9+ (see `go.mod`; use 1.27.2+ on the Go 1.27 line)
+- Go 1.26.10+ (see `go.mod`; use 1.27.3+ on the Go 1.27 line)
 - Docker (for MongoDB and MinIO)
 - Node.js 24 for the console (`web/`); Python 3.10+ for the driver-compatibility
   harness (`compat/`)

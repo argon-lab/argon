@@ -237,7 +237,7 @@ jobs:
             cli/go.sum
             api/go.sum
       - name: Install official vulnerability scanner
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - name: Scan reachable dependencies against the current database
         working-directory: ${{ matrix.module }}
         run: govulncheck ./...

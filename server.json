@@ -6,12 +6,12 @@
     "url": "https://github.com/argon-lab/argon",
     "source": "github"
   },
-  "version": "2.1.3",
+  "version": "2.1.4",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "argonctl",
-      "version": "2.1.3",
+      "version": "2.1.4",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {
