@@ -124,6 +124,9 @@ func (s *Service) Adopt(ctx context.Context, branchID string, ttl time.Duration)
 
 // Extend pushes a sandbox's expiry further out from now.
 func (s *Service) Extend(ctx context.Context, branchID string, ttl time.Duration) (time.Time, error) {
+	if ttl <= 0 {
+		return time.Time{}, fmt.Errorf("sandbox TTL extension must be positive")
+	}
 	branch, err := s.branches.GetBranchByID(branchID)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("sandbox not found: %w", err)

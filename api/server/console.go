@@ -430,7 +430,12 @@ func (r *Router) extendSandbox(c *gin.Context) {
 		abortErr(c, http.StatusBadRequest, err)
 		return
 	}
-	expires, err := r.services.Sandbox.Extend(c.Request.Context(), branchID, time.Duration(body.TTLMinutes*float64(time.Minute)))
+	ttl := time.Duration(body.TTLMinutes * float64(time.Minute))
+	if ttl <= 0 {
+		abortErr(c, http.StatusBadRequest, fmt.Errorf("ttl_minutes must be positive"))
+		return
+	}
+	expires, err := r.services.Sandbox.Extend(c.Request.Context(), branchID, ttl)
 	if err != nil {
 		abortErr(c, http.StatusConflict, err)
 		return

@@ -119,7 +119,11 @@ func TestSandbox_ExtendPushesExpiry(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, newExpiry.After(info.ExpiresAt), "extension moves the expiry out")
 
-	// Extending a non-sandbox branch fails.
+	// Extending a non-sandbox branch or with a non-positive TTL fails.
 	_, err = svc.Extend(ctx, mainID, time.Hour)
 	assert.Error(t, err)
+	for _, ttl := range []time.Duration{0, -time.Minute} {
+		_, err = svc.Extend(ctx, info.BranchID, ttl)
+		assert.Error(t, err, "ttl=%s", ttl)
+	}
 }

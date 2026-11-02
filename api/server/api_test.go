@@ -341,6 +341,11 @@ func TestAPI_ConsoleReadSurface(t *testing.T) {
 		map[string]interface{}{"ttl_minutes": 60})
 	require.Equal(t, http.StatusOK, code, "%v", resp)
 	assert.NotEmpty(t, resp["expires_at"])
+	for _, ttlMinutes := range []float64{0, -1} {
+		code, _ = do(t, router, "POST", "/api/v1/projects/console-api/sandboxes/box/extend",
+			map[string]interface{}{"ttl_minutes": ttlMinutes})
+		require.Equal(t, http.StatusBadRequest, code, "ttl_minutes=%v", ttlMinutes)
+	}
 
 	code, _ = do(t, router, "POST", "/api/v1/projects/console-api/sandboxes/box/keep", nil)
 	require.Equal(t, http.StatusOK, code)
