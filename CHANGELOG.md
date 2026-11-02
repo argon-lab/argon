@@ -11,7 +11,13 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
-## [2.1.4] - 2026-10-26
+## [2.1.4] - 2026-11-02
+
+### Fixed
+
+- Reject zero or negative sandbox TTL extensions before changing expiry. The REST
+  endpoint returns HTTP 400 for invalid durations, preventing an invalid extension
+  from making the sandbox eligible for the next cleanup sweep.
 
 ### Security
 
