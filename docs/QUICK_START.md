@@ -109,7 +109,7 @@ MongoDB client. See [architecture](ARCHITECTURE.md) and
 ```
 
 `ARGON_METADATA_DB` changes the metadata database (default `argon_wal`), which
-is useful for isolated tests. Use Go 1.26.9 or newer (1.27.2+ on the Go 1.27 line), as declared in `go.mod`;
+is useful for isolated tests. Use Go 1.26.10 or newer (1.27.3+ on the Go 1.27 line), as declared in `go.mod`;
 CLI and API are separate Go modules.
 The API defaults to 127.0.0.1:8080. Set `ARGON_API_TOKEN` before exposing a
 non-loopback listener, and send that bearer token from REST clients.

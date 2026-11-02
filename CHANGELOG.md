@@ -11,6 +11,20 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.1.4] - 2026-10-26
+
+### Security
+
+- Build with Go 1.26.10 to address
+  [GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809), which adds distrust
+  of known compromised intermediate certificates in `crypto/x509`.
+  Source builds on the Go 1.27 line require 1.27.3 or newer.
+- Update the console build tool to Vite 8.3.5, removing the development-server
+  and editor-launch advisories affecting Vite 8.3.0–8.3.2. Rebuild the embedded
+  assets from the public source and lockfile; application source behavior and
+  the CSS theme are unchanged.
+- Run the required reachable Go scans with official govulncheck 1.9.0.
+
 ## [2.1.3] - 2026-10-19
 
 ### Security

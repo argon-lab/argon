@@ -1,6 +1,6 @@
 {
   "name": "argonctl",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "mcpName": "io.github.argon-lab/argon",
   "description": "Git for MongoDB: branch, time-travel, merge and undo - CLI",
   "keywords": [

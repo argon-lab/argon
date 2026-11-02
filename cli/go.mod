@@ -1,9 +1,9 @@
 module argon-cli
 
-go 1.26.9
+go 1.26.10
 
 require (
-	github.com/argon-lab/argon/v2 v2.1.3
+	github.com/argon-lab/argon/v2 v2.1.4
 	github.com/spf13/cobra v1.9.1
 )
 
@@ -35,7 +35,7 @@ require (
 replace github.com/argon-lab/argon/v2 => ../
 
 require (
-	github.com/argon-lab/argon/api/v2 v2.1.3
+	github.com/argon-lab/argon/api/v2 v2.1.4
 	github.com/aws/aws-sdk-go-v2 v1.42.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.14 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.28 // indirect
