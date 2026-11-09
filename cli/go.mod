@@ -3,7 +3,7 @@ module argon-cli
 go 1.26.10
 
 require (
-	github.com/argon-lab/argon/v2 v2.1.4
+	github.com/argon-lab/argon/v2 v2.1.5
 	github.com/spf13/cobra v1.9.1
 )
 
@@ -35,7 +35,7 @@ require (
 replace github.com/argon-lab/argon/v2 => ../
 
 require (
-	github.com/argon-lab/argon/api/v2 v2.1.4
+	github.com/argon-lab/argon/api/v2 v2.1.5
 	github.com/aws/aws-sdk-go-v2 v1.42.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.14 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.28 // indirect
@@ -56,7 +56,7 @@ require (
 	github.com/aws/smithy-go v1.27.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/klauspost/compress v1.17.0 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect

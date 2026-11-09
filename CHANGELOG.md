@@ -11,6 +11,14 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.1.5] - 2026-11-09
+
+### Security
+
+- Update `github.com/klauspost/compress` to v1.20.2 for
+  [GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865), a decoder panic on
+  crafted Zstandard frames. The Go toolchain requirement is unchanged.
+
 ## [2.1.4] - 2026-11-02
 
 ### Fixed
