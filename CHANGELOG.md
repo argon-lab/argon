@@ -19,6 +19,11 @@ entry — a synchronization barrier, not in-proxy capture).
   [GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865), a decoder panic on
   crafted Zstandard frames. The Go toolchain requirement is unchanged.
 
+### Fixed
+
+- Accept an explicit `--lsn 0` for restore preview, branch, and reset when the
+  branch permits that target, and reject requests that also supply `--time`.
+
 ## [2.1.4] - 2026-11-02
 
 ### Fixed

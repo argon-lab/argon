@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -202,7 +203,43 @@ func TestCLIPinnedWorkflowJSON(t *testing.T) {
 	call("undo", "-p", project, "-b", "candidate", "--from-lsn", fmtLSN(pin["lsn"].(float64)+1), "--dry-run")
 	call("sandbox", "discard", "-p", project, "-b", "candidate")
 	call("pin", "delete", "-p", project, "--name", "baseline")
+	restore := func(verb string, args ...string) (string, string, error) {
+		t.Helper()
+		out, stderr, err := invokeCLI(t, uri, append([]string{"restore", verb, "-p", project}, args...)...)
+		assertCaptureStopped()
+		return out, stderr, err
+	}
+	mustRestore := func(want, verb string, args ...string) {
+		t.Helper()
+		out, stderr, err := restore(verb, args...)
+		if err != nil || !strings.Contains(out, want) {
+			t.Fatalf("restore %s %v: want %q, got %q: %v %s", verb, args, want, out, err, stderr)
+		}
+	}
+	if _, stderr, err := restore("reset", "--lsn", "0"); err == nil || !strings.Contains(stderr, "before resetting a live branch") {
+		t.Fatalf("zero is a valid target but cannot reset a live branch: %v %s", err, stderr)
+	}
 	call("release", "-p", project)
+	mustRestore("Target:  LSN 0\n", "preview", "--lsn", "0")
+	positiveLSN := fmtLSN(pin["lsn"].(float64))
+	mustRestore("Target:  LSN "+positiveLSN+"\n", "preview", "--lsn", positiveLSN)
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	mustRestore("Target:  LSN ", "preview", "--time", at)
+	before := call("branches", "list", "-p", project)
+	if _, stderr, err := restore("reset", "--lsn", "0", "--time", at, "--backup", "invalid-mixed-backup"); err == nil || !strings.Contains(stderr, "exactly one of --lsn or --time is required") {
+		t.Fatalf("restore must reject mixed zero LSN and time: %v %s", err, stderr)
+	}
+	if after := call("branches", "list", "-p", project); !reflect.DeepEqual(before, after) {
+		t.Fatalf("invalid restore changed branch metadata: before=%v after=%v", before, after)
+	}
+	mustRestore("Created branch \"initial\" at LSN 0", "branch", "--lsn", "0", "--as", "initial")
+	mustRestore("Reset main to LSN 0", "reset", "--lsn", "0")
+	for _, branch := range []string{"main", "initial"} {
+		state := call("time-travel", "query", "-p", project, "-b", branch, "--lsn", "0", "-c", "accounts")
+		if len(state["documents"].(map[string]any)) != 0 {
+			t.Fatalf("branch %s should have no documents at its initial state", branch)
+		}
+	}
 }
 
 func fmtLSN(value float64) string { data, _ := json.Marshal(value); return string(data) }

@@ -75,6 +75,9 @@ argon restore branch  -p P -b B (--lsn N | --time RFC3339) --as NAME
     Fork the historical state into a new branch instead.
 ```
 
+For restore commands, supply exactly one selector. Use `--lsn 0` when zero is
+within the branch's valid restore range; it selects LSN zero, not the head.
+
 ## Merge — data pull requests
 
 ```
