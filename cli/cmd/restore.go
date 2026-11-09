@@ -20,17 +20,18 @@ the pre-reset head (or pins on it) keep reading the old state.`,
 
 // restoreTarget resolves the --lsn/--time flags to a concrete LSN.
 func restoreTarget(cmd *cobra.Command, services *walcli.Services, branchID string) (int64, error) {
+	lsnSet := cmd.Flags().Changed("lsn")
+	if lsnSet == cmd.Flags().Changed("time") {
+		return 0, fmt.Errorf("exactly one of --lsn or --time is required")
+	}
 	if err := services.SyncBranch(cmd.Context(), branchID); err != nil {
 		return 0, err
 	}
-	lsn, _ := cmd.Flags().GetInt64("lsn")
-	atTime, _ := cmd.Flags().GetString("time")
-	if (lsn == 0) == (atTime == "") {
-		return 0, fmt.Errorf("exactly one of --lsn or --time is required")
-	}
-	if lsn != 0 {
+	if lsnSet {
+		lsn, _ := cmd.Flags().GetInt64("lsn")
 		return lsn, nil
 	}
+	atTime, _ := cmd.Flags().GetString("time")
 	t, err := time.Parse(time.RFC3339, atTime)
 	if err != nil {
 		return 0, fmt.Errorf("invalid --time (want RFC3339, e.g. 2026-07-07T12:00:00Z): %w", err)

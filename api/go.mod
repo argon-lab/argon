@@ -3,7 +3,7 @@ module github.com/argon-lab/argon/api/v2
 go 1.26.10
 
 require (
-	github.com/argon-lab/argon/v2 v2.1.4
+	github.com/argon-lab/argon/v2 v2.1.5
 	github.com/gin-gonic/gin v1.9.1
 	github.com/stretchr/testify v1.9.0
 	go.mongodb.org/mongo-driver v1.17.7
@@ -41,7 +41,7 @@ require (
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.17.0 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.4 // indirect
 	github.com/kr/pretty v0.3.0 // indirect
 	github.com/leodido/go-urn v1.2.4 // indirect

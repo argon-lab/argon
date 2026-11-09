@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.42.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.28
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.0
-	github.com/klauspost/compress v1.17.0
+	github.com/klauspost/compress v1.20.2
 	github.com/stretchr/testify v1.9.0
 	go.mongodb.org/mongo-driver v1.17.7
 )
