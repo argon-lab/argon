@@ -247,21 +247,6 @@ func (s *BranchService) CompareAndSetCheckout(ctx context.Context, expected *wal
 	return nil
 }
 
-// AddDiscardedRange records an LSN window abandoned by a reset so that
-// materialization skips it. The entries themselves stay in the WAL for
-// audit and for time travel to points before the reset.
-func (s *BranchService) AddDiscardedRange(branchID string, from, to int64) error {
-	if from > to {
-		return fmt.Errorf("invalid discarded range [%d, %d]", from, to)
-	}
-	ctx := context.Background()
-	_, err := s.collection.UpdateOne(ctx,
-		bson.M{"_id": branchID},
-		bson.M{"$push": bson.M{"discarded_ranges": wal.LSNRange{From: from, To: to}}, "$inc": bson.M{"mutation_version": 1}},
-	)
-	return err
-}
-
 // ListBranches lists all branches for a project
 func (s *BranchService) ListBranches(projectID string) ([]*wal.Branch, error) {
 	ctx := context.Background()
@@ -374,7 +359,7 @@ func (s *BranchService) RequireDeletable(branchID string) error {
 // monotonic under concurrent writers: with $set, a writer holding a smaller
 // LSN could land after one holding a larger LSN and move the head backwards,
 // hiding already-written entries from materialization. To move a head
-// backwards deliberately (restore/reset), use SetBranchHead.
+// backwards deliberately (restore/reset), use ResetHead.
 func (s *BranchService) UpdateBranchHead(branchID string, newLSN int64) error {
 	return s.UpdateBranchHeadContext(context.Background(), branchID, newLSN)
 }
@@ -430,18 +415,32 @@ func mutationVersionCondition(version int64) interface{} {
 }
 
 // ResetHead atomically records the abandoned interval and rewinds the head.
-// Live branches must first be drained/released: resetting only metadata
-// while applications continue writing would expose two conflicting states.
+// It is the only way a head moves backwards, so every rewind leaves a
+// discarded range behind. Live branches must first be drained/released:
+// resetting only metadata while applications continue writing would expose
+// two conflicting states.
+//
+// The recorded window runs to the history high-water mark rather than to
+// the current head. After two resets in a row the head is already below the
+// first window; ending the second window at that head would make it look
+// as if views captured inside the first window — a backup branch, a pin —
+// came after the second reset, and they would silently lose the history
+// between the two targets.
 func (s *BranchService) ResetHead(branch *wal.Branch, target int64) error {
 	if branch.IsLive() {
 		return fmt.Errorf("cannot reset a checked-out branch; release it after capture has drained first")
+	}
+	if target != branch.HeadLSN && target >= branch.BaseLSN {
+		if err := branch.ValidateResetTarget(target); err != nil {
+			return err
+		}
 	}
 	if target < branch.BaseLSN || target > branch.HeadLSN {
 		return fmt.Errorf("invalid reset target %d", target)
 	}
 	update := bson.M{"$set": bson.M{"head_lsn": target}, "$inc": bson.M{"mutation_version": 1}}
 	if target < branch.HeadLSN {
-		update["$push"] = bson.M{"discarded_ranges": wal.LSNRange{From: target + 1, To: branch.HeadLSN}}
+		update["$push"] = bson.M{"discarded_ranges": wal.LSNRange{From: target + 1, To: branch.HistoryHighWater()}}
 	}
 	result, err := s.collection.UpdateOne(context.Background(), bson.M{"_id": branch.ID, "head_lsn": branch.HeadLSN, "is_deleted": false,
 		"mutation_version": mutationVersionCondition(branch.MutationVersion),
@@ -453,18 +452,6 @@ func (s *BranchService) ResetHead(branch *wal.Branch, target int64) error {
 		return fmt.Errorf("branch changed concurrently; reload and retry reset")
 	}
 	return nil
-}
-
-// SetBranchHead sets the head LSN of a branch unconditionally. This is the
-// restore/reset path: unlike UpdateBranchHead it can move a head backwards,
-// so it must only be used when discarding history is the intent.
-func (s *BranchService) SetBranchHead(branchID string, newLSN int64) error {
-	ctx := context.Background()
-	_, err := s.collection.UpdateOne(ctx,
-		bson.M{"_id": branchID},
-		bson.M{"$set": bson.M{"head_lsn": newLSN}, "$inc": bson.M{"mutation_version": 1}},
-	)
-	return err
 }
 
 // GetChildBranches returns all child branches of a given branch

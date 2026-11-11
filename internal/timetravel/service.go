@@ -43,26 +43,24 @@ func (s *Service) MaterializeAtTime(branch *wal.Branch, collection string, times
 	return s.MaterializeAtLSN(branch, collection, targetLSN)
 }
 
-// FindLSNAtTime finds the latest LSN on the branch at or before the given
-// timestamp.
+// FindLSNAtTime finds the latest LSN in the branch's history at or before
+// the given timestamp.
+//
+// The answer is historical: it is where the branch stood at that moment,
+// even if a later reset discarded that stretch of history. Such an LSN can
+// be read and forked (that is how discarded work is recovered), but a reset
+// to it is refused — see wal.Branch.ValidateResetTarget. Bounding the search
+// by the history high-water mark instead of the head keeps the answer the
+// same before and after the first post-reset write.
 func (s *Service) FindLSNAtTime(branch *wal.Branch, timestamp time.Time) (int64, error) {
 	if timestamp.After(time.Now()) {
 		return 0, fmt.Errorf("cannot find LSN for future timestamp %v", timestamp)
 	}
 
-	entries, err := s.wal.GetEntriesByTimestamp(branch.ProjectID, timestamp)
+	latestLSN, err := s.wal.LatestLSNAtOrBefore(branch.ProjectID, branch.ID, timestamp, branch.HistoryHighWater())
 	if err != nil {
-		return 0, fmt.Errorf("failed to get entries by timestamp: %w", err)
+		return 0, fmt.Errorf("failed to look up entries by timestamp: %w", err)
 	}
-
-	// Filter for this branch and find the latest LSN
-	var latestLSN int64
-	for _, entry := range entries {
-		if entry.BranchID == branch.ID && entry.LSN > latestLSN && entry.LSN <= branch.HeadLSN {
-			latestLSN = entry.LSN
-		}
-	}
-
 	if latestLSN == 0 {
 		return 0, fmt.Errorf("no entries found before timestamp %v", timestamp)
 	}
@@ -149,8 +147,10 @@ func (s *Service) validateTargetLSN(branch *wal.Branch, targetLSN int64) error {
 	if targetLSN < 0 {
 		return fmt.Errorf("invalid LSN: %d", targetLSN)
 	}
-	if targetLSN > branch.HeadLSN {
-		return fmt.Errorf("target LSN %d is beyond branch HEAD %d", targetLSN, branch.HeadLSN)
+	// History above the head, up to the high-water mark, was discarded by
+	// a reset but is still there to be read.
+	if limit := branch.HistoryHighWater(); targetLSN > limit {
+		return fmt.Errorf("target LSN %d is beyond branch HEAD %d", targetLSN, limit)
 	}
 	return nil
 }

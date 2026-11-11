@@ -106,15 +106,36 @@ soft-deleted).
 
 ### Reset and discarded ranges
 
-`argon restore reset --lsn T` records the abandoned window `[T+1, old_head]` in the
-branch's `discarded_ranges` and lowers the head. The entries stay in the WAL
-for audit; materialization skips them.
+`argon restore reset --lsn T` records the abandoned window `[T+1, M]` in the
+branch's `discarded_ranges` and lowers the head. `M` is the branch's
+high-water mark: the highest LSN its history has ever reached. The entries
+stay in the WAL for audit; materialization skips them.
 
 The skip rule is `segment upper bound > range end`: because the sequencer
-never rewinds, any post-reset write or fork lands strictly above the
-discarded window, while a branch forked *before* the reset has its fork
-point at or below it. Pre-reset forks therefore keep the history they
+never rewinds, any post-reset write or fork lands strictly above `M`, while
+every view captured *before* the reset — a fork, a `--backup` branch, a pin —
+sits at or below it. Those views therefore keep all the history they
 legitimately captured, and post-reset readers never resurrect it.
+
+Three details make that rule hold in every sequence of operations:
+
+- **The window ends at the high-water mark, not at the head.** After two
+  resets in a row the head is already below the first window. Ending the
+  second window at that head would put views captured inside the first
+  window "after" the second reset, and they would lose the history between
+  the two targets. Releases up to 2.1.5 recorded the head; such ranges are
+  read with their corrected end (`Branch.EffectiveDiscardedRanges`), so
+  existing data needs no migration.
+- **A reset cannot target discarded history.** An LSN inside an earlier
+  window is not on the branch's timeline: as a head it would show the
+  discarded writes until the next write hid them again. The reset is
+  refused, and the error names the nearest valid target.
+- **Discarded history stays addressable up to `M`.** It can be read
+  (`time-travel query --lsn`) and forked (`restore branch`), immediately
+  after the reset and later. Forking is how discarded work is recovered. A
+  `--time` selector resolves to where the branch stood at that moment, so
+  it can land in a discarded window: `restore branch --time` then recovers
+  that state, while `restore reset --time` is refused as above.
 
 ## Snapshots (the image layer)
 
@@ -148,12 +169,16 @@ without one, fall back to full replay unchanged.
 - **Lookup**: materialization searches the leaf-most ancestry hop first — a
   leaf snapshot covers the entire inherited chain beneath it. Within a hop,
   the newest usable snapshot inside the segment's LSN window wins.
-- **Reset interaction**: reset never touches snapshots. Each manifest
-  records how many discarded ranges existed when it was built
-  (`RangesApplied`); ranges are append-only, so a reader detects
-  invalidation by checking only ranges recorded afterwards, with the same
-  visibility rule replay applies to entries. Post-reset snapshots are
-  automatically valid again.
+- **Reset interaction**: reset never touches snapshots. A snapshot at LSN
+  `S` is itself a read with upper bound `S`, so it left out a discarded
+  range only if the range was already recorded when it was built (the
+  manifest stores that count as `RangesApplied`) and ended below `S`. A
+  reader may start from a snapshot unless some range overlaps the
+  snapshot's history, was not left out by the build, and must be skipped by
+  that reader. This covers a reset that happens after the snapshot was
+  built and a snapshot taken at an LSN inside an already discarded window;
+  both keep serving the forks, pins and historical reads that retain the
+  pre-reset view. Post-reset snapshots are valid for everyone again.
 - **Incremental**: `CreateSnapshot` materializes through the snapshot-aware
   path itself, so each snapshot builds from the previous one plus the delta.
 - **Automatic**: both programmatic writes and committed native capture batches notify the snapshot service;
@@ -206,12 +231,12 @@ backups. The MCP server exposes
 ever need again. Per (branch, collection), the reclaim cutoff is
 
 ```
-min( S,  R,  min over live children of S_i )
+min( S_R,  min over live children of S_i )
 ```
 
-where `S` is the newest snapshot valid for every possible future reader
-(no later discarded range overlaps it), `R` is the newest LSN older than
-the retention window (default 7 days), and `S_i` is the newest snapshot at
+where `S_R` is the newest snapshot that is valid for every possible reader
+and lies at or below `R`, the last LSN older than the retention window
+(default 7 days), and `S_i` is the newest snapshot at
 or below each live child's fork point — children and all their descendants
 read the parent's segment with an upper bound pinned to the fork, so they
 can only be served by snapshots at or below it. Dataset pins enter the
@@ -220,10 +245,32 @@ cutoff to the newest snapshot usable at bound `P`, and to zero — nothing
 reclaimed — while no such snapshot exists. Entries at or below the
 cutoff are deleted; control entries stay.
 
+The cutoff is a snapshot rather than `R` itself because a read inside the
+window starts from the newest snapshot at or below it and replays upward:
+it needs the entries between that snapshot and the window, although they
+are older than the window. Every LSN inside the window therefore stays
+exactly readable after GC, as do forks and pins.
+
+**Reclaimed history is refused, never misread.** Before deleting, GC
+records the cutoff as the collection's reclaim floor on that branch. A
+read replays from a snapshot (or from the start of a segment) upward; if
+that replay would cross entries at or below the floor that the reader does
+not skip as discarded, it fails with "history reclaimed by garbage
+collection" instead of returning a state without those writes. The floor is
+checked after the entries are read, so a GC run that completes during a
+read is caught as well. Operations that would commit a branch to such a
+position — `restore reset`, `restore branch`, `pin create --lsn`, an undo
+range reaching into it — are refused up front. Positions that sit exactly
+on a retained snapshot stay usable. GC runs performed by releases up to
+2.1.5 left no floors behind; positions those runs reclaimed are not
+detected.
+
 Two consequences worth stating plainly: history without snapshot coverage
 is **never** deleted, no matter how old — and reclaiming entries ends
 time-travel, audit and undo below the cutoff, which is exactly what a
-retention window means.
+retention window means. With automatic snapshots every ~1000 LSNs, up to
+that many entries just older than the window stay until the next snapshot
+falls out of it.
 
 Snapshots and GC bound replay and reclaim eligible history. Total storage
 still grows with active branch states, existing pins and write volume inside
@@ -409,6 +456,7 @@ Planned next:
 | `wal_snapshot_chunks` | Content-addressed snapshot data |
 | `wal_ingest_state` | Durable capture boundary, actor, resume token and last health report |
 | `wal_snapshot_locks` | Persistent publication/GC locks; see operations recovery |
+| `wal_reclaim_floors` | Per (branch, collection): the LSN at or below which GC has deleted entries |
 
 Indexes on `wal_log`: unique `(project_id, lsn)`;
 `(branch_id, collection, lsn)`; `(branch_id, collection, document_id, lsn)`;

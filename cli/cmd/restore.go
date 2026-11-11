@@ -15,7 +15,12 @@ var restoreCmd = &cobra.Command{
 RFC3339 time), or forks the historical state into a new branch without
 touching the original. Resets are recorded, never destructive: the
 discarded entries stay in the WAL for audit, and branches forked from
-the pre-reset head (or pins on it) keep reading the old state.`,
+the pre-reset head (or pins on it) keep reading the old state, however
+many resets follow.
+
+History a reset discarded can still be forked with "restore branch"; that
+is how it is recovered. A reset to a point inside discarded history is
+refused, because that point is no longer on the branch's timeline.`,
 }
 
 // restoreTarget resolves the --lsn/--time flags to a concrete LSN.
@@ -113,6 +118,11 @@ var restoreResetCmd = &cobra.Command{
 		}
 		if current.IsLive() {
 			return fmt.Errorf("stop writers and run argon release before resetting a live branch")
+		}
+		// Check the target before forking a backup, so a refused reset does
+		// not leave a backup branch behind.
+		if err := services.Restore.ValidateRestore(branchID, target); err != nil {
+			return err
 		}
 
 		if backup != "" {

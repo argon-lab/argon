@@ -146,15 +146,16 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 	}
 
 	snap := &Snapshot{
-		ProjectID:     branch.ProjectID,
-		BranchID:      branch.ID,
-		Collection:    collection,
-		LSN:           lsn,
-		RangesApplied: len(branch.DiscardedRanges),
-		ChunkIDs:      chunkIDs,
-		DocCount:      docCount,
-		SizeBytes:     sizeBytes,
-		CreatedAt:     time.Now(),
+		ProjectID:       branch.ProjectID,
+		BranchID:        branch.ID,
+		Collection:      collection,
+		LSN:             lsn,
+		RangesApplied:   len(branch.DiscardedRanges),
+		VisibilityRules: CurrentVisibilityRules,
+		ChunkIDs:        chunkIDs,
+		DocCount:        docCount,
+		SizeBytes:       sizeBytes,
+		CreatedAt:       time.Now(),
 	}
 
 	if _, err := s.manifests.InsertOne(ctx, snap); err != nil {
@@ -168,14 +169,35 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 // lies in [minLSN, maxLSN], for a read whose segment upper bound is
 // readUpperBound.
 //
-// Usability honors discarded ranges: ranges recorded before the snapshot
-// was built (index < RangesApplied) were already excluded from its state;
-// a range recorded afterwards invalidates the snapshot iff it overlaps the
-// snapshot's history (From <= LSN) and the reader must skip it
-// (readUpperBound > To) — the same visibility rule replay uses for
-// individual entries.
+// Usability honors discarded ranges with the same visibility rule replay
+// applies to individual entries; see usable.
 func (s *Service) FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (map[string]bson.M, int64, bool, error) {
 	ctx := context.Background()
+	snap, err := s.newestUsable(ctx, branch, collection, minLSN, maxLSN, readUpperBound)
+	if err != nil || snap == nil {
+		return nil, 0, false, err
+	}
+	state, err := s.load(ctx, snap)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return state, snap.LSN, true, nil
+}
+
+// UsableLSN implements materializer.SnapshotSource: the LSN FindUsable
+// would start from, decided from manifests alone without loading chunks.
+func (s *Service) UsableLSN(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (int64, bool, error) {
+	snap, err := s.newestUsable(context.Background(), branch, collection, minLSN, maxLSN, readUpperBound)
+	if err != nil || snap == nil {
+		return 0, false, err
+	}
+	return snap.LSN, true, nil
+}
+
+// newestUsable returns the manifest of the newest snapshot of (branch,
+// collection) with an LSN in [minLSN, maxLSN] that is usable for a read at
+// readUpperBound, or nil.
+func (s *Service) newestUsable(ctx context.Context, branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (*Snapshot, error) {
 	cursor, err := s.manifests.Find(ctx,
 		bson.M{
 			"branch_id":  branch.ID,
@@ -185,31 +207,58 @@ func (s *Service) FindUsable(branch *wal.Branch, collection string, minLSN, maxL
 		options.Find().SetSort(bson.M{"lsn": -1}),
 	)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("failed to query snapshots: %w", err)
+		return nil, fmt.Errorf("failed to query snapshots: %w", err)
 	}
 	defer func() { _ = cursor.Close(ctx) }()
 
 	for cursor.Next(ctx) {
 		var snap Snapshot
 		if err := cursor.Decode(&snap); err != nil {
-			return nil, 0, false, fmt.Errorf("failed to decode snapshot manifest: %w", err)
+			return nil, fmt.Errorf("failed to decode snapshot manifest: %w", err)
 		}
-		if !s.usable(&snap, branch, readUpperBound) {
-			continue
+		if s.usable(&snap, branch, readUpperBound) {
+			return &snap, nil
 		}
-		state, err := s.load(ctx, &snap)
-		if err != nil {
-			return nil, 0, false, err
-		}
-		return state, snap.LSN, true, nil
 	}
-	return nil, 0, false, cursor.Err()
+	return nil, cursor.Err()
 }
 
+// usable reports whether a snapshot holds exactly the history a reader with
+// the given upper bound must see up to the snapshot's LSN.
+//
+// A snapshot at LSN S is itself a read with upper bound S, so it excluded a
+// discarded range only if the range was already recorded when it was built
+// and ended below S. A reader at bound U excludes a range iff U lies above
+// its end. The two agree on every range except one that overlaps the
+// snapshot's history (From <= S), that the build did not exclude, and that
+// the reader must skip (U > To). That covers both ways a snapshot can hold
+// discarded writes:
+//
+//   - the reset happened after the snapshot was built;
+//   - the snapshot was taken at an LSN inside an already discarded window
+//     (it captured the pre-reset history, like a pin at that position).
+//
+// In either case the snapshot still serves readers at or below the range's
+// end — children, pins and historical reads that keep the pre-reset view.
 func (s *Service) usable(snap *Snapshot, branch *wal.Branch, readUpperBound int64) bool {
-	for idx := snap.RangesApplied; idx < len(branch.DiscardedRanges); idx++ {
-		r := branch.DiscardedRanges[idx]
-		if r.From <= snap.LSN && readUpperBound > r.To {
+	effective := branch.EffectiveDiscardedRanges()
+	for idx, r := range effective {
+		if r.From > snap.LSN {
+			continue // Entirely above the snapshot: nothing of it is inside.
+		}
+		if idx < snap.RangesApplied {
+			if snap.LSN > r.To {
+				continue // Excluded by the build, and by every reader at or above S.
+			}
+			// Releases up to 2.1.5 ended a range at the head of the moment,
+			// which after back-to-back resets is below the true end. A
+			// manifest from then that sits between the two ends excluded
+			// history its readers are entitled to see: unusable for anyone.
+			if snap.VisibilityRules < CurrentVisibilityRules && snap.LSN > branch.DiscardedRanges[idx].To {
+				return false
+			}
+		}
+		if readUpperBound > r.To {
 			return false
 		}
 	}
@@ -280,30 +329,11 @@ func (s *Service) load(ctx context.Context, snap *Snapshot) (map[string]bson.M, 
 // far a collection's entries are covered: pass math.MaxInt64 as
 // readUpperBound to require validity for every possible future reader.
 func (s *Service) NewestUsableLSN(branch *wal.Branch, collection string, maxLSN, readUpperBound int64) (int64, error) {
-	ctx := context.Background()
-	cursor, err := s.manifests.Find(ctx,
-		bson.M{
-			"branch_id":  branch.ID,
-			"collection": collection,
-			"lsn":        bson.M{"$lte": maxLSN},
-		},
-		options.Find().SetSort(bson.M{"lsn": -1}),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("failed to query snapshots: %w", err)
+	snap, err := s.newestUsable(context.Background(), branch, collection, 0, maxLSN, readUpperBound)
+	if err != nil || snap == nil {
+		return 0, err
 	}
-	defer func() { _ = cursor.Close(ctx) }()
-
-	for cursor.Next(ctx) {
-		var snap Snapshot
-		if err := cursor.Decode(&snap); err != nil {
-			return 0, fmt.Errorf("failed to decode snapshot manifest: %w", err)
-		}
-		if s.usable(&snap, branch, readUpperBound) {
-			return snap.LSN, nil
-		}
-	}
-	return 0, cursor.Err()
+	return snap.LSN, nil
 }
 
 // CollectionsUpTo implements materializer.SnapshotSource: collections that

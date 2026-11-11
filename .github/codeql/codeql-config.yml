@@ -1,0 +1,15 @@
+name: Argon CodeQL configuration
+
+# go/sql-injection reports every MongoDB filter that contains a value from a
+# request. In this codebase those values (project, branch, pin and collection
+# names, actor labels) are bound as Go strings before they reach a filter,
+# and the driver encodes a Go string as a BSON string: it cannot turn into an
+# operator document such as {"$ne": ...}. The query cannot see that, so every
+# lookup by name is flagged.
+#
+# The invariant to keep: never place a value decoded from a request as
+# interface{}, bson.M or bson.D into a filter. Bind request fields to typed
+# structs (as api/server does) and build filters from those fields.
+query-filters:
+  - exclude:
+      id: go/sql-injection

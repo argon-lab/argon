@@ -8,7 +8,9 @@
 package materializer
 
 import (
+	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -28,6 +30,9 @@ type SnapshotSource interface {
 	// discarded-range visibility for a read whose segment upper bound is
 	// readUpperBound. ok is false when no usable snapshot exists.
 	FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (state map[string]bson.M, lsn int64, ok bool, err error)
+	// UsableLSN reports the LSN FindUsable would start from, without
+	// loading the snapshot.
+	UsableLSN(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (lsn int64, ok bool, err error)
 	// CollectionsUpTo lists collections with snapshots for the branch in
 	// the LSN window.
 	CollectionsUpTo(branchID string, minLSN, maxLSN int64) ([]string, error)
@@ -116,7 +121,22 @@ func (s *Service) ancestrySegments(branch *wal.Branch, targetLSN int64) ([]segme
 // is wired in, replay starts from the nearest usable snapshot (searching
 // leaf-most hop first, since a leaf snapshot covers the entire inherited
 // chain beneath it) and only the delta above it is replayed.
+//
+// A read that would have to replay entries garbage collection has deleted
+// fails with wal.ErrHistoryReclaimed instead of returning a state that
+// lacks them.
 func (s *Service) MaterializeCollectionAtLSN(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error) {
+	// A GC run that finishes between choosing the snapshot and reading the
+	// entries above it invalidates that choice. One retry picks the newer
+	// snapshot GC relied on; a second failure is a genuine hole.
+	state, err := s.materializeCollection(branch, collection, targetLSN)
+	if errors.Is(err, wal.ErrHistoryReclaimed) {
+		state, err = s.materializeCollection(branch, collection, targetLSN)
+	}
+	return state, err
+}
+
+func (s *Service) materializeCollection(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error) {
 	segments, err := s.ancestrySegments(branch, targetLSN)
 	if err != nil {
 		return nil, err
@@ -161,7 +181,130 @@ func (s *Service) MaterializeCollectionAtLSN(branch *wal.Branch, collection stri
 		}
 	}
 
+	// Checked after the entries were read, not before: GC records a floor
+	// before it deletes, so a floor that is clear now proves that nothing
+	// in the ranges just read had been deleted yet.
+	if err := s.requireUnreclaimed(segments[startIdx:], collection, targetLSN); err != nil {
+		return nil, err
+	}
 	return state, nil
+}
+
+// requireUnreclaimed verifies that garbage collection has not deleted
+// entries from the ranges a read replays. Each segment's fromLSN is where
+// its replay starts — right above a snapshot, or the segment's first LSN.
+func (s *Service) requireUnreclaimed(replayed []segment, collection string, targetLSN int64) error {
+	for _, seg := range replayed {
+		if seg.fromLSN > seg.toLSN {
+			continue
+		}
+		floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
+		if err != nil {
+			return err
+		}
+		if needsReclaimed(seg, seg.fromLSN, floor) {
+			return reclaimedError(seg.branch, collection, floor, targetLSN)
+		}
+	}
+	return nil
+}
+
+// needsReclaimed reports whether a reader of the segment that replays from
+// the given LSN depends on entries at or below the reclaim floor. It does
+// not when the replay starts above the floor — or when every LSN from the
+// start up to the floor lies in discarded ranges this reader skips anyway:
+// reclaimed entries of abandoned history are no loss to a reader that
+// would not have applied them.
+func needsReclaimed(seg segment, from, floor int64) bool {
+	upTo := floor
+	if seg.toLSN < upTo {
+		upTo = seg.toLSN
+	}
+	if upTo < from {
+		return false
+	}
+	var skipped []wal.LSNRange
+	for _, r := range seg.branch.EffectiveDiscardedRanges() {
+		if seg.toLSN > r.To {
+			skipped = append(skipped, r)
+		}
+	}
+	sort.Slice(skipped, func(i, j int) bool { return skipped[i].From < skipped[j].From })
+	next := from // lowest LSN not yet known to be skipped
+	for _, r := range skipped {
+		if r.To < next {
+			continue
+		}
+		if r.From > next {
+			return true
+		}
+		next = r.To + 1
+		if next > upTo {
+			return false
+		}
+	}
+	return true
+}
+
+func reclaimedError(branch *wal.Branch, collection string, floor, targetLSN int64) error {
+	return fmt.Errorf("%w: entries of collection %q on branch %q at or below LSN %d were deleted, and no snapshot usable at LSN %d covers them",
+		wal.ErrHistoryReclaimed, collection, branch.Name, floor, targetLSN)
+}
+
+// ValidateReadable reports whether the branch's state at targetLSN can
+// still be reconstructed, without materializing it: for every collection
+// with reclaimed history it locates where replay would start and checks
+// that nothing above that point is gone. Operations that would commit a
+// branch to a historical position — a reset, a fork from history, a pin —
+// call it first, so they are refused instead of producing a branch whose
+// state silently lacks the reclaimed writes.
+func (s *Service) ValidateReadable(branch *wal.Branch, targetLSN int64) error {
+	segments, err := s.ancestrySegments(branch, targetLSN)
+	if err != nil {
+		return err
+	}
+	if len(segments) == 0 {
+		return nil // Before the first entry of the whole chain: the empty state.
+	}
+	floors := make([]map[string]int64, len(segments))
+	collections := make(map[string]bool)
+	for i, seg := range segments {
+		if floors[i], err = s.wal.ReclaimFloors(seg.branch.ID); err != nil {
+			return err
+		}
+		for name := range floors[i] {
+			collections[name] = true
+		}
+	}
+	for collection := range collections {
+		startIdx, startLSN := 0, segments[0].fromLSN
+		if s.snapshots != nil {
+			for i := len(segments) - 1; i >= 0; i-- {
+				seg := segments[i]
+				snapLSN, ok, err := s.snapshots.UsableLSN(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+				if err != nil {
+					return fmt.Errorf("failed to look up snapshot for branch %s: %w", seg.branch.ID, err)
+				}
+				if ok {
+					startIdx, startLSN = i, snapLSN+1
+					break
+				}
+			}
+		}
+		for i := startIdx; i < len(segments); i++ {
+			from := segments[i].fromLSN
+			if i == startIdx {
+				from = startLSN
+			}
+			if from > segments[i].toLSN {
+				continue
+			}
+			if floor := floors[i][collection]; needsReclaimed(segments[i], from, floor) {
+				return reclaimedError(segments[i].branch, collection, floor, targetLSN)
+			}
+		}
+	}
+	return nil
 }
 
 // MaterializeCollection builds the current state of a collection for a branch
@@ -186,6 +329,16 @@ func (s *Service) MaterializeBranchAtLSN(branch *wal.Branch, targetLSN int64) (m
 			return nil, fmt.Errorf("failed to list collections for branch %s: %w", seg.branch.ID, err)
 		}
 		for _, name := range names {
+			collections[name] = true
+		}
+		// A collection whose entries were all reclaimed in this segment no
+		// longer shows up in the WAL. It must still be read — and refused,
+		// if no snapshot covers it — rather than silently left out.
+		reclaimed, err := s.wal.ReclaimFloors(seg.branch.ID)
+		if err != nil {
+			return nil, err
+		}
+		for name := range reclaimed {
 			collections[name] = true
 		}
 		if s.snapshots != nil {
@@ -248,14 +401,30 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 			}
 			return state[documentID], nil
 		}
+		// No entry of this segment answers, so the answer lies below: in
+		// this segment's snapshot, or further down the chain. That is only
+		// sound if the document really has no later entry here. Had garbage
+		// collection deleted entries between that base and the read bound,
+		// one of them might have been this document's — and an older value
+		// would be returned as if it were current.
+		floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
+		if err != nil {
+			return nil, err
+		}
 		if s.snapshots != nil {
-			state, _, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+			state, snapLSN, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
 			if err != nil {
 				return nil, err
 			}
 			if ok {
+				if needsReclaimed(seg, snapLSN+1, floor) {
+					return nil, reclaimedError(seg.branch, collection, floor, targetLSN)
+				}
 				return state[documentID], nil
 			}
+		}
+		if needsReclaimed(seg, seg.fromLSN, floor) {
+			return nil, reclaimedError(seg.branch, collection, floor, targetLSN)
 		}
 	}
 	return nil, nil

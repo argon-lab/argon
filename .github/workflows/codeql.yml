@@ -50,6 +50,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
       # Three Go modules share the repository; build each so all are traced.
       - name: Build every Go module
         if: matrix.language == 'go'

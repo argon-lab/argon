@@ -12,18 +12,26 @@
 //     point at each hop. Those readers can only use snapshots with
 //     LSN <= F, so each live child needs entries above its own coverage
 //     snapshot S_i (the newest usable snapshot at or below F_i).
-//   - The retention window is the time-travel guarantee: entries younger
-//     than the window must stay so any in-window historical LSN can be
-//     materialized; older ones may go once covered.
+//   - The retention window is the time-travel guarantee: every LSN inside
+//     the window must stay materializable. A read at such an LSN starts
+//     from the newest snapshot at or below it, so it needs every entry
+//     above that snapshot — including entries older than the window that
+//     sit between the snapshot and the window's start. Reclamation
+//     therefore stops at a snapshot: the newest one, valid for every
+//     reader, that is at or below R, the last LSN older than the window.
 //
 // The reclaim cutoff is therefore
 //
-//	min( S, R, min over live children of S_i )
+//	min( S_R, min over live children of S_i, min over pins of S_p )
 //
-// where R is the newest LSN older than the retention window. Entries at or
-// below the cutoff are deleted; everything else stays. With no snapshot
-// (S = 0) nothing is deleted, no matter how old — history that is anyone's
-// only source of truth is never dropped.
+// where S_R is that snapshot. Entries at or below the cutoff are deleted;
+// everything else stays. With no such snapshot (S_R = 0) nothing is
+// deleted, no matter how old — history that is anyone's only source of
+// truth is never dropped.
+//
+// Cutting at R itself, rather than at a snapshot below it, would delete the
+// entries between that snapshot and R while in-window reads just above R
+// still replay across them — and silently come back missing those writes.
 //
 // Deleting entries below the cutoff also deletes discarded-range entries
 // and pre-images in that region, which ends their audit/undo availability.
@@ -140,13 +148,27 @@ func (s *Service) gcBranch(ctx context.Context, branch *wal.Branch, liveChildren
 		Cutoffs:    make(map[string]int64),
 	}
 
-	// R: the retention window translated into this branch's LSNs.
+	// R: the retention window translated into this branch's LSNs — the
+	// last LSN below which everything is older than the window.
 	retentionLSN, err := s.wal.LatestLSNBefore(branch.ID, retentionCutoffTime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute retention cutoff: %w", err)
 	}
 	if retentionLSN == 0 {
 		return report, nil // Everything is inside the window.
+	}
+	// Timestamps are not strictly ordered by LSN (they are taken after the
+	// LSN is reserved), so an in-window entry can sit below the newest old
+	// one. Nothing at or above the first in-window entry is reclaimable.
+	firstInWindow, err := s.wal.FirstLSNAfter(branch.ID, retentionCutoffTime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute retention cutoff: %w", err)
+	}
+	if firstInWindow > 0 && firstInWindow-1 < retentionLSN {
+		retentionLSN = firstInWindow - 1
+	}
+	if retentionLSN <= 0 {
+		return report, nil
 	}
 
 	collections, err := s.wal.DistinctCollections(branch.ID, 0, branch.HeadLSN)
@@ -163,17 +185,17 @@ func (s *Service) gcBranch(ctx context.Context, branch *wal.Branch, liveChildren
 	}
 
 	for _, collection := range collections {
-		// S: coverage for the branch's own (and post-fork) readers — must
-		// be valid for every possible future read bound.
-		coverage, err := s.snapshots.NewestUsableLSN(branch, collection, branch.HeadLSN, math.MaxInt64)
+		// S_R: the newest snapshot at or below the retention boundary that
+		// is valid for every possible read bound. Readers of the branch
+		// itself, at the head or anywhere inside the window, start from it
+		// or from a newer snapshot, and replay only entries above it.
+		cutoff, err := s.snapshots.NewestUsableLSN(branch, collection, min64(branch.HeadLSN, retentionLSN), math.MaxInt64)
 		if err != nil {
 			return nil, err
 		}
-		if coverage == 0 {
-			continue // No snapshot: this history is the only source of truth.
+		if cutoff == 0 {
+			continue // No such snapshot: this history is the only source of truth.
 		}
-
-		cutoff := min64(coverage, retentionLSN)
 
 		// S_i: every live child's readers are pinned to its fork point and
 		// can only use snapshots at or below it.
@@ -204,6 +226,11 @@ func (s *Service) gcBranch(ctx context.Context, branch *wal.Branch, liveChildren
 		if dryRun {
 			continue
 		}
+		// The floor goes down first. Readers that would need the deleted
+		// entries are refused from here on instead of replaying past them.
+		if err := s.wal.RecordReclaimFloor(ctx, branch.ID, collection, cutoff); err != nil {
+			return nil, err
+		}
 		removed, err := s.wal.DeleteDataEntriesUpTo(branch.ID, collection, cutoff)
 		if err != nil {
 			return nil, fmt.Errorf("failed to delete entries for %s: %w", collection, err)
@@ -225,6 +252,9 @@ func (s *Service) ReclaimDeletedBranch(ctx context.Context, branchID string) (en
 	manifestsRemoved, chunksRemoved, err = s.snapshots.CleanupBranch(ctx, branchID)
 	if err != nil {
 		return entriesRemoved, 0, 0, err
+	}
+	if err := s.wal.ForgetReclaimFloors(ctx, branchID); err != nil {
+		return entriesRemoved, manifestsRemoved, chunksRemoved, fmt.Errorf("failed to drop reclaim floors: %w", err)
 	}
 	return entriesRemoved, manifestsRemoved, chunksRemoved, nil
 }

@@ -40,6 +40,57 @@ entry — a synchronization barrier, not in-proxy capture).
   the body before responding, and no crash was reproduced. Source builds on
   the Go 1.27 line require 1.27.4 or newer.
 
+### Fixed
+
+- **Backup branches and pins survive repeated resets.** Resetting a branch
+  twice with no write in between ended the second discarded range at the
+  already rewound head. Views captured before the first reset — a `--backup`
+  branch, a fork, a pin — then silently lost the history between the two
+  reset targets. A range now ends at the branch's high-water mark. Ranges
+  recorded by earlier releases are read with the corrected end, so affected
+  backups and pins read correctly again after upgrading; no migration is
+  needed.
+- **A reset can no longer land inside discarded history.** Resetting to an
+  LSN (or `--time`) that an earlier reset had discarded showed the discarded
+  writes at the head until the next write hid them again, and the
+  snapshot-accelerated read path could keep returning them. Such a reset is
+  now refused with the nearest valid target. Discarded history remains
+  readable and forkable up to the high-water mark — also immediately after a
+  reset, which previously required a later write — so `argon restore branch`
+  recovers it. If you reset into discarded history with an earlier release
+  and still need those documents, fork that LSN.
+- **Snapshots taken inside a discarded window serve only readers of that
+  window.** A snapshot at an LSN inside an already discarded range holds the
+  pre-reset history, but was treated as valid for everyone and could
+  resurrect discarded documents; GC could then reclaim the entries that
+  proved otherwise. Usability is now decided from what the snapshot actually
+  left out.
+- **GC keeps every LSN inside the retention window readable.** The reclaim
+  cutoff was the retention boundary itself. A read just above it replays from
+  the newest snapshot below, across entries GC had deleted, and returned a
+  state missing those writes without an error. The cutoff is now the newest
+  generally valid snapshot at or below the boundary, and the boundary accounts
+  for entries whose timestamps are slightly out of LSN order.
+- **Positions GC has reclaimed past are refused instead of misread.** A
+  time-travel query, reset, fork, pin or undo that needed entries GC had
+  deleted replayed across the gap and produced a state without those writes
+  — after `restore reset`, as the branch's new head. GC now records how far it
+  reclaimed per branch and collection (`wal_reclaim_floors`), reads that
+  would cross that floor fail with `history reclaimed by garbage collection`,
+  and those commands check before changing anything. Heads, forks, pins,
+  positions on a retained snapshot and everything inside the retention
+  window are unaffected. Floors are recorded from this release on.
+- `argon restore reset --backup` validates the target before creating the
+  backup branch, `restore preview` fails the way the reset would and no longer
+  counts entries an earlier reset already discarded, and `time-travel query`
+  without `--collection` rejects an LSN beyond the branch's history like the
+  single-collection form.
+
+### Changed
+
+- Resolving `--time` reads one index entry instead of loading every WAL entry
+  of the project up to that time.
+
 ### Removed
 
 - A 14 MB `cli/argon` executable that had been committed to the repository by
