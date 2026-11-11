@@ -300,7 +300,7 @@ func importCollections(ctx context.Context, db *mongo.Database) ([]string, error
 	if err != nil {
 		return nil, fmt.Errorf("source collection preflight: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 	var names []string
 	for cursor.Next(ctx) {
 		var spec struct {

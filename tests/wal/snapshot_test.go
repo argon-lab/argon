@@ -9,12 +9,12 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
-	"github.com/argon-lab/argon/v2/internal/walwriter"
 	"github.com/argon-lab/argon/v2/internal/materializer"
 	"github.com/argon-lab/argon/v2/internal/restore"
 	"github.com/argon-lab/argon/v2/internal/snapshot"
 	"github.com/argon-lab/argon/v2/internal/timetravel"
 	"github.com/argon-lab/argon/v2/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/walwriter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"

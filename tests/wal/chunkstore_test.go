@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
-	"github.com/argon-lab/argon/v2/internal/walwriter"
 	"github.com/argon-lab/argon/v2/internal/materializer"
 	"github.com/argon-lab/argon/v2/internal/snapshot"
 	"github.com/argon-lab/argon/v2/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/walwriter"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"

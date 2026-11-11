@@ -1,0 +1,23 @@
+# Workflow actions are pinned to commit SHAs, so something has to move the
+# pins. Dependabot proposes one grouped update a week, ahead of the Monday
+# maintenance pass.
+#
+# Go modules and npm packages are deliberately not listed here. The three Go
+# modules are released together and the console's built assets are committed
+# and verified byte for byte, so their updates are made by hand (see
+# CONTRIBUTING.md) and gated by govulncheck and npm audit in CI.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

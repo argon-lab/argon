@@ -49,7 +49,7 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 	if !add("connection", "MongoDB reachable", err) {
 		return
 	}
-	defer client.Disconnect(context.Background())
+	defer func() { _ = client.Disconnect(context.Background()) }()
 	if err := client.Ping(ctx, nil); err != nil {
 		report.Checks[0] = deploymentCheck{"connection", false, "MongoDB unreachable or authentication failed; check MONGODB_URI and server availability"}
 		return
@@ -89,7 +89,7 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 		add("capture_status", "", err)
 		return
 	}
-	defer cur.Close(ctx)
+	defer func() { _ = cur.Close(ctx) }()
 	var stored []struct {
 		Status bson.M `bson:"capture_status"`
 	}
@@ -128,7 +128,7 @@ func probeCapture(ctx context.Context, client *mongo.Client) (probeErr error) {
 	if err != nil {
 		return fmt.Errorf("open change stream: %w", err)
 	}
-	defer stream.Close(context.Background())
+	defer func() { _ = stream.Close(context.Background()) }()
 	// Collections must exist before the transaction on all supported versions.
 	if _, err := metadata.InsertOne(ctx, bson.M{"_id": "setup"}); err != nil {
 		return fmt.Errorf("write metadata: %w", err)

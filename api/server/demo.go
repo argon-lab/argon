@@ -452,7 +452,9 @@ func (r *Router) sweepDemo() {
 		}
 		if branches, err := r.services.Branches.ListBranches(p.ID); err == nil {
 			for _, b := range branches {
-				r.stopIngester(b.ID)
+				if err := r.stopIngester(b.ID); err != nil {
+					log.Printf("demo sweep: stop capture for %s/%s: %v", p.Name, b.Name, err)
+				}
 				if b.IsLive() {
 					if err := r.services.Checkout.Release(context.Background(), b.ID); err != nil {
 						log.Printf("demo sweep: release %s/%s: %v", p.Name, b.Name, err)

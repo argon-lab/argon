@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/klauspost/compress/snappy"
+	"github.com/klauspost/compress/zstd"
 )
 
 // CompressionType represents the type of compression used
@@ -63,7 +63,7 @@ func NewCompressor(config *CompressionConfig) (*Compressor, error) {
 
 	// Initialize zstd encoder/decoder if needed
 	if config.Type == CompressionZstd {
-		encoder, err := zstd.NewWriter(nil, 
+		encoder, err := zstd.NewWriter(nil,
 			zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(config.Level)))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create zstd encoder: %w", err)
@@ -93,16 +93,16 @@ func (c *Compressor) Compress(data []byte) ([]byte, error) {
 	switch c.config.Type {
 	case CompressionNone:
 		return c.wrapData(data, CompressionNone)
-	
+
 	case CompressionGzip:
 		compressed, err = c.compressGzip(data)
-	
+
 	case CompressionZstd:
 		compressed, err = c.compressZstd(data)
-	
+
 	case CompressionSnappy:
 		compressed = c.compressSnappy(data)
-	
+
 	default:
 		return nil, fmt.Errorf("unknown compression type: %d", c.config.Type)
 	}
@@ -137,16 +137,16 @@ func (c *Compressor) Decompress(data []byte) ([]byte, error) {
 	switch compressionType {
 	case CompressionNone:
 		return compressedData, nil
-	
+
 	case CompressionGzip:
 		return c.decompressGzip(compressedData)
-	
+
 	case CompressionZstd:
 		return c.decompressZstd(compressedData)
-	
+
 	case CompressionSnappy:
 		return c.decompressSnappy(compressedData)
-	
+
 	default:
 		return nil, fmt.Errorf("unknown compression type: %d", compressionType)
 	}

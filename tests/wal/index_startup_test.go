@@ -31,7 +31,7 @@ func TestWAL_ConcurrentStartupKeepsCurrentIndexes(t *testing.T) {
 	t.Cleanup(func() { _ = db.Drop(ctx); _ = client.Disconnect(ctx) })
 	initial, err := wal.NewService(db)
 	require.NoError(t, err)
-	defer initial.Close()
+	defer func() { _ = initial.Close() }()
 	var workers sync.WaitGroup
 	results := make(chan error, 8)
 	for i := 0; i < 8; i++ {
@@ -40,7 +40,7 @@ func TestWAL_ConcurrentStartupKeepsCurrentIndexes(t *testing.T) {
 			defer workers.Done()
 			service, err := wal.NewService(db)
 			if service != nil {
-				defer service.Close()
+				defer func() { _ = service.Close() }()
 			}
 			results <- err
 		}()
@@ -64,7 +64,7 @@ func TestWAL_StartupMigratesOnlyLegacyIndexes(t *testing.T) {
 	require.NoError(t, err)
 	service, err := wal.NewService(db)
 	require.NoError(t, err)
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	specs, err := indexes.ListSpecifications(ctx)
 	require.NoError(t, err)
 	var found bool
