@@ -22,10 +22,10 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - name: Resolve the authoritative tag
@@ -39,7 +39,7 @@ jobs:
           # must identify the reviewed source that the reusable CI validates.
           test "$(git rev-parse "refs/tags/api/v${version}^{commit}")" = "$(git rev-parse HEAD)"
       - name: Check release tooling
-        run: node --test scripts/release-version.test.js scripts/verify-npm-publication.test.mjs npm/scripts/install.test.js
+        run: node --test scripts/release-version.test.js scripts/verify-npm-publication.test.mjs scripts/npm-checksums.test.mjs npm/scripts/install.test.js
 
   release:
     name: Build and publish verified binaries
@@ -48,11 +48,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: |
@@ -82,7 +82,7 @@ jobs:
         working-directory: dist
         run: sha256sum argon-* release-provenance.json > SHA256SUMS
       - name: Create release with all required assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
           fail_on_unmatched_files: true
@@ -94,8 +94,8 @@ jobs:
     needs: [prepare, release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           registry-url: https://registry.npmjs.org
@@ -103,9 +103,33 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: node scripts/release-version.js "$RELEASE_VERSION"
+      # The package carries the digests of the binaries just released, and
+      # its installer refuses a download that does not match them.
+      - name: Embed the released binaries' checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$RELEASE_TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+          node scripts/npm-checksums.mjs "$RUNNER_TEMP/release/SHA256SUMS"
       - name: Check package contents
         working-directory: npm
-        run: npm pack --dry-run
+        run: |
+          npm pack --dry-run
+          npm pack --dry-run --json | node -e 'const files=JSON.parse(require("fs").readFileSync(0))[0].files.map(f=>f.path); if(!files.includes("checksums.json")) { console.error("checksums.json is missing from the package"); process.exit(1); }'
+      # Install the exact tarball about to be published, the way a user
+      # would. It downloads the real release binary and verifies it, so a
+      # package that cannot install never reaches the registry.
+      - name: Install the packed tarball before publishing it
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          tarball="$(cd npm && npm pack --pack-destination "$RUNNER_TEMP" --json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0))[0].filename)')"
+          prefix="$RUNNER_TEMP/argon-prepublish"
+          npm install --global --prefix "$prefix" --no-audit --no-fund --foreground-scripts --allow-scripts=argonctl "$RUNNER_TEMP/$tarball"
+          installed="$("$prefix/bin/argon" --version)"
+          echo "$installed"
+          test "$installed" = "argon version $RELEASE_VERSION"
       - name: Publish to npm
         working-directory: npm
         env:

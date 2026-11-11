@@ -29,6 +29,7 @@
   "files": [
     "bin/argon.js",
     "scripts/install.js",
+    "checksums.json",
     "scripts/uninstall.js",
     "README.md"
   ],

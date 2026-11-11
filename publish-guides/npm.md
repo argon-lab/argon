@@ -23,6 +23,14 @@ If the npm job fails after the release assets were published:
    also waits up to 15 minutes. The same check is available locally with
    `node scripts/verify-npm-publication.mjs --version VERSION --metadata-only`.
 
+Every published package carries `checksums.json`: the SHA-256 digests of that
+release's binaries, written by `scripts/npm-checksums.mjs` from the release's
+`SHA256SUMS` (the workflow and `scripts/publish-npm.sh` both do this). The
+installer refuses a download that does not match, and refuses to install at all
+from a package without the file. Before publishing, the workflow installs the
+packed tarball into a scratch prefix, which downloads and verifies the real
+binary; a package that cannot install does not reach the registry.
+
 Pass `--allow-prerelease` when checking an exact prerelease such as `2.2.0-rc.1`.
 For short diagnostic probes, `--timeout-ms` and `--interval-ms` accept positive
 integer durations. Neither verification mode publishes anything.

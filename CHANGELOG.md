@@ -11,6 +11,18 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Security
+
+- The npm installer verifies the binary it downloads. Each published package
+  now carries the SHA-256 digests of that release's binaries, and
+  `argonctl`'s install script refuses to run a download that does not match.
+  Until now the binary was fetched from the GitHub release and executed with
+  no integrity check beyond TLS, so the registry's own package integrity did
+  not extend to it.
+- The release workflow installs the exact tarball it is about to publish —
+  downloading and verifying the real binary — before publishing it, and its
+  actions are pinned to commit SHAs like the rest of CI.
+
 ## [2.1.6] - 2026-11-11
 
 Security and data-correctness fixes. Read the upgrade notes marked below if
