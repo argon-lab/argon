@@ -11,6 +11,16 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Security
+
+- Build with Go 1.26.11 to address
+  [GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859): an HTTP/1 server
+  using `MaxBytesReader` can panic when a handler reads the request body while
+  the response header is being written. The API server limits request bodies
+  this way, so the scanner reports the fix as reachable; Argon's handlers read
+  the body before responding, and no crash was reproduced. Source builds on
+  the Go 1.27 line require 1.27.4 or newer.
+
 ## [2.1.5] - 2026-11-09
 
 ### Security
