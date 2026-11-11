@@ -38,6 +38,16 @@ entry — a synchronization barrier, not in-proxy capture).
   handshake with protocol revision 2024-11-05. It now reports the real
   version and negotiates 2024-11-05, 2025-03-26 or 2025-06-18.
 
+### Changed
+
+- `argon checkout` (and sandbox creation) materializes and loads one
+  collection at a time instead of holding the whole branch in memory. The
+  database is the same state at the same LSN; peak memory is the largest
+  collection rather than the sum of all of them.
+- Time-travel info — shown whenever the console opens a branch — is read from
+  the index instead of loading every WAL entry of the branch with its
+  document images.
+
 ## [2.1.6] - 2026-11-11
 
 Security and data-correctness fixes. Read the upgrade notes marked below if

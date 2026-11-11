@@ -391,6 +391,51 @@ func (s *Service) LatestLSNBefore(branchID string, cutoff time.Time) (int64, err
 	return entry.LSN, nil
 }
 
+// DataEntrySpan summarizes a branch's data entries up to maxLSN: how many
+// there are and the LSN and timestamp of the first and last. It reads two
+// index-ordered entries and a count instead of the entries themselves.
+type DataEntrySpan struct {
+	Count                    int64
+	EarliestLSN, LatestLSN   int64
+	EarliestTime, LatestTime time.Time
+}
+
+// DataEntrySpan returns the span of a branch's data entries at or below
+// maxLSN. Count is zero when there are none.
+func (s *Service) DataEntrySpan(branchID string, maxLSN int64) (*DataEntrySpan, error) {
+	ctx := context.Background()
+	filter := bson.M{
+		"branch_id": branchID,
+		"lsn":       bson.M{"$lte": maxLSN},
+		"operation": bson.M{"$in": []OperationType{OpPut, OpDelete, LegacyOpInsert, LegacyOpUpdate}},
+	}
+	span := &DataEntrySpan{}
+	var err error
+	if span.Count, err = s.collection.CountDocuments(ctx, filter); err != nil {
+		return nil, err
+	}
+	if span.Count == 0 {
+		return span, nil
+	}
+	edge := func(order int) (int64, time.Time, error) {
+		var entry struct {
+			LSN       int64     `bson:"lsn"`
+			Timestamp time.Time `bson:"timestamp"`
+		}
+		err := s.collection.FindOne(ctx, filter,
+			options.FindOne().SetSort(bson.D{{Key: "lsn", Value: order}}).SetProjection(bson.M{"lsn": 1, "timestamp": 1}),
+		).Decode(&entry)
+		return entry.LSN, entry.Timestamp, err
+	}
+	if span.EarliestLSN, span.EarliestTime, err = edge(1); err != nil {
+		return nil, err
+	}
+	if span.LatestLSN, span.LatestTime, err = edge(-1); err != nil {
+		return nil, err
+	}
+	return span, nil
+}
+
 // FirstLSNAfter returns the lowest LSN among the branch's entries stamped
 // after the given time, or 0 if none is. Everything below it is older than
 // that time. GC bounds reclamation with this rather than with the newest old
