@@ -42,6 +42,17 @@ type Options struct {
 	ReadOnly bool
 	// Version is reported by /api/v1/meta.
 	Version string
+	// AllowedHosts is a comma-separated list of extra hostnames (without
+	// port) accepted in the Host header. Loopback names are always
+	// accepted; "*" accepts any host. An unauthenticated local control
+	// plane rejects every other Host, which is what stops a web page from
+	// reaching it through DNS rebinding. Set it when a tunnel or reverse
+	// proxy presents the console under another name.
+	AllowedHosts string
+	// TrustedProxies is a comma-separated list of proxy IPs or CIDR ranges
+	// whose X-Forwarded-For header is believed when deriving a client
+	// address. Empty trusts none: the client address is the TCP peer.
+	TrustedProxies string
 
 	// DemoMode turns the server into an anonymous hosted playground:
 	// one ephemeral seeded project per visitor, scoped and rate-limited
@@ -53,8 +64,8 @@ type Options struct {
 }
 
 // OptionsFromEnv reads the server options from the environment:
-// ARGON_CORS_ORIGINS, ARGON_API_TOKEN, ARGON_READ_ONLY, ARGON_DEMO_MODE,
-// ARGON_DEMO_TTL_MINUTES.
+// ARGON_CORS_ORIGINS, ARGON_API_TOKEN, ARGON_READ_ONLY, ARGON_ALLOWED_HOSTS,
+// ARGON_TRUSTED_PROXIES, ARGON_DEMO_MODE, ARGON_DEMO_TTL_MINUTES.
 func OptionsFromEnv() Options {
 	envBool := func(name string) bool {
 		switch strings.ToLower(os.Getenv(name)) {
@@ -70,16 +81,93 @@ func OptionsFromEnv() Options {
 		}
 	}
 	return Options{
-		CORSOrigins: os.Getenv("ARGON_CORS_ORIGINS"),
-		Token:       os.Getenv("ARGON_API_TOKEN"),
-		ReadOnly:    envBool("ARGON_READ_ONLY"),
-		Version:     Version,
-		DemoMode:    envBool("ARGON_DEMO_MODE"),
-		DemoTTL:     ttl,
+		CORSOrigins:    os.Getenv("ARGON_CORS_ORIGINS"),
+		Token:          os.Getenv("ARGON_API_TOKEN"),
+		ReadOnly:       envBool("ARGON_READ_ONLY"),
+		Version:        Version,
+		AllowedHosts:   os.Getenv("ARGON_ALLOWED_HOSTS"),
+		TrustedProxies: os.Getenv("ARGON_TRUSTED_PROXIES"),
+		DemoMode:       envBool("ARGON_DEMO_MODE"),
+		DemoTTL:        ttl,
 	}
 }
 
 // --- middleware ---
+
+// enforcesHost reports whether requests must name an accepted Host. A
+// control plane with no token and no demo scoping relies on being reachable
+// only from this machine; a browser can be tricked into reaching it under an
+// attacker's hostname (DNS rebinding), so the hostname is checked. Token and
+// demo deployments authenticate or scope every request already and are
+// served under arbitrary public names, so they opt in by listing hosts.
+func (o Options) enforcesHost() bool {
+	return (o.Token == "" && !o.DemoMode) || strings.TrimSpace(o.AllowedHosts) != ""
+}
+
+// hostGuard rejects requests whose Host header is neither a loopback name
+// nor explicitly allowed. /health stays open for probes.
+func hostGuard(allowed string) gin.HandlerFunc {
+	allowAny := false
+	extra := make(map[string]bool)
+	for _, name := range strings.Split(allowed, ",") {
+		name = normalizeHostname(name)
+		if name == "*" {
+			allowAny = true
+		}
+		if name != "" {
+			extra[name] = true
+		}
+	}
+	return func(c *gin.Context) {
+		if allowAny || c.Request.URL.Path == "/health" || hostAllowed(c.Request.Host, extra) {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"error": fmt.Sprintf("host %q is not allowed for this control plane; open it as localhost or 127.0.0.1, or list the hostname in ARGON_ALLOWED_HOSTS", c.Request.Host),
+		})
+	}
+}
+
+// hostAllowed accepts loopback names and addresses (with any port) plus the
+// configured extras.
+func hostAllowed(hostport string, extra map[string]bool) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = normalizeHostname(host)
+	if host == "" {
+		return false
+	}
+	// Browsers resolve localhost and its subdomains to loopback themselves,
+	// so these names cannot be rebound to a remote address.
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return extra[host]
+}
+
+func normalizeHostname(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimSuffix(strings.TrimPrefix(name, "["), "]")
+	return strings.TrimSuffix(name, ".")
+}
+
+// trustedProxyList parses Options.TrustedProxies. An empty option yields a
+// nil list, which makes gin ignore forwarding headers entirely.
+func trustedProxyList(option string) []string {
+	var proxies []string
+	for _, proxy := range strings.Split(option, ",") {
+		if proxy = strings.TrimSpace(proxy); proxy != "" {
+			proxies = append(proxies, proxy)
+		}
+	}
+	return proxies
+}
 
 func corsMiddleware(origins string) gin.HandlerFunc {
 	allowAll := origins == "*"

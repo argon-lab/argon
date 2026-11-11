@@ -243,3 +243,40 @@ func TestCLIPinnedWorkflowJSON(t *testing.T) {
 }
 
 func fmtLSN(value float64) string { data, _ := json.Marshal(value); return string(data) }
+
+// The proxy forwards to MongoDB without authenticating clients, so it must
+// not listen beyond loopback unless that was asked for explicitly.
+func TestProxyListensOnLoopbackUnlessRemoteAccessIsExplicit(t *testing.T) {
+	if got := proxyCmd.Flags().Lookup("listen").DefValue; !isLoopbackListen(got) {
+		t.Fatalf("default --listen %q is not loopback", got)
+	}
+	for _, addr := range []string{"127.0.0.1:27018", "localhost:27018", "[::1]:27018", "127.8.9.10:1"} {
+		if !isLoopbackListen(addr) {
+			t.Errorf("%s should count as loopback", addr)
+		}
+		if err := validateProxyListen(addr, false); err != nil {
+			t.Errorf("%s: %v", addr, err)
+		}
+	}
+	for _, addr := range []string{":27018", "0.0.0.0:27018", "[::]:27018", "192.168.1.20:27018", "db.internal:27018"} {
+		if isLoopbackListen(addr) {
+			t.Errorf("%s must not count as loopback", addr)
+		}
+		err := validateProxyListen(addr, false)
+		if err == nil || !strings.Contains(err.Error(), "--allow-remote") {
+			t.Errorf("%s: expected a refusal naming --allow-remote, got %v", addr, err)
+		}
+		if err := validateProxyListen(addr, true); err != nil {
+			t.Errorf("%s with --allow-remote: %v", addr, err)
+		}
+	}
+	if err := validateProxyListen("no-port", true); err == nil {
+		t.Error("an address without a port must be rejected")
+	}
+
+	// The refusal happens before any connection is attempted.
+	_, stderr, err := invokeCLI(t, "mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=100", "proxy", "--listen", ":27018")
+	if err == nil || !strings.Contains(stderr, "--allow-remote") {
+		t.Fatalf("expected the CLI to refuse a public listener: %v %s", err, stderr)
+	}
+}

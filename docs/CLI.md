@@ -30,7 +30,9 @@ argon collections prepare NAME -p P -b B  enable exact images before first write
 argon connect  -p P -b B      print a checked-out branch's URI
 argon watch    -p P -b B [--actor A] capture writes with a persisted branch label
 argon release  -p P -b B      drop the physical db; history stays
-argon proxy [--listen :27018] stable URIs: mongodb://host/<project>~<branch>
+argon proxy [--listen 127.0.0.1:27018] [--allow-remote]
+                              stable URIs: mongodb://host/<project>~<branch>;
+                              non-loopback listeners need --allow-remote
 argon console [--port 1818]   local web console (REST API + UI), opens browser
 ```
 
@@ -147,3 +149,5 @@ LSNs for queries and RFC3339 timestamps on restore/pin commands.
 
 `console` binds 127.0.0.1 by default. Non-loopback binding requires
 `ARGON_API_TOKEN` unless the restricted hosted demo is explicitly enabled.
+Without a token it answers only to `localhost` and loopback addresses; set
+`ARGON_ALLOWED_HOSTS` when a tunnel or reverse proxy uses another hostname.

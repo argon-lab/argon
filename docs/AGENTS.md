@@ -110,7 +110,9 @@ GET    /api/v1/status/ingesters
 Sandbox-creating endpoints start a supervised ingester; errors return
 `{"error": "..."}` with a meaningful status. Optional switches, all off
 by default: `ARGON_API_TOKEN` (Bearer auth on every `/api` endpoint
-except `/meta`), `ARGON_READ_ONLY=1`, `ARGON_CORS_ORIGINS`, and
+except `/meta`), `ARGON_READ_ONLY=1`, `ARGON_CORS_ORIGINS`,
+`ARGON_ALLOWED_HOSTS` (extra hostnames a token-less local server answers
+to; by default only `localhost` and loopback addresses), and
 `ARGON_DEMO_MODE=1` — a restricted anonymous hosted playground with no native URIs/checkout:
 one ephemeral
 seeded project per visitor, requests scoped to it, writes rate-limited,
@@ -167,8 +169,12 @@ Checked-out branches get machine-named physical databases. `argon proxy`
 serves stable, human-readable URIs instead:
 
 ```
-mongodb://proxy-host:27018/<project>~<branch>?directConnection=true
+mongodb://127.0.0.1:27018/<project>~<branch>?directConnection=true
 ```
+
+It listens on loopback unless you pass `--listen <addr> --allow-remote`; the
+proxy does not authenticate clients, so only do that in front of a MongoDB
+that requires authentication.
 
 The proxy rewrites each command's `$db` to the branch's physical database;
 mongod still evaluates every query. Constraints: `directConnection=true`

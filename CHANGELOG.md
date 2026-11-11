@@ -13,6 +13,25 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Security
 
+- `argon proxy` now listens on `127.0.0.1:27018` by default instead of every
+  interface. The proxy does not authenticate clients, so the previous default
+  exposed the upstream MongoDB — typically an unauthenticated development
+  instance — to the local network. A non-loopback `--listen` address is refused
+  unless `--allow-remote` is passed. **Upgrade note:** remote clients of the
+  proxy need `--listen <addr> --allow-remote`, with authentication enabled on
+  the upstream deployment.
+- Reject malformed wire-protocol frames in the proxy instead of crashing. A
+  16-byte message from any client that could connect ended the process;
+  frames are now length-checked before parsing, a bad frame closes only its
+  own connection, and the parser is covered by a fuzz test.
+- A control plane without `ARGON_API_TOKEN` (the `argon console` default)
+  validates the `Host` header and answers only to `localhost`, `*.localhost`
+  and loopback addresses, closing a DNS-rebinding path through which a web
+  page could drive the local API. Set `ARGON_ALLOWED_HOSTS` for tunnels or
+  reverse proxies that use another hostname.
+- Ignore `X-Forwarded-For` unless `ARGON_TRUSTED_PROXIES` lists the proxies
+  allowed to set it, so the demo write budget cannot be reset by forging the
+  header.
 - Build with Go 1.26.11 to address
   [GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859): an HTTP/1 server
   using `MaxBytesReader` can panic when a handler reads the request body while
