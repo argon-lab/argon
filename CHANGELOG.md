@@ -11,6 +11,36 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.2.0] - 2026-11-11
+
+MCP tool restrictions and annotations, a verified npm install, and lighter
+checkout and history reads. No data format changes since 2.1.6.
+
+### Added
+
+- `argon mcp --disable-tools` and `--read-only` restrict what an agent can do
+  through the MCP server. `--disable-tools argon_merge_apply` keeps applying a
+  merge plan a human step; a withheld tool is neither listed nor callable.
+- MCP tools declare titles and behaviour annotations (read-only, destructive,
+  idempotent), so clients can ask before `argon_merge_apply`, `argon_undo` and
+  `argon_sandbox_discard`.
+
+### Changed
+
+- `argon checkout` (and sandbox creation) materializes and loads one
+  collection at a time instead of holding the whole branch in memory. The
+  database is the same state at the same LSN; peak memory is the largest
+  collection rather than the sum of all of them.
+- Time-travel info — shown whenever the console opens a branch — is read from
+  the index instead of loading every WAL entry of the branch with its
+  document images.
+
+### Fixed
+
+- The MCP server reported its version as `2.0` and always answered the
+  handshake with protocol revision 2024-11-05. It now reports the real
+  version and negotiates 2024-11-05, 2025-03-26 or 2025-06-18.
+
 ### Security
 
 - The npm installer verifies the binary it downloads. Each published package
@@ -22,31 +52,6 @@ entry — a synchronization barrier, not in-proxy capture).
 - The release workflow installs the exact tarball it is about to publish —
   downloading and verifying the real binary — before publishing it, and its
   actions are pinned to commit SHAs like the rest of CI.
-
-### Added
-
-- `argon mcp --disable-tools` and `--read-only` restrict what an agent can do
-  through the MCP server. `--disable-tools argon_merge_apply` keeps applying a
-  merge plan a human step; a withheld tool is neither listed nor callable.
-- MCP tools declare titles and behaviour annotations (read-only, destructive,
-  idempotent), so clients can ask before `argon_merge_apply`, `argon_undo` and
-  `argon_sandbox_discard`.
-
-### Fixed
-
-- The MCP server reported its version as `2.0` and always answered the
-  handshake with protocol revision 2024-11-05. It now reports the real
-  version and negotiates 2024-11-05, 2025-03-26 or 2025-06-18.
-
-### Changed
-
-- `argon checkout` (and sandbox creation) materializes and loads one
-  collection at a time instead of holding the whole branch in memory. The
-  database is the same state at the same LSN; peak memory is the largest
-  collection rather than the sum of all of them.
-- Time-travel info — shown whenever the console opens a branch — is read from
-  the index instead of loading every WAL entry of the branch with its
-  document images.
 
 ## [2.1.6] - 2026-11-11
 
@@ -379,7 +384,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.1.6...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/argon-lab/argon/releases/tag/v2.2.0
 [2.1.6]: https://github.com/argon-lab/argon/releases/tag/v2.1.6
 [2.1.5]: https://github.com/argon-lab/argon/releases/tag/v2.1.5
 [2.1.4]: https://github.com/argon-lab/argon/releases/tag/v2.1.4
