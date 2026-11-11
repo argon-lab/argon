@@ -11,6 +11,12 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.1.6] - 2026-11-11
+
+Security and data-correctness fixes. Read the upgrade notes marked below if
+you run `argon proxy` for remote clients, reach the console under a
+non-loopback hostname, or use `restore reset` together with GC.
+
 ### Security
 
 - `argon proxy` now listens on `127.0.0.1:27018` by default instead of every
@@ -336,7 +342,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.1.5...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.1.6...HEAD
+[2.1.6]: https://github.com/argon-lab/argon/releases/tag/v2.1.6
 [2.1.5]: https://github.com/argon-lab/argon/releases/tag/v2.1.5
 [2.1.4]: https://github.com/argon-lab/argon/releases/tag/v2.1.4
 [2.1.3]: https://github.com/argon-lab/argon/releases/tag/v2.1.3
