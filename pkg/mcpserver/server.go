@@ -20,10 +20,58 @@ import (
 	"sync"
 	"time"
 
+	"github.com/argon-lab/argon/v2/pkg/version"
 	"github.com/argon-lab/argon/v2/pkg/walcli"
 )
 
-const protocolVersion = "2024-11-05"
+// supportedProtocolVersions are the handshake-based protocol revisions this
+// server speaks, oldest first. For a stdio server that only offers tools
+// they differ in what a tool may declare (annotations and titles arrived
+// after the first), not in how requests flow. The server answers with the
+// client's revision when it is one of these, and with the newest otherwise,
+// as the lifecycle rules of those revisions require.
+var supportedProtocolVersions = []string{"2024-11-05", "2025-03-26", "2025-06-18"}
+
+func negotiateProtocolVersion(requested string) string {
+	for _, version := range supportedProtocolVersions {
+		if version == requested {
+			return version
+		}
+	}
+	return supportedProtocolVersions[len(supportedProtocolVersions)-1]
+}
+
+// Option configures a Server.
+type Option func(*Server)
+
+// ReadOnly limits the server to tools that only inspect state: nothing is
+// forked, checked out, merged, undone or deleted through it.
+func ReadOnly() Option { return func(s *Server) { s.readOnly = true } }
+
+// DisableTools withholds the named tools. The usual use is keeping
+// argon_merge_apply away from an agent so that applying a reviewed plan
+// stays a human action (argon merge apply <plan-id>).
+func DisableTools(names ...string) Option {
+	return func(s *Server) {
+		for _, name := range names {
+			if name != "" {
+				s.disabled[name] = true
+			}
+		}
+	}
+}
+
+// UnknownTools returns the names in the list that are not tools of this
+// server, so a misspelled restriction is reported instead of ignored.
+func UnknownTools(names []string) []string {
+	var unknown []string
+	for _, name := range names {
+		if _, ok := toolHandlers[name]; !ok && name != "" {
+			unknown = append(unknown, name)
+		}
+	}
+	return unknown
+}
 
 // Server speaks MCP over a reader/writer pair (stdin/stdout in production).
 type Server struct {
@@ -35,16 +83,33 @@ type Server struct {
 	// Ingesters supervised for sandboxes created/connected via this server.
 	ingestMu sync.Mutex
 	ingest   map[string]context.CancelFunc
+
+	// Which tools this instance offers; fixed at construction.
+	readOnly bool
+	disabled map[string]bool
 }
 
 // New creates an MCP server over the given transport.
-func New(services *walcli.Services, in io.Reader, out io.Writer) *Server {
-	return &Server{
+func New(services *walcli.Services, in io.Reader, out io.Writer, opts ...Option) *Server {
+	s := &Server{
 		services: services,
 		in:       in,
 		out:      out,
 		ingest:   make(map[string]context.CancelFunc),
+		disabled: make(map[string]bool),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// offers reports whether a tool is available on this instance.
+func (s *Server) offers(name string) bool {
+	if s.disabled[name] {
+		return false
+	}
+	return !s.readOnly || toolTraits[name].readOnly
 }
 
 // jsonRPCRequest is an incoming JSON-RPC 2.0 message.
@@ -115,12 +180,16 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) {
 	switch req.Method {
 	case "initialize":
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(req.Params, &params)
 		s.reply(req.ID, map[string]interface{}{
-			"protocolVersion": protocolVersion,
+			"protocolVersion": negotiateProtocolVersion(params.ProtocolVersion),
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 			"serverInfo": map[string]interface{}{
 				"name":    "argon",
-				"version": "2.0",
+				"version": version.String(),
 			},
 		})
 	case "notifications/initialized", "notifications/cancelled":
@@ -128,7 +197,7 @@ func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) {
 	case "ping":
 		s.reply(req.ID, map[string]interface{}{})
 	case "tools/list":
-		s.reply(req.ID, map[string]interface{}{"tools": toolDescriptors()})
+		s.reply(req.ID, map[string]interface{}{"tools": s.offeredTools()})
 	case "tools/call":
 		s.handleToolCall(ctx, req)
 	default:
@@ -153,6 +222,12 @@ func (s *Server) handleToolCall(ctx context.Context, req *jsonRPCRequest) {
 	handler, ok := toolHandlers[params.Name]
 	if !ok {
 		s.replyError(req.ID, -32602, fmt.Sprintf("unknown tool %q", params.Name))
+		return
+	}
+	// A withheld tool is refused even if the client calls it without
+	// having seen it listed.
+	if !s.offers(params.Name) {
+		s.replyError(req.ID, -32602, fmt.Sprintf("tool %q is not available: this server was started with it disabled", params.Name))
 		return
 	}
 
