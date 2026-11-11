@@ -23,6 +23,21 @@ entry — a synchronization barrier, not in-proxy capture).
   downloading and verifying the real binary — before publishing it, and its
   actions are pinned to commit SHAs like the rest of CI.
 
+### Added
+
+- `argon mcp --disable-tools` and `--read-only` restrict what an agent can do
+  through the MCP server. `--disable-tools argon_merge_apply` keeps applying a
+  merge plan a human step; a withheld tool is neither listed nor callable.
+- MCP tools declare titles and behaviour annotations (read-only, destructive,
+  idempotent), so clients can ask before `argon_merge_apply`, `argon_undo` and
+  `argon_sandbox_discard`.
+
+### Fixed
+
+- The MCP server reported its version as `2.0` and always answered the
+  handshake with protocol revision 2024-11-05. It now reports the real
+  version and negotiates 2024-11-05, 2025-03-26 or 2025-06-18.
+
 ## [2.1.6] - 2026-11-11
 
 Security and data-correctness fixes. Read the upgrade notes marked below if

@@ -134,7 +134,9 @@ argon gc -p P [--retention 168h] [--dry-run]
     Reclaim entries covered by snapshots, outside retention, and needed
     by no live child or pin. No snapshot → nothing is ever deleted.
 
-argon mcp                           MCP server over stdio (13 tools)
+argon mcp [--read-only] [--disable-tools a,b]
+                                    MCP server over stdio (13 tools); withhold tools
+                                    such as argon_merge_apply to keep them manual
 argon migrate-wal --project P [--dry-run]      v1 → v2 schema migration
 argon status / metrics              health and performance counters
 ```

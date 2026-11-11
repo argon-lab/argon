@@ -28,6 +28,56 @@ var toolHandlers = map[string]toolHandler{
 	"argon_pin_sandbox":     toolPinSandbox,
 }
 
+// traits describes how a tool behaves, for clients deciding what needs a
+// person's approval. The protocol calls these annotations and treats them
+// as hints; here they also define what a read-only server offers.
+type traits struct {
+	title       string
+	readOnly    bool // inspects state only
+	destructive bool // can discard or overwrite data that is not trivially recreated
+	idempotent  bool // repeating the call with the same arguments changes nothing further
+}
+
+var toolTraits = map[string]traits{
+	"argon_branch_list":     {title: "List branches", readOnly: true, idempotent: true},
+	"argon_diff":            {title: "Diff a branch against its parent", readOnly: true, idempotent: true},
+	"argon_pin_list":        {title: "List dataset pins", readOnly: true, idempotent: true},
+	"argon_sandbox_create":  {title: "Create a sandbox"},
+	"argon_pin_sandbox":     {title: "Create a sandbox from a pin"},
+	"argon_connect":         {title: "Check out a branch and get its connection string", idempotent: true},
+	"argon_sandbox_keep":    {title: "Keep a sandbox", idempotent: true},
+	"argon_snapshot_create": {title: "Snapshot a branch", idempotent: true},
+	"argon_pin_create":      {title: "Pin a branch state"},
+	"argon_merge_preview":   {title: "Prepare a merge plan"},
+	"argon_merge_apply":     {title: "Apply a merge plan", destructive: true},
+	"argon_undo":            {title: "Undo a range of history", destructive: true},
+	"argon_sandbox_discard": {title: "Discard a sandbox", destructive: true, idempotent: true},
+}
+
+// offeredTools is the tools/list payload: every tool this instance offers,
+// with its title and behaviour annotations.
+func (s *Server) offeredTools() []map[string]interface{} {
+	offered := make([]map[string]interface{}, 0, len(toolHandlers))
+	for _, descriptor := range toolDescriptors() {
+		name, _ := descriptor["name"].(string)
+		if !s.offers(name) {
+			continue
+		}
+		t := toolTraits[name]
+		descriptor["title"] = t.title
+		descriptor["annotations"] = map[string]interface{}{
+			"title":           t.title,
+			"readOnlyHint":    t.readOnly,
+			"destructiveHint": t.destructive,
+			"idempotentHint":  t.idempotent,
+			// Every tool acts on this Argon deployment and nothing else.
+			"openWorldHint": false,
+		}
+		offered = append(offered, descriptor)
+	}
+	return offered
+}
+
 // schema builds the JSON schema for a tool's arguments.
 func schema(required []string, props map[string]interface{}) map[string]interface{} {
 	out := map[string]interface{}{

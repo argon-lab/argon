@@ -67,6 +67,30 @@ diff · merge preview/apply · undo · snapshot create · pin create/list/
 sandbox. The server runs a capture ingester for every sandbox it hands
 out — no extra process.
 
+Every tool declares how it behaves (MCP tool annotations): `argon_branch_list`,
+`argon_diff` and `argon_pin_list` are read-only; `argon_merge_apply`,
+`argon_undo` and `argon_sandbox_discard` are marked destructive, so clients
+that ask before destructive calls will ask before those.
+
+By default the agent can apply a merge plan it prepared itself: a preview is
+a reviewable artifact, not an approval gate. To keep the decision with a
+person, withhold the tool and apply reviewed plans from the CLI:
+
+```bash
+claude mcp add argon -- argon mcp --disable-tools argon_merge_apply
+argon merge apply <plan-id>          # after you have read the plan
+```
+
+`--disable-tools` takes a comma-separated list. `argon mcp --read-only`
+offers only the three read-only tools. A withheld tool is neither listed nor
+callable.
+
+The server speaks the handshake-based MCP revisions 2024-11-05, 2025-03-26
+and 2025-06-18 and answers with the client's revision when it is one of
+them. The per-request protocol introduced in 2026-07-28 (`server/discover`,
+no `initialize`) is not implemented yet; clients that support both fall back
+to the handshake.
+
 ## REST control plane
 
 `argon console` serves the REST API plus a web UI locally (binds
