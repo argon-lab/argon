@@ -137,7 +137,8 @@ func NewServicesAt(mongoURI, dbName string) (*Services, error) {
 		return nil, fmt.Errorf("failed to create pin service: %w", err)
 	}
 	// Pinned history must survive GC, and pinned branches must survive
-	// deletion.
+	// deletion. A pin is only accepted for a state that can still be read.
+	pinService.SetReadableCheck(materializerService.ValidateReadable)
 	gcService.SetPinLookup(pinService.LSNsForBranch)
 	branchService.SetDeleteGuard(pinService.RequireNoPins)
 	// Snapshot immediately after imports: an imported history is otherwise

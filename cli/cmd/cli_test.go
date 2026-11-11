@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"reflect"
@@ -278,5 +279,132 @@ func TestProxyListensOnLoopbackUnlessRemoteAccessIsExplicit(t *testing.T) {
 	_, stderr, err := invokeCLI(t, "mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=100", "proxy", "--listen", ":27018")
 	if err == nil || !strings.Contains(stderr, "--allow-remote") {
 		t.Fatalf("expected the CLI to refuse a public listener: %v %s", err, stderr)
+	}
+}
+
+// The documented incident flow, end to end through the CLI: reset with
+// --backup, then reset again because the first target was not far enough
+// back. The backup and an earlier pin must keep reading everything; a reset
+// into the discarded stretch is refused without side effects; forking that
+// stretch recovers it.
+func TestCLIRepeatedResetsKeepBackupAndPin(t *testing.T) {
+	uri := os.Getenv("ARGON_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("set ARGON_TEST_MONGODB_URI to run the MongoDB integration workflow")
+	}
+	t.Setenv("ARGON_METADATA_DB", "argon_cli_reset_test_"+primitive.NewObjectID().Hex())
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Disconnect(context.Background()) }()
+
+	run := func(args ...string) (string, string, error) {
+		t.Helper()
+		return invokeCLI(t, uri, args...)
+	}
+	call := func(args ...string) map[string]any {
+		t.Helper()
+		stdout, stderr, err := run(append(args, "--output", "json")...)
+		if err != nil {
+			t.Fatalf("%v failed: %v %s %s", args, err, stdout, stderr)
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("%v output is not one JSON value: %q (%v)", args, stdout, err)
+		}
+		return result
+	}
+	project := "cli-reset-" + primitive.NewObjectID().Hex()
+	call("projects", "create", project)
+	checkout := call("checkout", "-p", project)
+	physical := checkout["physical_db"].(string)
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = client.Database(physical).Drop(cleanup)
+		_ = client.Database(metadataDatabase()).Drop(cleanup)
+	}()
+	call("collections", "prepare", "orders", "-p", project)
+
+	// Three batches of orders; a pin after each records where it ended.
+	orders := client.Database(physical).Collection("orders")
+	batch := func(prefix, pin string) string {
+		t.Helper()
+		for i := 0; i < 3; i++ {
+			if _, err := orders.InsertOne(ctx, bson.M{"_id": fmt.Sprintf("%s%d", prefix, i)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return fmtLSN(call("pin", "create", "-p", project, "--name", pin)["pin"].(map[string]any)["lsn"].(float64))
+	}
+	afterK := batch("k", "after-k")
+	afterM := batch("m", "after-m")
+	afterX := batch("x", "everything")
+	call("release", "-p", project)
+
+	count := func(branch, lsn string) int {
+		t.Helper()
+		state := call("time-travel", "query", "-p", project, "-b", branch, "--lsn", lsn, "-c", "orders")
+		return len(state["documents"].(map[string]any))
+	}
+	reset := func(args ...string) (string, string, error) {
+		t.Helper()
+		return run(append([]string{"restore", "reset", "-p", project}, args...)...)
+	}
+
+	if out, stderr, err := reset("--lsn", afterM, "--backup", "pre-incident"); err != nil || !strings.Contains(out, "Reset main to LSN "+afterM) {
+		t.Fatalf("first reset: %v %s %s", err, out, stderr)
+	}
+	if got := count("pre-incident", afterX); got != 9 {
+		t.Fatalf("backup after the first reset: %d documents, want 9", got)
+	}
+	if out, stderr, err := reset("--lsn", afterK); err != nil || !strings.Contains(out, "Reset main to LSN "+afterK) {
+		t.Fatalf("second reset: %v %s %s", err, out, stderr)
+	}
+	if got := count("pre-incident", afterX); got != 9 {
+		t.Fatalf("backup after the second reset: %d documents, want 9", got)
+	}
+	call("pin", "branch", "-p", project, "--name", "everything", "--as", "from-pin")
+	if got := count("from-pin", afterX); got != 9 {
+		t.Fatalf("branch from the earlier pin: %d documents, want 9", got)
+	}
+	if got := count("main", afterK); got != 3 {
+		t.Fatalf("main after both resets: %d documents, want 3", got)
+	}
+
+	// afterM is now inside discarded history: not a reset target, and the
+	// refusal must not leave a backup branch behind.
+	before := call("branches", "list", "-p", project)
+	if _, stderr, err := reset("--lsn", afterM, "--backup", "should-not-exist"); err == nil || !strings.Contains(stderr, "earlier reset discarded") {
+		t.Fatalf("reset into discarded history must be refused: %v %s", err, stderr)
+	}
+	if _, stderr, err := run("restore", "preview", "-p", project, "--lsn", afterM); err == nil || !strings.Contains(stderr, "earlier reset discarded") {
+		t.Fatalf("preview must fail the way the reset would: %v %s", err, stderr)
+	}
+	if after := call("branches", "list", "-p", project); !reflect.DeepEqual(before, after) {
+		t.Fatalf("a refused reset changed branch metadata: before=%v after=%v", before, after)
+	}
+
+	// The discarded stretch is still readable and forkable.
+	if got := count("main", afterM); got != 6 {
+		t.Fatalf("historical read of discarded LSN %s: %d documents, want 6", afterM, got)
+	}
+	if out, stderr, err := run("restore", "branch", "-p", project, "--lsn", afterM, "--as", "recovered"); err != nil || !strings.Contains(out, `Created branch "recovered" at LSN `+afterM) {
+		t.Fatalf("recovering discarded history: %v %s %s", err, out, stderr)
+	}
+	if got := count("recovered", afterM); got != 6 {
+		t.Fatalf("recovered branch: %d documents, want 6", got)
+	}
+	// Reading beyond anything the branch ever held is an error, with or
+	// without a collection filter.
+	beyond := fmtLSN(1 << 40)
+	for _, extra := range [][]string{{"-c", "orders"}, nil} {
+		args := append([]string{"time-travel", "query", "-p", project, "--lsn", beyond}, extra...)
+		if _, stderr, err := run(args...); err == nil || !strings.Contains(stderr, "beyond branch HEAD") {
+			t.Fatalf("%v must be rejected: %v %s", args, err, stderr)
+		}
 	}
 }

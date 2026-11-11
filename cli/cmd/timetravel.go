@@ -128,7 +128,9 @@ var timeTravelQueryCmd = &cobra.Command{
 				fmt.Println(id)
 			}
 		} else {
-			state, err := services.Materializer.MaterializeBranchAtLSN(branch, lsn)
+			// Through the time-travel service, like the single-collection
+			// path, so both reject an LSN the branch's history never reached.
+			state, err := services.TimeTravel.GetBranchStateAtLSN(branch, lsn)
 			if err != nil {
 				return err
 			}

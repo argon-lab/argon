@@ -158,6 +158,10 @@ type Branch struct {
 	// skips them; without this, the first write after a reset (whose LSN is
 	// necessarily higher than the discarded entries') would advance the head
 	// past the discarded window and resurrect it.
+	//
+	// Readers must not interpret the stored ends directly: use
+	// IsDiscardedForRead or EffectiveDiscardedRanges, which apply the
+	// high-water rule described there.
 	DiscardedRanges []LSNRange `bson:"discarded_ranges,omitempty" json:"discarded_ranges,omitempty"`
 
 	// Checkout state (mongod-as-compute). A checked-out ("live") branch is
@@ -191,22 +195,94 @@ func (b *Branch) IsLive() bool {
 
 // IsDiscardedForRead reports whether an LSN must be skipped when reading
 // this branch's entries up to upperBound (the segment's inclusive end: the
-// head for a self-read, the fork LSN for a child's read).
+// head for a self-read, the fork LSN for a child's read, the pinned LSN for
+// a pin).
 //
 // A discarded range only applies when the read extends past it. The
-// sequencer never rewinds, so after a reset to T (discarding [from, to],
-// with T < from) any later write or fork point lands strictly above `to` —
-// while a child forked before the reset has its fork LSN at or below `to`.
-// That makes "upperBound > to" exactly the "this reader's timeline includes
-// the reset" test: post-reset readers skip the window, and children that
-// legitimately captured the pre-reset history keep it.
+// sequencer never rewinds, so after a reset to T that discards (T, M] —
+// where M is the highest LSN the branch's history had reached — any later
+// write or fork point lands strictly above M, while every view captured
+// before the reset (a child's fork point, a pin, a backup branch) sits at or
+// below M. That makes "upperBound > M" exactly the "this reader's timeline
+// includes the reset" test: post-reset readers skip the window, and views
+// that legitimately captured the pre-reset history keep all of it.
+//
+// M is the high-water mark, not the head at the time of the reset. The two
+// differ when a branch is reset twice with no write in between: the head is
+// then already below the first window. A range therefore always ends at the
+// highest end recorded so far, which is what EffectiveDiscardedRanges
+// computes; releases up to 2.1.5 stored the head instead, and those ranges
+// are read here with their corrected end.
 func (b *Branch) IsDiscardedForRead(lsn, upperBound int64) bool {
+	var highWater int64
 	for _, r := range b.DiscardedRanges {
-		if r.Contains(lsn) && upperBound > r.To {
+		if r.To > highWater {
+			highWater = r.To
+		}
+		if lsn >= r.From && lsn <= highWater && upperBound > highWater {
 			return true
 		}
 	}
 	return false
+}
+
+// EffectiveDiscardedRanges returns the discarded ranges as readers interpret
+// them, in recording order: each range ends at the highest end recorded up
+// to and including it (see IsDiscardedForRead). The i-th element describes
+// the i-th stored range, and never changes once recorded, because ranges
+// are append-only.
+func (b *Branch) EffectiveDiscardedRanges() []LSNRange {
+	if len(b.DiscardedRanges) == 0 {
+		return nil
+	}
+	ranges := make([]LSNRange, len(b.DiscardedRanges))
+	var highWater int64
+	for i, r := range b.DiscardedRanges {
+		if r.To > highWater {
+			highWater = r.To
+		}
+		ranges[i] = LSNRange{From: r.From, To: highWater}
+	}
+	return ranges
+}
+
+// HistoryHighWater is the highest LSN this branch's own history has ever
+// reached: the head, or the end of a discarded window above it. LSNs in
+// (HeadLSN, HistoryHighWater] were abandoned by a reset but remain readable
+// as history — forks and pins captured there keep working, and they can be
+// forked again to recover what a reset discarded.
+func (b *Branch) HistoryHighWater() int64 {
+	highWater := b.HeadLSN
+	for _, r := range b.DiscardedRanges {
+		if r.To > highWater {
+			highWater = r.To
+		}
+	}
+	return highWater
+}
+
+// ValidateResetTarget refuses to rewind the head into history that an
+// earlier reset already discarded. Such a position is not on the branch's
+// current timeline: making it the head would show the discarded writes
+// again until the next write, which lands above the old window and hides
+// them once more. The history is still there to be forked.
+func (b *Branch) ValidateResetTarget(target int64) error {
+	ranges := b.EffectiveDiscardedRanges()
+	inside := false
+	valid := target
+	for moved := true; moved; {
+		moved = false
+		for _, r := range ranges {
+			if r.Contains(valid) {
+				valid = r.From - 1
+				inside, moved = true, true
+			}
+		}
+	}
+	if !inside {
+		return nil
+	}
+	return fmt.Errorf("LSN %d is in history that an earlier reset discarded; reset to LSN %d or earlier, or fork that history into a new branch (restore branch at LSN %d) to recover it", target, valid, target)
 }
 
 // IsData reports whether the entry carries document state (as opposed to

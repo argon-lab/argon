@@ -94,6 +94,21 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 		return nil, fmt.Errorf("undo range start %d is at or below the branch fork point %d: undo operates on the branch's own history", fromLSN, branch.BaseLSN)
 	}
 
+	// An undo restores each document to its state just before the range,
+	// which it learns from the oldest in-range entry. If GC has deleted
+	// entries inside the range, the oldest survivor is not the oldest
+	// write, and the plan would restore the wrong state.
+	floors, err := s.wal.ReclaimFloors(branch.ID)
+	if err != nil {
+		return nil, err
+	}
+	for collection, floor := range floors {
+		if floor >= fromLSN {
+			return nil, fmt.Errorf("%w: undo from LSN %d reaches entries of collection %q at or below LSN %d that were deleted; start above LSN %d",
+				wal.ErrHistoryReclaimed, fromLSN, collection, floor, floor)
+		}
+	}
+
 	entries, err := s.wal.GetBranchEntries(branch.ID, "", fromLSN, branch.HeadLSN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load range: %w", err)

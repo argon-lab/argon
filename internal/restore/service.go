@@ -42,13 +42,22 @@ func (s *Service) ResetBranchToLSN(branchID string, targetLSN int64) (*wal.Branc
 		return nil, fmt.Errorf("failed to get branch: %w", err)
 	}
 
-	// Validate target LSN
+	// Validate target LSN. Discarded history is checked first: right after
+	// a reset it lies above the head, and "beyond HEAD" would describe it
+	// as something that has not happened yet.
 	if targetLSN < branch.BaseLSN {
 		return nil, fmt.Errorf("target LSN %d is before branch base LSN %d", targetLSN, branch.BaseLSN)
 	}
-
+	if err := branch.ValidateResetTarget(targetLSN); err != nil {
+		return nil, err
+	}
 	if targetLSN > branch.HeadLSN {
 		return nil, fmt.Errorf("target LSN %d is beyond branch HEAD %d", targetLSN, branch.HeadLSN)
+	}
+	// The head must stay reconstructible. A position garbage collection has
+	// reclaimed past is refused here, before the head moves.
+	if err := s.materializer.ValidateReadable(branch, targetLSN); err != nil {
+		return nil, fmt.Errorf("cannot reset to LSN %d: %w", targetLSN, err)
 	}
 
 	if err := s.branches.ResetHead(branch, targetLSN); err != nil {
@@ -83,10 +92,15 @@ func (s *Service) CreateBranchAtLSN(projectID, sourceBranchID, newBranchName str
 		return nil, fmt.Errorf("failed to get source branch: %w", err)
 	}
 
-	// Validate target LSN
-	if targetLSN < sourceBranch.BaseLSN || targetLSN > sourceBranch.HeadLSN {
+	// Validate target LSN. History a reset discarded stays forkable up to
+	// the high-water mark: forking it is how discarded work is recovered,
+	// and the new branch reads the pre-reset view like a pin at that LSN.
+	if limit := sourceBranch.HistoryHighWater(); targetLSN < sourceBranch.BaseLSN || targetLSN > limit {
 		return nil, fmt.Errorf("target LSN %d is outside source branch range [%d, %d]",
-			targetLSN, sourceBranch.BaseLSN, sourceBranch.HeadLSN)
+			targetLSN, sourceBranch.BaseLSN, limit)
+	}
+	if err := s.materializer.ValidateReadable(sourceBranch, targetLSN); err != nil {
+		return nil, fmt.Errorf("cannot branch at LSN %d: %w", targetLSN, err)
 	}
 
 	// Create the new branch. ParentID anchors the ancestry chain: without
@@ -126,6 +140,11 @@ func (s *Service) CreateBranchFromPin(projectID, sourceBranchID, newBranchName s
 	if pinnedLSN < sourceBranch.BaseLSN {
 		return nil, fmt.Errorf("pinned LSN %d is below the source branch's base %d",
 			pinnedLSN, sourceBranch.BaseLSN)
+	}
+	// GC keeps pinned states reconstructible; this only trips for a pin
+	// created at a position that was already reclaimed.
+	if err := s.materializer.ValidateReadable(sourceBranch, pinnedLSN); err != nil {
+		return nil, fmt.Errorf("cannot branch from the pin at LSN %d: %w", pinnedLSN, err)
 	}
 
 	newBranch := &wal.Branch{
@@ -169,16 +188,31 @@ func (s *Service) GetRestorePreview(branchID string, targetLSN int64) (*RestoreP
 		return nil, fmt.Errorf("failed to get branch: %w", err)
 	}
 
-	// Validate target LSN
+	// Validate target LSN: a preview must fail the way the reset would.
+	if targetLSN >= branch.BaseLSN {
+		if err := branch.ValidateResetTarget(targetLSN); err != nil {
+			return nil, err
+		}
+	}
 	if targetLSN < branch.BaseLSN || targetLSN > branch.HeadLSN {
 		return nil, fmt.Errorf("invalid target LSN %d for branch range [%d, %d]",
 			targetLSN, branch.BaseLSN, branch.HeadLSN)
 	}
+	if err := s.materializer.ValidateReadable(branch, targetLSN); err != nil {
+		return nil, fmt.Errorf("cannot reset to LSN %d: %w", targetLSN, err)
+	}
 
-	// Get entries that would be discarded
-	discardedEntries, err := s.wal.GetBranchEntries(branchID, "", targetLSN+1, branch.HeadLSN)
+	// Get entries that would be discarded. Entries an earlier reset already
+	// discarded are not part of the current state and are not counted again.
+	candidates, err := s.wal.GetBranchEntries(branchID, "", targetLSN+1, branch.HeadLSN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get discarded entries: %w", err)
+	}
+	discardedEntries := candidates[:0]
+	for _, entry := range candidates {
+		if !branch.IsDiscardedForRead(entry.LSN, branch.HeadLSN) {
+			discardedEntries = append(discardedEntries, entry)
+		}
 	}
 
 	// Get collections that would be affected
@@ -237,13 +271,19 @@ func (s *Service) ValidateRestore(branchID string, targetLSN int64) error {
 			targetLSN, branch.BaseLSN)
 	}
 
+	if err := branch.ValidateResetTarget(targetLSN); err != nil {
+		return err
+	}
 	if targetLSN > branch.HeadLSN {
 		return fmt.Errorf("cannot restore to future LSN %d (current HEAD: %d)",
 			targetLSN, branch.HeadLSN)
 	}
+	if err := s.materializer.ValidateReadable(branch, targetLSN); err != nil {
+		return fmt.Errorf("cannot reset to LSN %d: %w", targetLSN, err)
+	}
 
-	// Check if branch has dependent branches (future enhancement)
-	// For MVP, we assume branches are independent
+	// Dependent branches and pins need no check: a reset never changes what
+	// views captured before it can read.
 
 	return nil
 }

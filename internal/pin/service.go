@@ -28,6 +28,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -50,6 +51,19 @@ type Pin struct {
 type Service struct {
 	collection *mongo.Collection
 	branches   *branchwal.BranchService
+
+	// readable, when set, verifies that the state being pinned can still
+	// be reconstructed. Wired by the caller so this package does not
+	// depend on the materializer.
+	readable func(branch *wal.Branch, lsn int64) error
+}
+
+// SetReadableCheck registers the check Create runs before pinning a state.
+// Without it a pin could name a position garbage collection has already
+// reclaimed past — a promise that cannot be kept, and one that would stop
+// GC from reclaiming anything else on the branch.
+func (s *Service) SetReadableCheck(check func(branch *wal.Branch, lsn int64) error) {
+	s.readable = check
 }
 
 // NewService creates the pin service and its indexes.
@@ -94,6 +108,11 @@ func (s *Service) Create(projectID, branchID, name string, lsn int64, note strin
 	if lsn < branch.BaseLSN || lsn > branch.HeadLSN {
 		return nil, fmt.Errorf("pin LSN %d is outside branch range [%d, %d]",
 			lsn, branch.BaseLSN, branch.HeadLSN)
+	}
+	if s.readable != nil {
+		if err := s.readable(branch, lsn); err != nil {
+			return nil, fmt.Errorf("cannot pin LSN %d: %w", lsn, err)
+		}
 	}
 
 	pin := &Pin{

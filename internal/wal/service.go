@@ -391,6 +391,57 @@ func (s *Service) LatestLSNBefore(branchID string, cutoff time.Time) (int64, err
 	return entry.LSN, nil
 }
 
+// FirstLSNAfter returns the lowest LSN among the branch's entries stamped
+// after the given time, or 0 if none is. Everything below it is older than
+// that time. GC bounds reclamation with this rather than with the newest old
+// entry alone: timestamps are taken after an LSN is reserved, so concurrent
+// writers can leave a slightly newer entry below an older one.
+func (s *Service) FirstLSNAfter(branchID string, cutoff time.Time) (int64, error) {
+	ctx := context.Background()
+	var entry struct {
+		LSN int64 `bson:"lsn"`
+	}
+	err := s.collection.FindOne(ctx,
+		bson.M{"branch_id": branchID, "timestamp": bson.M{"$gt": cutoff}},
+		options.FindOne().SetSort(bson.M{"lsn": 1}).SetProjection(bson.M{"lsn": 1}),
+	).Decode(&entry)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return entry.LSN, nil
+}
+
+// LatestLSNAtOrBefore returns the highest LSN, no greater than maxLSN, among
+// a branch's entries stamped at or before the given time, or 0 if none is.
+// It reads one index entry instead of the entries themselves.
+func (s *Service) LatestLSNAtOrBefore(projectID, branchID string, at time.Time, maxLSN int64) (int64, error) {
+	ctx := context.Background()
+	var entry struct {
+		LSN int64 `bson:"lsn"`
+	}
+	// project_id lets the (project_id, lsn) index supply the order, so the
+	// scan runs backwards from maxLSN and stops at the first match.
+	err := s.collection.FindOne(ctx,
+		bson.M{
+			"project_id": projectID,
+			"branch_id":  branchID,
+			"timestamp":  bson.M{"$lte": at},
+			"lsn":        bson.M{"$lte": maxLSN},
+		},
+		options.FindOne().SetSort(bson.D{{Key: "lsn", Value: -1}}).SetProjection(bson.M{"lsn": 1}),
+	).Decode(&entry)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return entry.LSN, nil
+}
+
 // DeleteDataEntriesUpTo removes a collection's data entries (puts and
 // deletes) on one branch with LSN at or below cutoff. Control entries are
 // kept — they are tiny and carry branch/project lineage. Callers are

@@ -102,13 +102,21 @@ is not yet a backend.
 ## Retention and GC
 
 `argon gc -p P --retention 168h` deletes WAL entries that are **all** of:
-covered by a snapshot every future reader can use, older than the
-retention window, below every live child's fork-point coverage, and below
-every pin's coverage. Consequences, stated plainly:
+at or below the newest snapshot that is older than the retention window and
+that every future reader can use, below every live child's fork-point
+coverage, and below every pin's coverage. Consequences, stated plainly:
 
 - No snapshot → nothing is ever deleted, no matter how old.
 - Reclaiming entries ends time-travel/audit/undo below the cutoff — that
   is what a retention window means; pick it accordingly (default 7 days).
+  Every LSN inside the window stays readable: the cutoff is a snapshot at or
+  below the window's start, never a point between two snapshots.
+- An older position that can no longer be rebuilt is refused with
+  `history reclaimed by garbage collection` — by time-travel queries, and by
+  `restore reset`, `restore branch`, `pin create --lsn` and `undo` before they
+  change anything. It is not answered with partial data. (GC runs made by
+  2.1.5 and earlier are not recorded, so this protection starts with the
+  first GC run after upgrading.)
 - Existing pins protect the history needed to materialize their referenced
   captured states. Deleting a pin releases that protection; pins do not replace
   independent backups.

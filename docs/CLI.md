@@ -80,6 +80,13 @@ argon restore branch  -p P -b B (--lsn N | --time RFC3339) --as NAME
 For restore commands, supply exactly one selector. Use `--lsn 0` when zero is
 within the branch's valid restore range; it selects LSN zero, not the head.
 
+A reset never changes what earlier forks, `--backup` branches and pins read,
+however many resets follow. History that a reset discarded stays readable and
+forkable: `restore branch` (or `time-travel query --lsn`) at such an LSN
+recovers it. `restore reset` to an LSN inside discarded history is refused
+with the nearest valid target; `--time` resolves to where the branch stood at
+that moment, so the same applies when that moment was later discarded.
+
 ## Merge — data pull requests
 
 ```
