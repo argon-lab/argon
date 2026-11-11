@@ -317,6 +317,29 @@ func (s *Service) MaterializeCollection(branch *wal.Branch, collection string) (
 // the ancestry chain (entries and snapshots) and each is materialized
 // through the snapshot-aware single-collection path.
 func (s *Service) MaterializeBranchAtLSN(branch *wal.Branch, targetLSN int64) (map[string]map[string]bson.M, error) {
+	names, err := s.CollectionsAtLSN(branch, targetLSN)
+	if err != nil {
+		return nil, err
+	}
+
+	state := make(map[string]map[string]bson.M, len(names))
+	for _, name := range names {
+		collState, err := s.MaterializeCollectionAtLSN(branch, name, targetLSN)
+		if err != nil {
+			return nil, err
+		}
+		state[name] = collState
+	}
+
+	return state, nil
+}
+
+// CollectionsAtLSN lists, in sorted order, the collections that can hold
+// documents in a branch as of targetLSN: every collection with entries,
+// snapshots or reclaimed history anywhere along the ancestry chain. Callers
+// that do not need every collection in memory at once (checkout) iterate
+// this and materialize one collection at a time.
+func (s *Service) CollectionsAtLSN(branch *wal.Branch, targetLSN int64) ([]string, error) {
 	segments, err := s.ancestrySegments(branch, targetLSN)
 	if err != nil {
 		return nil, err
@@ -352,16 +375,12 @@ func (s *Service) MaterializeBranchAtLSN(branch *wal.Branch, targetLSN int64) (m
 		}
 	}
 
-	state := make(map[string]map[string]bson.M, len(collections))
+	names := make([]string, 0, len(collections))
 	for name := range collections {
-		collState, err := s.MaterializeCollectionAtLSN(branch, name, targetLSN)
-		if err != nil {
-			return nil, err
-		}
-		state[name] = collState
+		names = append(names, name)
 	}
-
-	return state, nil
+	sort.Strings(names)
+	return names, nil
 }
 
 // MaterializeBranch builds the complete current state of all collections in

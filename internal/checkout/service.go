@@ -86,7 +86,7 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 		return &Info{BranchID: branch.ID, PhysicalDB: branch.PhysicalDB, LSN: branch.HeadLSN}, nil
 	}
 
-	state, err := s.materializer.MaterializeBranch(branch)
+	collections, err := s.materializer.CollectionsAtLSN(branch, branch.HeadLSN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to materialize branch: %w", err)
 	}
@@ -104,7 +104,15 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	}
 
 	info := &Info{BranchID: branch.ID, PhysicalDB: dbName, LSN: branch.HeadLSN}
-	for collection, docs := range state {
+	// Materialize and load one collection at a time. Every collection is
+	// read at the same head LSN, so the database is the same consistent
+	// state as before; peak memory is the largest collection instead of
+	// the whole branch.
+	for _, collection := range collections {
+		docs, err := s.materializer.MaterializeCollectionAtLSN(branch, collection, branch.HeadLSN)
+		if err != nil {
+			return nil, fmt.Errorf("failed to materialize collection %s: %w", collection, err)
+		}
 		count, err := s.loadCollection(ctx, physical, collection, docs)
 		if err != nil {
 			return nil, fmt.Errorf("collection %s: %w", collection, err)

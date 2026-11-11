@@ -108,21 +108,16 @@ func (s *Service) FindModifiedCollections(branch *wal.Branch, fromLSN, toLSN int
 
 // GetTimeTravelInfo returns metadata about available time travel range
 func (s *Service) GetTimeTravelInfo(branch *wal.Branch) (*TimeTravelInfo, error) {
-	allEntries, err := s.wal.GetBranchEntries(branch.ID, "", 0, branch.HeadLSN)
+	// Only data entries are meaningful travel points; control records
+	// (branch creation etc.) carry no document state. The summary comes
+	// from the index: loading every entry, images included, to count them
+	// made opening a branch cost as much as replaying it.
+	span, err := s.wal.DataEntrySpan(branch.ID, branch.HeadLSN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get WAL entries: %w", err)
 	}
 
-	// Only data entries are meaningful travel points; control records
-	// (branch creation etc.) carry no document state.
-	entries := allEntries[:0]
-	for _, entry := range allEntries {
-		if entry.IsData() {
-			entries = append(entries, entry)
-		}
-	}
-
-	if len(entries) == 0 {
+	if span.Count == 0 {
 		return &TimeTravelInfo{
 			BranchID:    branch.ID,
 			BranchName:  branch.Name,
@@ -135,11 +130,11 @@ func (s *Service) GetTimeTravelInfo(branch *wal.Branch) (*TimeTravelInfo, error)
 	return &TimeTravelInfo{
 		BranchID:     branch.ID,
 		BranchName:   branch.Name,
-		EarliestLSN:  entries[0].LSN,
-		LatestLSN:    entries[len(entries)-1].LSN,
-		EarliestTime: entries[0].Timestamp,
-		LatestTime:   entries[len(entries)-1].Timestamp,
-		EntryCount:   len(entries),
+		EarliestLSN:  span.EarliestLSN,
+		LatestLSN:    span.LatestLSN,
+		EarliestTime: span.EarliestTime,
+		LatestTime:   span.LatestTime,
+		EntryCount:   int(span.Count),
 	}, nil
 }
 
