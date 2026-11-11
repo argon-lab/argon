@@ -274,7 +274,11 @@ the upstream's own address); with auth, `authSource=admin` must be
 explicit because the URI database is the alias. Aliases that don't resolve
 (unknown project/branch, or a branch that isn't checked out) get a
 synthesized `{ok: 0}` command error naming the proxy, not a dropped
-connection. Capture stays asynchronous through the change-stream ingester
+connection. The proxy is a router, not a security boundary: it listens on
+loopback by default, forwards non-alias traffic untouched, and relies on
+the upstream deployment for authentication. Frames are length-checked
+before parsing and a malformed one ends only its own connection. Capture
+stays asynchronous through the change-stream ingester
 — the proxy is deliberately only the routing layer. It is the natural
 place to one day close the ingest-lag window (see the roadmap), but not
 by parsing writes: the change stream already hands the ingester

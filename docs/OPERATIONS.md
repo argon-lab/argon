@@ -41,7 +41,7 @@ migration. Everything here reflects what the code does today.
 | `argon watch -p P -b B` | one per checked-out branch you write to | captures direct writes into the WAL (resume tokens: it recovers writes made while it was down) |
 | `(cd api && go run .)` (or the built binary) | one | REST control plane; supervises ingesters for the sandboxes it creates; `HOST`/`PORT` (default 127.0.0.1:8080) |
 | `argon mcp` | per agent client | MCP server over stdio; supervises ingesters for its sandboxes |
-| `argon proxy --listen :27018` | optional | stable `project~branch` connection strings |
+| `argon proxy` | optional | stable `project~branch` connection strings on `127.0.0.1:27018` (see [Exposure](#exposure-and-credentials) before listening elsewhere) |
 | `argon sandbox sweep -p P` | schedule for CLI-only use | reap expired sandboxes (pinned ones are skipped loudly) |
 | `argon gc -p P` | cron | reclaim covered, out-of-retention WAL entries |
 
@@ -204,6 +204,28 @@ Console/API bind loopback by default. A non-loopback listener requires
 same-origin requests by default; configure trusted origins explicitly. The
 hosted demo disables native checkout/sandbox credentials and is not a native
 driver playground. Read-only mode is available for an inspection server.
+
+A control plane without a token also checks the `Host` header: it answers to
+`localhost`, `*.localhost` and loopback addresses only, and returns 403 for any
+other name (`/health` excepted). This is what keeps a web page from reaching
+your local console under its own hostname (DNS rebinding). If you reach the
+console through a tunnel, forwarded port or reverse proxy that presents another
+name, list it: `ARGON_ALLOWED_HOSTS=console.internal,dev.example.com` (hostnames
+without ports; `*` turns the check off). Setting the variable also enforces the
+list on token-protected servers.
+
+Forwarding headers are ignored unless `ARGON_TRUSTED_PROXIES` names the proxies
+that write them (IPs or CIDR ranges). The demo's per-client write budget is
+keyed on the client address, so behind a load balancer set this to the
+balancer's range; otherwise all visitors share the balancer's budget, and
+without it no caller can mint a fresh budget by inventing `X-Forwarded-For`.
+
+`argon proxy` listens on `127.0.0.1:27018` by default. It authenticates nobody
+itself: every connection is forwarded to the upstream deployment, including
+commands for databases that are not branch aliases. A non-loopback `--listen`
+address is refused unless `--allow-remote` is passed, and should only be used
+when the upstream MongoDB requires authentication — against an open
+development mongod it would publish that database to the network.
 
 Native URIs use the engine's MongoDB credentials. They are suitable only for
 trusted clients sharing those database permissions. For mutually untrusted

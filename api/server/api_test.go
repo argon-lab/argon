@@ -27,7 +27,9 @@ func do(t *testing.T, router http.Handler, method, path string, body interface{}
 		require.NoError(t, err)
 		payload = bytes.NewBuffer(raw)
 	}
-	req := httptest.NewRequest(method, path, payload)
+	// A local control plane only answers to loopback names, as a real
+	// client reaching 127.0.0.1 would send.
+	req := httptest.NewRequest(method, "http://localhost"+path, payload)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)

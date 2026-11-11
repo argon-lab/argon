@@ -66,7 +66,17 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 		opts:     opts,
 		ingest:   make(map[string]context.CancelFunc),
 	}
+	// Forwarding headers are client-controlled unless a known proxy wrote
+	// them. Trusting them by default would let any caller pick the address
+	// the demo rate limiter keys on.
+	if err := r.SetTrustedProxies(trustedProxyList(opts.TrustedProxies)); err != nil {
+		log.Printf("api: ignoring invalid trusted proxy list %q: %v", opts.TrustedProxies, err)
+		_ = r.SetTrustedProxies(nil)
+	}
 	r.Use(gin.Recovery())
+	if opts.enforcesHost() {
+		r.Use(hostGuard(opts.AllowedHosts))
+	}
 	r.Use(corsMiddleware(opts.CORSOrigins))
 	if opts.Token != "" {
 		r.Use(authMiddleware(opts.Token))

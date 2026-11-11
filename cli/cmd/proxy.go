@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -22,9 +23,19 @@ connect to
 and the proxy rewrites commands to the branch's physical database.
 Traffic to non-alias databases passes through untouched. Run "argon
 watch" (or the API/MCP server) for the branch so writes become
-versioned history.`,
+versioned history.
+
+The proxy listens on loopback by default. It adds no authentication of
+its own: whoever can reach it can reach the upstream deployment with
+whatever access that deployment grants an anonymous client. Listening
+on another interface therefore needs --allow-remote, and should only be
+done when the upstream MongoDB itself requires authentication.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		listen, _ := cmd.Flags().GetString("listen")
+		allowRemote, _ := cmd.Flags().GetBool("allow-remote")
+		if err := validateProxyListen(listen, allowRemote); err != nil {
+			return err
+		}
 
 		services, err := newCommandServices(cmd)
 		if err != nil {
@@ -46,10 +57,41 @@ versioned history.`,
 		if strings.HasPrefix(hint, ":") {
 			hint = "<host>" + hint
 		}
+		if !isLoopbackListen(listen) {
+			fmt.Fprintf(os.Stderr, "Warning: the proxy is reachable from other hosts and forwards to %s without authenticating clients itself; make sure that deployment requires authentication.\n", upstream)
+		}
 		fmt.Printf("Argon proxy listening on %s (upstream %s)\n", listen, upstream)
 		fmt.Printf("Connect with: mongodb://%s/<project>~<branch>?directConnection=true\n", hint)
 		return proxy.Serve(ctx, listener)
 	},
+}
+
+// isLoopbackListen reports whether a listen address accepts connections
+// from this machine only. An empty host (":27018") binds every interface.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// validateProxyListen keeps the proxy from exposing the upstream
+// deployment by accident: the proxy authenticates nobody, so a
+// non-loopback listener must be asked for explicitly.
+func validateProxyListen(addr string, allowRemote bool) error {
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return fmt.Errorf("invalid --listen address %q: %w", addr, err)
+	}
+	if isLoopbackListen(addr) || allowRemote {
+		return nil
+	}
+	return fmt.Errorf("--listen %s accepts connections from other hosts, and the proxy forwards them to MongoDB without authenticating clients itself; "+
+		"use 127.0.0.1 for local access, or pass --allow-remote once the upstream deployment requires authentication", addr)
 }
 
 // upstreamAddr extracts host:port from a mongodb URI.
@@ -74,6 +116,7 @@ func upstreamAddr(uri string) string {
 }
 
 func init() {
-	proxyCmd.Flags().String("listen", ":27018", "Address to listen on")
+	proxyCmd.Flags().String("listen", "127.0.0.1:27018", "Address to listen on (loopback by default)")
+	proxyCmd.Flags().Bool("allow-remote", false, "Permit a non-loopback --listen address; the upstream MongoDB must require authentication")
 	rootCmd.AddCommand(proxyCmd)
 }

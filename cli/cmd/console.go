@@ -32,7 +32,10 @@ sweeps expired sandboxes every minute while running. Everything the console show
 own data: projects, branches, history, merge plans, pins, sandboxes.
 
 Set ARGON_API_TOKEN to require a bearer token on the API, or
-ARGON_READ_ONLY=1 to serve a look-but-don't-touch instance.`,
+ARGON_READ_ONLY=1 to serve a look-but-don't-touch instance. Without a
+token the console answers only to localhost and loopback addresses; set
+ARGON_ALLOWED_HOSTS (comma-separated hostnames) when a tunnel or reverse
+proxy presents it under another name.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		addr := fmt.Sprintf("%s:%d", consoleHost, consolePort)
 		if err := server.ValidateListenAddress(addr, server.OptionsFromEnv()); err != nil {

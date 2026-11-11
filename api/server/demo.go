@@ -254,7 +254,6 @@ func (r *Router) demoSession(c *gin.Context) {
 
 	maxAge := int(r.opts.DemoTTL / time.Second)
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(demoCookie, name, maxAge, "/", "", c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https", true)
 	c.JSON(http.StatusCreated, gin.H{
 		"project":    name,
