@@ -62,11 +62,16 @@ The repo holds three Go modules: the engine (root), `cli/`, and `api/`.
 ```bash
 go build ./... && (cd cli && go build ./...) && (cd api && go build ./...)
 
-go test ./... -count=1            # engine + integration tests (needs the replica set)
-(cd api && go test ./...)         # REST control plane
+go test -race ./... -count=1                 # engine + integration tests (needs the replica set)
+(cd api && go test -race ./...)              # REST control plane
+(cd cli && ARGON_TEST_MONGODB_URI='mongodb://localhost:27017/?replicaSet=rs0' go test -race ./...)
 
-golangci-lint run ./...           # run in each module you touched
+gofmt -l .                                   # must print nothing outside api/server/ui/
+golangci-lint run ./...                      # in each module you touched; config in .golangci.yml
 ```
+
+CI runs all of these, plus `govulncheck`, on every pull request. The engine
+is concurrent throughout, so the race detector is part of the normal run.
 
 The S3 chunk-store tests are gated: they skip unless
 `ARGON_TEST_S3_ENDPOINT` / `ARGON_TEST_S3_BUCKET` (plus `AWS_*`
@@ -94,6 +99,28 @@ in the Go binary. `bash scripts/sync-ui.sh --check` verifies the committed
 assets and their SHA-256 provenance. Commit source and built assets together.
 No private companion checkout is needed. CI tests the production console
 against the same engine commit, including Undo scope and expired sessions.
+
+### Model and fuzz tests
+
+Two tests search for failures instead of checking fixed cases:
+
+- `TestModel_BranchHistoryMatchesBookkeeping` runs random sequences of writes,
+  resets, forks, pins, snapshots, GC and branch deletion against the engine
+  and against a model that simply records every state. A failure prints the
+  seed and the operations. To search further or replay one:
+
+  ```bash
+  ARGON_MODEL_SEEDS=500 ARGON_MODEL_FIRST_SEED=1000 ARGON_MODEL_STEPS=80 \
+    go test ./tests/wal -run TestModel_ -count=1
+  ```
+
+  If you change how history is read — discarded ranges, snapshot selection,
+  GC — run a few hundred seeds, not just the default set.
+- `FuzzRewrite` feeds arbitrary bytes to the wire proxy's frame parser:
+
+  ```bash
+  go test ./internal/wireproxy -run '^$' -fuzz FuzzRewrite -fuzztime 60s
+  ```
 
 ### Two rules the tests enforce
 
@@ -150,13 +177,13 @@ against the same engine commit, including Undo scope and expired sessions.
 
 ### Before Submitting
 
-- [ ] Run `go vet ./...` in each changed Go module
-- [ ] Run the engine, API and CLI tests described above
+- [ ] Run `gofmt`, `go vet ./...` and `golangci-lint run ./...` in each changed Go module
+- [ ] Run the engine, API and CLI tests described above, with `-race`
 - [ ] Run `bash scripts/sync-ui.sh --check` for console changes
 - [ ] Use the [benchmark suite](https://github.com/argon-lab/benchmarks) for performance claims
 - [ ] Update documentation for API changes
 - [ ] Add tests for new functionality
-- [ ] Rebase on latest main branch
+- [ ] Rebase on the latest `master`
 
 ### PR Guidelines
 
@@ -254,10 +281,10 @@ against the same engine commit, including Undo scope and expired sessions.
 
 ### Integration Tests
 
-- Place in `integration/` directory
-- Test real MongoDB interactions
-- Use test containers when possible
-- Clean up test data after runs
+- Engine integration tests live in `tests/wal/`; API and CLI tests sit next to
+  their packages
+- They run against a real MongoDB replica set on `localhost:27017`
+- Each test uses its own database (`setupTestDB`) and drops it afterwards
 
 ### Benchmarks
 
@@ -300,7 +327,7 @@ against the same engine commit, including Undo scope and expired sessions.
 
 - **Development discussion**: GitHub Discussions
 - **Real-time discussion**: GitHub Discussions
-- **Security issues**: security@argonlabs.tech
+- **Security issues**: see [SECURITY.md](SECURITY.md)
 
 ### Recognition
 

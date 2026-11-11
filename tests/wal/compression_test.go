@@ -12,7 +12,7 @@ import (
 
 func TestCompressor_Basic(t *testing.T) {
 	tests := []struct {
-		name string
+		name   string
 		config *wal.CompressionConfig
 	}{
 		{
@@ -49,7 +49,7 @@ func TestCompressor_Basic(t *testing.T) {
 
 			// Test data that should be compressed
 			testData := bytes.Repeat([]byte("Hello World! "), 100)
-			
+
 			// Compress
 			compressed, err := compressor.Compress(testData)
 			require.NoError(t, err)
@@ -100,11 +100,11 @@ func TestCompressor_Entry(t *testing.T) {
 
 	// Create test entry with large documents
 	largeDoc := bson.M{
-		"data": bytes.Repeat([]byte("test data "), 200),
+		"data":   bytes.Repeat([]byte("test data "), 200),
 		"field1": "value1",
 		"field2": "value2",
 	}
-	
+
 	docBytes, err := bson.Marshal(largeDoc)
 	require.NoError(t, err)
 
@@ -133,7 +133,7 @@ func TestCompressor_Entry(t *testing.T) {
 	// Verify compression happened
 	assert.NotNil(t, entry.CompressedPostImage)
 	assert.Nil(t, entry.PostImage)
-	
+
 	// Store compressed for verification
 	compressedDoc := make([]byte, len(entry.CompressedPostImage))
 	copy(compressedDoc, entry.CompressedPostImage)
@@ -153,7 +153,7 @@ func TestCompressor_Entry(t *testing.T) {
 		t.Logf("Decompressed data too short: %x", []byte(entry.PostImage))
 	}
 	t.Logf("Compression type in metadata: %d", compressedDoc[0])
-	
+
 	// Verify decompression restored data
 	assert.NotNil(t, entry.PostImage)
 	assert.Nil(t, entry.CompressedPostImage)
@@ -161,9 +161,9 @@ func TestCompressor_Entry(t *testing.T) {
 	// Verify decompression
 	assert.Equal(t, docBytes, []byte(entry.PostImage))
 	assert.Equal(t, docBytes, []byte(entry.PreImage))
-	
+
 	// Verify it was actually compressed (should have metadata prefix)
-	assert.True(t, compressedDoc[0] == byte(wal.CompressionZstd) || 
+	assert.True(t, compressedDoc[0] == byte(wal.CompressionZstd) ||
 		compressedDoc[0] == byte(wal.CompressionGzip) ||
 		compressedDoc[0] == byte(wal.CompressionSnappy))
 }
@@ -176,7 +176,7 @@ func TestCompressor_EdgeCases(t *testing.T) {
 	t.Run("Empty data", func(t *testing.T) {
 		compressed, err := compressor.Compress([]byte{})
 		require.NoError(t, err)
-		
+
 		decompressed, err := compressor.Decompress(compressed)
 		require.NoError(t, err)
 		assert.Empty(t, decompressed)
@@ -206,7 +206,7 @@ func TestCompressor_Performance(t *testing.T) {
 	}
 
 	configs := []struct {
-		name string
+		name   string
 		config *wal.CompressionConfig
 	}{
 		{
@@ -229,9 +229,9 @@ func TestCompressor_Performance(t *testing.T) {
 
 	// Create test data - typical MongoDB document
 	testDoc := bson.M{
-		"_id":        "507f1f77bcf86cd799439011",
-		"username":   "johndoe",
-		"email":      "john.doe@example.com",
+		"_id":      "507f1f77bcf86cd799439011",
+		"username": "johndoe",
+		"email":    "john.doe@example.com",
 		"profile": bson.M{
 			"firstName": "John",
 			"lastName":  "Doe",
@@ -259,7 +259,7 @@ func TestCompressor_Performance(t *testing.T) {
 	for _, tc := range configs {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.config.MinSize = 0 // Always compress for testing
-			
+
 			compressor, err := wal.NewCompressor(tc.config)
 			require.NoError(t, err)
 			defer func() { _ = compressor.Close() }()
@@ -269,7 +269,7 @@ func TestCompressor_Performance(t *testing.T) {
 			require.NoError(t, err)
 
 			ratio := compressor.GetCompressionRatio(docBytes, compressed)
-			t.Logf("Compressed size: %d bytes (%.1f%% reduction)", 
+			t.Logf("Compressed size: %d bytes (%.1f%% reduction)",
 				len(compressed), ratio*100)
 
 			// Verify decompression
@@ -283,7 +283,7 @@ func TestCompressor_Performance(t *testing.T) {
 func BenchmarkCompression(b *testing.B) {
 	// Create realistic test data
 	testDoc := bson.M{
-		"data": bytes.Repeat([]byte("test data "), 1000),
+		"data":   bytes.Repeat([]byte("test data "), 1000),
 		"field1": "value1",
 		"field2": "value2",
 		"nested": bson.M{
@@ -291,11 +291,11 @@ func BenchmarkCompression(b *testing.B) {
 			"subfield2": 12345,
 		},
 	}
-	
+
 	docBytes, _ := bson.Marshal(testDoc)
 
 	benchmarks := []struct {
-		name string
+		name   string
 		config *wal.CompressionConfig
 	}{
 		{"Gzip", &wal.CompressionConfig{Type: wal.CompressionGzip, Level: 5}},
@@ -305,11 +305,11 @@ func BenchmarkCompression(b *testing.B) {
 
 	for _, bm := range benchmarks {
 		compressor, _ := wal.NewCompressor(bm.config)
-		
+
 		b.Run(bm.name+"_Compress", func(b *testing.B) {
 			b.SetBytes(int64(len(docBytes)))
 			b.ResetTimer()
-			
+
 			for i := 0; i < b.N; i++ {
 				_, err := compressor.Compress(docBytes)
 				if err != nil {
@@ -319,11 +319,11 @@ func BenchmarkCompression(b *testing.B) {
 		})
 
 		compressed, _ := compressor.Compress(docBytes)
-		
+
 		b.Run(bm.name+"_Decompress", func(b *testing.B) {
 			b.SetBytes(int64(len(compressed)))
 			b.ResetTimer()
-			
+
 			for i := 0; i < b.N; i++ {
 				_, err := compressor.Decompress(compressed)
 				if err != nil {
@@ -331,7 +331,7 @@ func BenchmarkCompression(b *testing.B) {
 				}
 			}
 		})
-		
+
 		_ = compressor.Close()
 	}
 }

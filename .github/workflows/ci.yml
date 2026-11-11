@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [ master, main ]
 
+# Every job only reads the repository. Actions are pinned to commit SHAs;
+# Dependabot keeps the pins current (.github/dependabot.yml).
+permissions:
+  contents: read
+
 env:
   MONGODB_IMAGE: mongo:7.0.45@sha256:c53852c00c23ca9f23fc39690350ffa9a80e3642fe8f96879726d8da0abe80a7
 
@@ -16,13 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: |
@@ -56,7 +61,7 @@ jobs:
         env:
           CONSOLE_URL: http://127.0.0.1:18081
         run: npm run test:browser
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         continue-on-error: true # Optional evidence; the browser/build steps remain required.
         with:
@@ -70,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     # Change streams (the ingest path) require a replica set, which service
     # containers can't be configured as — hence docker run.
@@ -91,12 +96,12 @@ jobs:
         test "$(docker exec ci-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = true
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
     
     - name: Cache Go modules
-      uses: actions/cache@v4
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
@@ -109,7 +114,7 @@ jobs:
     - name: Compile an external Go v2 consumer
       run: bash scripts/check-go-module.sh
 
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: '22'
 
@@ -137,6 +142,8 @@ jobs:
           exit 1
         fi
 
+    # The engine is concurrent throughout (capture, snapshots, monitors),
+    # so every suite runs under the race detector.
     - name: Run tests
       env:
         ARGON_TEST_S3_ENDPOINT: http://localhost:9010
@@ -144,39 +151,44 @@ jobs:
         AWS_ACCESS_KEY_ID: argon
         AWS_SECRET_ACCESS_KEY: argon12345
         AWS_REGION: us-east-1
-      run: go test -v ./...
-    
+      run: go test -race -v ./...
+
+    # The wire proxy parses bytes from unauthenticated sockets. The seed
+    # corpus runs with the tests above; this explores beyond it briefly.
+    - name: Fuzz the wire-protocol frame parser
+      run: go test ./internal/wireproxy -run '^$' -fuzz FuzzRewrite -fuzztime 20s
+
     - name: Test and build CLI
       working-directory: ./cli
       env:
         ARGON_TEST_MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0
       run: |
-        go test ./...
+        go test -race ./...
         go build -v .
 
     - name: Test API
       working-directory: ./api
-      run: go test -v ./...
+      run: go test -race -v ./...
     
   driver-compat:
     name: Driver Compatibility
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: '3.12'
 
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: '22'
 
@@ -202,6 +214,24 @@ jobs:
     - name: Run the driver-compat harness
       run: bash compat/run.sh
 
+  format:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^api/server/ui/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "Run gofmt -w on:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
   lint:
     name: Vet (${{ matrix.module }})
     runs-on: ubuntu-latest
@@ -209,8 +239,8 @@ jobs:
       matrix:
         module: ['.', cli, api]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: |
@@ -220,6 +250,12 @@ jobs:
       - name: Go vet
         working-directory: ${{ matrix.module }}
         run: go vet ./...
+      # Configured by .golangci.yml at the repository root.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.1
+          working-directory: ${{ matrix.module }}
 
   vulnerabilities:
     name: Reachable Go vulnerabilities (${{ matrix.module }})
@@ -228,8 +264,8 @@ jobs:
       matrix:
         module: ['.', cli, api]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: |

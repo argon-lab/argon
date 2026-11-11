@@ -69,7 +69,7 @@ func TestDemoNeverReturnsNativeServiceCredentials(t *testing.T) {
 	name := fmt.Sprintf("argon_api_security_test_%d", time.Now().UnixNano())
 	services, err := walcli.NewServicesAt("mongodb://localhost:27017", name)
 	require.NoError(t, err)
-	defer services.Client.Database(name).Drop(context.Background())
+	defer func() { _ = services.Client.Database(name).Drop(context.Background()) }()
 	services.MongoURI = "mongodb://service:secret@localhost:27017/?authSource=admin"
 	r := NewRouterWith(services, Options{DemoMode: true, DemoWriteLimit: 100})
 	defer r.Shutdown()
@@ -91,7 +91,7 @@ func TestDemoNeverReturnsNativeServiceCredentials(t *testing.T) {
 	require.NoError(t, err)
 	box, err := services.Sandbox.Create(context.Background(), project.ID, main.ID, "internal-box", time.Hour)
 	require.NoError(t, err)
-	defer services.Sandbox.Discard(context.Background(), box.BranchID)
+	defer func() { _ = services.Sandbox.Discard(context.Background(), box.BranchID) }()
 	for _, path := range []string{"/api/v1/projects/" + p + "/branches/internal-box", "/api/v1/projects/" + p + "/sandboxes"} {
 		code, body, _ = doDemo(t, r, "GET", path, cookie, nil)
 		require.Equal(t, http.StatusOK, code)

@@ -40,6 +40,13 @@ entry — a synchronization barrier, not in-proxy capture).
   the body before responding, and no crash was reproduced. Source builds on
   the Go 1.27 line require 1.27.4 or newer.
 
+### Removed
+
+- A 14 MB `cli/argon` executable that had been committed to the repository by
+  mistake. It was a development build of the long-superseded v1 CLI (July 2025,
+  Go 1.24) and was never part of a release, but it shipped in every source
+  archive. Released binaries come only from the release workflow.
+
 ## [2.1.5] - 2026-11-09
 
 ### Security
@@ -278,7 +285,11 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.1.5...HEAD
+[2.1.5]: https://github.com/argon-lab/argon/releases/tag/v2.1.5
+[2.1.4]: https://github.com/argon-lab/argon/releases/tag/v2.1.4
+[2.1.3]: https://github.com/argon-lab/argon/releases/tag/v2.1.3
+[2.1.2]: https://github.com/argon-lab/argon/releases/tag/v2.1.2
 [2.1.1]: https://github.com/argon-lab/argon/releases/tag/v2.1.1
 [2.1.0]: https://github.com/argon-lab/argon/releases/tag/v2.1.0
 [2.0.1]: https://github.com/argon-lab/argon/releases/tag/v2.0.1

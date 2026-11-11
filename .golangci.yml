@@ -1,0 +1,13 @@
+# Shared by the root, api/ and cli/ modules: golangci-lint looks for its
+# configuration in the working directory and then in each parent.
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Writing a status line to a terminal has no meaningful failure mode
+      # for a CLI to handle; everything else must check its errors.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln

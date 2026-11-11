@@ -108,7 +108,7 @@ func TestCLIPinnedWorkflowJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Disconnect(context.Background())
+	defer func() { _ = client.Disconnect(context.Background()) }()
 	assertCaptureStopped := func() {
 		t.Helper()
 		count, err := client.Database(metadataDatabase()).Collection("wal_ingest_state").CountDocuments(ctx,
