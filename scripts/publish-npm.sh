@@ -20,6 +20,12 @@ esac
 release_version=$(node scripts/release-version.js "$release_tag" --check)
 node scripts/release-version.js --check
 npm whoami >/dev/null
+# The package must carry the digests of this release's binaries: its
+# installer refuses to run a download it cannot verify.
+checksums=$(mktemp -d)
+trap 'rm -rf "$checksums"; rm -f npm/checksums.json' EXIT
+gh release download "$release_tag" --repo argon-lab/argon --pattern SHA256SUMS --dir "$checksums"
+node scripts/npm-checksums.mjs "$checksums/SHA256SUMS"
 (
   cd npm
   npm pack --dry-run

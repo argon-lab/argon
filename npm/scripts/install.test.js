@@ -67,3 +67,24 @@ test('missing binary reports the package-scoped installer approval command', t =
   assert.equal(result.status, 1);
   assert.match(result.stderr, /npm install -g argonctl --allow-scripts=argonctl/);
 });
+
+test('a downloaded binary must match the checksum shipped in the package', async t => {
+  const { createHash } = require('node:crypto');
+  const { expectedDigest, verifyDigest } = require('./install');
+  const file = destination(t);
+  fs.writeFileSync(file, 'release binary');
+  const digest = createHash('sha256').update('release binary').digest('hex');
+  const checksums = `${file}.checksums.json`;
+  fs.writeFileSync(checksums, JSON.stringify({ 'argon-linux-amd64': digest, 'argon-darwin-arm64': 'not-a-digest' }));
+
+  assert.equal(expectedDigest('argon-linux-amd64', checksums), digest);
+  await verifyDigest(file, 'argon-linux-amd64', digest);
+
+  fs.writeFileSync(file, 'something else');
+  await assert.rejects(verifyDigest(file, 'argon-linux-amd64', digest), /does not match the checksum/);
+
+  // No digest, a malformed one, or no checksums file at all: never run it.
+  assert.throws(() => expectedDigest('argon-windows-amd64.exe', checksums), /no SHA-256 for argon-windows-amd64.exe/);
+  assert.throws(() => expectedDigest('argon-darwin-arm64', checksums), /no SHA-256/);
+  assert.throws(() => expectedDigest('argon-linux-amd64', `${file}.missing.json`), /refusing to run an unverified binary/);
+});

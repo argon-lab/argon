@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
@@ -49,6 +50,38 @@ async function downloadBinary(url, destination, get = https.get, redirects = 5) 
   }
 }
 
+// The release workflow writes checksums.json into the package from the
+// release's SHA256SUMS before publishing. The npm registry's own integrity
+// check covers this package, so the digests in it extend that check to the
+// binary downloaded below: a replaced or corrupted release asset is rejected
+// before it is ever executed.
+function expectedDigest(assetName, file = path.join(__dirname, '..', 'checksums.json')) {
+  let digests;
+  try {
+    digests = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    throw new Error(`This package carries no readable checksums.json (${error.code || error.message}); refusing to run an unverified binary`);
+  }
+  const digest = digests[assetName];
+  if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) {
+    throw new Error(`checksums.json has no SHA-256 for ${assetName}`);
+  }
+  return digest;
+}
+
+async function sha256(file) {
+  const hash = crypto.createHash('sha256');
+  await pipeline(fs.createReadStream(file), hash);
+  return hash.digest('hex');
+}
+
+async function verifyDigest(file, assetName, expected) {
+  const actual = await sha256(file);
+  if (actual !== expected) {
+    throw new Error(`${assetName} does not match the checksum published with this package (expected ${expected}, got ${actual})`);
+  }
+}
+
 async function install() {
   const platform = getPlatform();
   const suffix = process.platform === 'win32' ? '.exe' : '';
@@ -57,10 +90,12 @@ async function install() {
   const binDir = path.join(__dirname, '..', 'bin');
   const binaryPath = path.join(binDir, `argon-bin${suffix}`);
   const temporaryPath = `${binaryPath}.${process.pid}.tmp${suffix}`;
+  const digest = expectedDigest(assetName);
   fs.mkdirSync(binDir, { recursive: true });
   console.log(`Downloading Argon CLI v${version} for ${platform}...`);
   try {
     await downloadBinary(url, temporaryPath);
+    await verifyDigest(temporaryPath, assetName, digest);
     if (process.platform !== 'win32') fs.chmodSync(temporaryPath, 0o755);
     const output = execFileSync(temporaryPath, ['--version'], { encoding: 'utf8', timeout: 30000 });
     const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -82,4 +117,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { downloadBinary, getPlatform };
+module.exports = { downloadBinary, expectedDigest, getPlatform, verifyDigest };

@@ -184,3 +184,6 @@ compat-verify
 # it must be committed even though dist/ is ignored everywhere else.
 !api/server/ui/dist/
 !api/server/ui/dist/**
+
+# Written into the npm package by the release workflow (scripts/npm-checksums.mjs)
+npm/checksums.json
