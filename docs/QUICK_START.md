@@ -59,21 +59,22 @@ project and pin remain available in the console for inspection.
 
 ## A sandbox from the CLI
 
-CLI commands connect directly to MongoDB. A one-shot checkout/sandbox command
-does not leave a background watcher or TTL worker behind, so you start capture
-yourself.
+CLI commands connect directly to MongoDB and do not leave a background watcher
+or TTL worker behind. `sandbox create --watch` captures in the foreground for
+as long as it runs.
 
 ```bash
 # Bring existing data in once, with source writers and DDL stopped
 # (or start empty: argon projects create myapp)
 argon import database --uri "$MONGODB_URI" --database myapp --project myapp --source-quiesced
 
-# Fork + checkout + TTL. Note the sandbox name and connection string it prints
-argon sandbox create -p myapp --ttl 1h
-
-# Keep this running in terminal A; hand the printed URI to the agent in terminal B
-argon watch -p myapp -b <sandbox> --actor agent:run-1
+# Fork + checkout + TTL + capture. Note the sandbox name and connection string
+# it prints, keep it running in terminal A, and hand the URI to the agent in terminal B
+argon sandbox create -p myapp --ttl 1h --watch --actor agent:run-1
 ```
+
+`--watch` needs 2.3.0 or newer. Without it, `sandbox create` returns at once and
+you run `argon watch -p myapp -b <sandbox> --actor agent:run-1` yourself.
 
 Collections that came from the parent are ready for exact capture. If the
 agent will create a collection, prepare it before its first update or delete,

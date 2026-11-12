@@ -11,12 +11,26 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.3.0] - 2026-11-12
+
+A sandbox in one command. No data format changes since 2.2.0.
+
 ### Added
 
 - `argon sandbox create --watch [--actor <label>]` creates a sandbox and
   captures its writes in the same command. Capture is running before the
   connection string is printed, and the command stays in the foreground until
   interrupted. With `--output json` it reports `capture_managed: true`.
+  Without `--watch` the command behaves as before.
+
+### Changed
+
+- The README, quick start and agents guide lead with the sandbox workflow and
+  state two limits next to it: a collection the agent creates needs
+  `argon collections prepare` before its first update or delete, and a sandbox
+  is a full physical copy whose readiness time the benchmark suite measures.
+- The npm package description and keywords describe Argon as MongoDB
+  sandboxes for AI agents.
 
 ## [2.2.0] - 2026-11-11
 
@@ -391,7 +405,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/argon-lab/argon/releases/tag/v2.3.0
 [2.2.0]: https://github.com/argon-lab/argon/releases/tag/v2.2.0
 [2.1.6]: https://github.com/argon-lab/argon/releases/tag/v2.1.6
 [2.1.5]: https://github.com/argon-lab/argon/releases/tag/v2.1.5

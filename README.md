@@ -64,15 +64,13 @@ your data ──sandbox──▶ mongodb://…  ← the agent, any driver
 # 0 · Bring your data in once. Stop source writers and DDL for the import — or: argon projects create myapp
 argon import database --uri mongodb://localhost:27017 --database myapp --project myapp --source-quiesced
 
-# 1 · A sandbox: fork + checkout + TTL in one step. Prints its name and a connection string
-argon sandbox create -p myapp --ttl 1h
-
-# 2 · In terminal A, capture the run under an actor label
-argon watch -p myapp -b <sandbox> --actor agent:run-1
+# 1 · In terminal A, a sandbox: fork + checkout + TTL + capture in one command.
+#     Prints its name and a connection string, then keeps capturing until Ctrl-C
+argon sandbox create -p myapp --ttl 1h --watch --actor agent:run-1
 
 # In terminal B, point the agent at the printed URI. Then:
 
-# 3 · Review, then adopt the run — a data pull request
+# 2 · Review, then adopt the run — a data pull request
 argon diff          -p myapp -b <sandbox>
 argon merge preview -p myapp -b <sandbox>
 argon merge apply <plan-id>
@@ -82,7 +80,9 @@ argon sandbox discard -p myapp -b <sandbox>
 ```
 
 Through the MCP server or `argon console`, capture and expiry are managed for
-you: there is no `watch` step, and expired sandboxes are swept every minute.
+you: nothing stays in the foreground, and expired sandboxes are swept every
+minute. `--watch` needs 2.3.0 or newer; on older versions run
+`argon watch -p myapp -b <sandbox> --actor agent:run-1` after creating the sandbox.
 Long-lived branches work the same way with `argon branches create` and
 `argon checkout`, and `argon restore reset` rewinds a branch to an earlier time.
 
