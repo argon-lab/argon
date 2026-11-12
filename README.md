@@ -1,8 +1,8 @@
-# Argon — Git for MongoDB
+# Argon — MongoDB sandboxes for AI agents
 
 <p align="center">
   <a href="https://argonlabs.tech">
-    <img src=".github/assets/hero.png" alt="Argon — Git for MongoDB, built for AI agents: give each agent its own database branch and review what to merge" width="100%">
+    <img src=".github/assets/hero.png" alt="Argon — MongoDB sandboxes for AI agents: give every agent run its own database and review what to merge" width="100%">
   </a>
 </p>
 
@@ -14,17 +14,22 @@
 [![PyPI](https://img.shields.io/pypi/v/argon-agents?logo=pypi&label=argon--agents)](https://pypi.org/project/argon-agents/)
 [![mcp.market](https://mcp.market/badge/argon-lab-argon.svg)](https://mcp.market/server/argon-lab-argon)
 
-**Branch, time-travel, merge and undo your MongoDB. Any driver, real mongod,
-versioned history underneath. Built for AI agents.**
+**Give every agent run its own real MongoDB database, forked from your data.
+Review what it changed, merge what you want, discard the rest. Git-style
+branching, time travel and merge underneath. Any driver, real mongod.**
 
 Three ideas, thirty seconds:
 
-1. **A branch is a pointer, not a copy** — created with a metadata write. Checkout separately materializes the data.
-2. **`checkout` turns a branch into a real MongoDB database** — pymongo,
-   mongoose, mongosh, indexes, aggregation, transactions: all real, and
-   supported document writes become history while capture is healthy.
-3. **Review and recover changes** — diff, merge, undo and pin states within
-   the configured retention and capture guarantees.
+1. **A sandbox is a real MongoDB database** — forked from a branch or a pinned
+   dataset, checked out and given a TTL in one command. pymongo, mongoose,
+   mongosh, indexes, aggregation, transactions: all real.
+2. **What the agent wrote is a diff** — supported document writes become
+   history while capture is healthy, so a run can be reviewed, merged as a data
+   pull request, undone or thrown away. Your source data is untouched until you
+   merge.
+3. **Underneath, it is Git for MongoDB** — a branch is a pointer created with a
+   metadata write; checkout separately materializes the data. Diff, merge, undo
+   and pins work within the configured retention and capture guarantees.
 
 ## Install
 
@@ -48,65 +53,44 @@ Go 1.27 line that means 1.27.4 or newer, which carry the same standard-library f
 ## The flow
 
 ```
-main ──branch──▶ experiment ──checkout──▶ mongodb://…  ← any driver
-                                              │
-                     ┌── argon diff ──────────┤  document history
-                     ▼                        ▼
-        merge (a data PR)          or   undo / discard / rewind
+your data ──sandbox──▶ mongodb://…  ← the agent, any driver
+                           │
+          argon diff ──────┤  what the run changed
+              ▼            ▼
+   merge (a data PR)   or  discard / undo
 ```
 
 ```bash
-# 0 · Stop source writers and DDL for the import — or: argon projects create myapp
+# 0 · Bring your data in once. Stop source writers and DDL for the import — or: argon projects create myapp
 argon import database --uri mongodb://localhost:27017 --database myapp --project myapp --source-quiesced
 
-# 1 · Branch — instant, no copy
-argon branches create experiment -p myapp
+# 1 · A sandbox: fork + checkout + TTL in one step. Prints its name and a connection string
+argon sandbox create -p myapp --ttl 1h
 
-# 2 · In terminal A, capture writes with a branch actor label
-argon checkout -p myapp -b experiment      # prints a connection string
-argon watch    -p myapp -b experiment --actor agent:experiment
+# 2 · In terminal A, capture the run under an actor label
+argon watch -p myapp -b <sandbox> --actor agent:run-1
 
-# In terminal B, write through the printed URI. Then:
+# In terminal B, point the agent at the printed URI. Then:
 
-# 3 · Review and merge back — a data pull request
-argon diff          -p myapp -b experiment
-argon merge preview -p myapp -b experiment
+# 3 · Review, then adopt the run — a data pull request
+argon diff          -p myapp -b <sandbox>
+argon merge preview -p myapp -b <sandbox>
 argon merge apply <plan-id>
 
-# …or rewind instead of merging
-argon restore reset -p myapp -b main --time 2026-07-07T09:00:00Z --backup pre-incident
+# …or throw the run away
+argon sandbox discard -p myapp -b <sandbox>
 ```
+
+Through the MCP server or `argon console`, capture and expiry are managed for
+you: there is no `watch` step, and expired sandboxes are swept every minute.
+Long-lived branches work the same way with `argon branches create` and
+`argon checkout`, and `argon restore reset` rewinds a branch to an earlier time.
 
 Prefer clicking? `argon console` serves a local web console (UI + REST API),
 supervises capture, reaps expired sandboxes every minute, and opens your browser.
 The console's MIT-licensed source is in [web/](web/README.md); see the
 [rebuild instructions](CONTRIBUTING.md#console-source-and-reproducible-assets).
 For a complete managed workflow, run [the two-agent pinned dataset example](examples/pinned_agents.py).
-
-## What you get
-
-| | Command | In one line |
-|---|---|---|
-| **Branching** | `argon branches create` | a metadata write — instant, zero copy |
-| **Real databases** | `argon checkout` / `argon proxy` | any driver, real mongod; proxy serves stable `mongodb://host/<project>~<branch>` URIs |
-| **Write capture** | `argon watch` | exact change-stream images → history, one actor label per branch |
-| **Time travel** | `argon time-travel query` | query captured document states at retained LSNs; restore/pin also accept timestamps |
-| **Undo** | `argon undo --actor <a>` | revert a range or actor label; append-only, conflict-aware |
-| **Restore** | `argon restore preview/reset/branch` | rewind a released branch or fork retained history |
-| **Data PRs** | `argon merge preview/apply` | three-way merges as reviewable plans; conflicts never silent |
-| **Sandboxes** | `argon sandbox create --ttl 1h` | fork + checkout + TTL in one step — disposable agent workspaces |
-| **Dataset pins** | `argon pin create` / `pin sandbox` | named captured states protected from GC and resets while the pin exists |
-| **Web console** | `argon console` | local UI + REST API in one command |
-
-Data history covers document inserts, updates, replacements and deletes. Collection
-drop/rename produces degraded capture; indexes and collection options are not
-versioned. Native writes are asynchronous; control operations drain capture.
-Stop writers before release. Existing pins protect their referenced states, while GC can expire audit
-and undo history. See [operations](docs/OPERATIONS.md) for recovery and credentials.
-
-Storage retention uses snapshots + retention-window GC to keep state plus a
-window of history, not every write forever. Details and the consistency
-model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## For AI agents
 
@@ -145,6 +129,31 @@ To keep a person in the loop, withhold tools from the MCP server:
 tools that inspect state.
 
 The full agent workflow: [docs/AGENTS.md](docs/AGENTS.md).
+
+## What you get
+
+| | Command | In one line |
+|---|---|---|
+| **Sandboxes** | `argon sandbox create --ttl 1h` | fork + checkout + TTL in one step — disposable agent workspaces |
+| **Dataset pins** | `argon pin create` / `pin sandbox` | named captured states protected from GC and resets while the pin exists |
+| **Data PRs** | `argon merge preview/apply` | three-way merges as reviewable plans; conflicts never silent |
+| **Undo** | `argon undo --actor <a>` | revert a range or actor label; append-only, conflict-aware |
+| **Real databases** | `argon checkout` / `argon proxy` | any driver, real mongod; proxy serves stable `mongodb://host/<project>~<branch>` URIs |
+| **Write capture** | `argon watch` | exact change-stream images → history, one actor label per branch |
+| **Branching** | `argon branches create` | a metadata write — instant, zero copy |
+| **Time travel** | `argon time-travel query` | query captured document states at retained LSNs; restore/pin also accept timestamps |
+| **Restore** | `argon restore preview/reset/branch` | rewind a released branch or fork retained history |
+| **Web console** | `argon console` | local UI + REST API in one command |
+
+Data history covers document inserts, updates, replacements and deletes. Collection
+drop/rename produces degraded capture; indexes and collection options are not
+versioned. Native writes are asynchronous; control operations drain capture.
+Stop writers before release. Existing pins protect their referenced states, while GC can expire audit
+and undo history. See [operations](docs/OPERATIONS.md) for recovery and credentials.
+
+Storage retention uses snapshots + retention-window GC to keep state plus a
+window of history, not every write forever. Details and the consistency
+model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Documentation
 
