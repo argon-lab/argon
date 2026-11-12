@@ -32,9 +32,11 @@ printed, and the command stays in the foreground until interrupted. Without
 --watch, run "argon watch" for the sandbox, or create it through "argon mcp"
 or "argon console", which manage capture themselves.
 
-Collections that exist in the parent are ready for exact capture. A
-collection the agent creates is not: run "argon collections prepare" for it
-before its first update or delete, or that history is incomplete.`,
+Collections the agent creates are captured exactly while capture is running.
+Run "argon collections prepare" first only when writes to a new collection may
+wait longer than MongoDB's snapshot history (five minutes by default) before
+they are captured, or when one transaction updates a document and then changes
+it again right after creating its collection.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		from, _ := cmd.Flags().GetString("from")

@@ -11,6 +11,20 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Fixed
+
+- A collection created by the application no longer breaks capture when one of
+  its documents is updated or deleted before capture has enabled images on the
+  collection. Such a sandbox previously stopped with `exact post-image
+  unavailable` and could not be reviewed. Capture now reads the missing states
+  back from MongoDB at the event's cluster time, so the recorded images are the
+  stored documents byte for byte; the entry is marked `capture_images:
+  snapshot`. Deletes and replaces in that interval gain their pre-images the
+  same way, which makes them undoable. Two cases still stop capture with a
+  reported gap: an update older than MongoDB's snapshot history (five minutes by
+  default) when it is captured, and an update that is followed by another change
+  to the same document in the same transaction, before images were enabled.
+
 ## [2.3.0] - 2026-11-12
 
 A sandbox in one command. No data format changes since 2.2.0.

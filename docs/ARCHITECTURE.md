@@ -376,12 +376,28 @@ entries removed). Migration is idempotent.
 ## Capture and lifecycle prerequisites
 
 Use MongoDB 6+ as a writable replica set; the regression environment is MongoDB
-7.0.14. `argon doctor` checks real image/transaction permissions. Before the
-first write to every new native collection, run
-`argon collections prepare <collection> -p <project> -b <branch>` or create it
-through the MongoDB driver with `changeStreamPreAndPostImages: {enabled:true}`.
-Auto-enabling after a collection appears cannot recover images for updates
-that already happened. Checkout prepares materialized collections itself.
+7.0.14. `argon doctor` checks real image/transaction permissions. Checkout
+prepares materialized collections itself, and capture enables images on a
+collection the application creates as soon as it sees it.
+
+Writes that reach a new collection before then arrive without images. Capture
+does not reconstruct them from the update description, which cannot convey
+field order or tell a moved field from an updated one. It asks MongoDB for the
+document as of the event's cluster time, and as of the cluster time just
+before it, with a snapshot read. A recovered image is therefore the stored
+document, byte for byte, and the entry records `capture_images: snapshot`.
+This has two limits. MongoDB keeps snapshot history for a bounded time
+(`minSnapshotHistoryWindowInSeconds`, five minutes by default), so the event
+has to be captured within it. And a snapshot shows a document only before or
+after everything that commits at one cluster time. Inside a transaction that
+gives a change's pre-image when the change is the document's first and its
+post-image when it is the last; a change that follows one whose event carried
+the document takes that document as its pre-image. What cannot be read is the
+state after an update that is followed by another change to the same document
+in the same transaction, and that stops capture with a reported gap. Running
+`argon collections prepare <collection> -p <project> -b <branch>`, or creating
+the collection with `changeStreamPreAndPostImages: {enabled:true}`, before the
+first write avoids both.
 
 Document insert/update/replace/delete operations are versioned. Collection
 rename/drop/database-drop is unsupported and produces persisted `degraded`

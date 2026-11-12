@@ -171,10 +171,15 @@ argon watch -p myapp -b experiment --actor agent:run-42
 ```
 
 Driver alternative: create the collection with
-`changeStreamPreAndPostImages: {enabled: true}`. Updates made before enabling
-images cannot be reconstructed exactly. A watcher retries temporary index-build
-or topology errors; a missing post-image, unsupported drop/rename or expired
-resume token marks capture degraded. Stop writers, inspect the reported cause
+`changeStreamPreAndPostImages: {enabled: true}`. From 2.3.1, capture reads back
+the exact states of updates and deletes made before images were enabled, as long
+as it processes them within MongoDB's snapshot history
+(`minSnapshotHistoryWindowInSeconds`, five minutes by default); an update that
+is followed by another change to the same document in the same transaction, in
+that interval, cannot be read back.
+A watcher retries temporary index-build
+or topology errors; a post-image that can no longer be read back, unsupported
+drop/rename or expired resume token marks capture degraded. Stop writers, inspect the reported cause
 and preserve the physical data. Rebuild/import into a new branch from a trusted
 state when a history gap cannot be repaired; do not clear a token to pretend
 that missing history was captured.

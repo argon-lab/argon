@@ -127,8 +127,9 @@ removes the TTL. Bare CLI commands do not start background workers. Keep
 `watch` running and schedule `sweep`, or use console/API/MCP managed sandboxes.
 `sandbox create --watch` starts capture before it prints the connection string
 and runs until interrupted, so one terminal replaces `sandbox create` plus
-`watch`. A collection the agent creates still needs `collections prepare`
-before its first update or delete.
+`watch`. From 2.3.1 a collection the agent creates is captured exactly without
+`collections prepare`; see [the agents guide](AGENTS.md#sandboxes) for the two
+cases that still need it.
 
 ## Snapshots, GC, agents, migration
 

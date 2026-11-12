@@ -36,11 +36,15 @@ the bare CLI, add `--watch --actor <run-label>` to `sandbox create` (or keep
 are persisted; use a new sandbox for a different run label.
 
 Collections inherited from the parent are ready for exact capture. A collection
-the agent creates is not: prepare it with `argon collections prepare` (or create
-it with `changeStreamPreAndPostImages: {enabled: true}`) before its first update
-or delete, or that history is incomplete and review fails. A sandbox is a full
-physical copy; the [benchmarks](https://github.com/argon-lab/benchmarks) measure
-how long one takes to be ready as `sandbox_capture_ready_ms`. Then:
+the agent creates is captured exactly as well (2.3.1 and newer): Argon reads the
+states of its first writes back from MongoDB, which keeps them for five minutes
+by default, so capture has to be running or a `diff` has to follow within that
+time. Two cases still need `argon collections prepare` (or
+`changeStreamPreAndPostImages: {enabled: true}` at creation): older versions,
+and a document that is updated and then changed again inside one transaction on
+a collection created moments earlier. A sandbox is a full physical copy; the
+[benchmarks](https://github.com/argon-lab/benchmarks) measure how long one takes
+to be ready as `sandbox_capture_ready_ms`. Then:
 
 ```bash
 argon diff -p myapp -b <sandbox>              # review supported document changes
@@ -231,6 +235,9 @@ provide database credentials. Native MongoDB credentials remain deployment
 credentials, not a security boundary between mutually untrusted agents.
 Provision restricted MongoDB users/deployments for those workloads.
 
-Prepare every new collection before updates with `argon collections prepare`
-or the MongoDB driver's `changeStreamPreAndPostImages: {enabled:true}` option.
-A newly materialized collection is already prepared by checkout.
+A newly materialized collection is already prepared by checkout, and from
+2.3.1 capture reads back the exact states of writes that reach a new collection
+before its images are enabled. Preparing a collection first, with
+`argon collections prepare` or the MongoDB driver's
+`changeStreamPreAndPostImages: {enabled:true}` option, avoids those reads and
+is required on older versions.
