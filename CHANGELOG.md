@@ -11,6 +11,13 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Added
+
+- `argon sandbox create --watch [--actor <label>]` creates a sandbox and
+  captures its writes in the same command. Capture is running before the
+  connection string is printed, and the command stays in the foreground until
+  interrupted. With `--output json` it reports `capture_managed: true`.
+
 ## [2.2.0] - 2026-11-11
 
 MCP tool restrictions and annotations, a verified npm install, and lighter
