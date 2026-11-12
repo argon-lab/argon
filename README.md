@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://argonlabs.tech">
-    <img src=".github/assets/hero.png" alt="Argon — Git for MongoDB, built for AI agents: branch off prod, run an agent, undo the session" width="100%">
+    <img src=".github/assets/hero.png" alt="Argon — Git for MongoDB, built for AI agents: give each agent its own database branch and review what to merge" width="100%">
   </a>
 </p>
 
@@ -32,7 +32,7 @@ For npm, use Node.js 24 LTS with npm 11.16 or newer. The package-scoped
 approval allows the installer to download Argon's binary on npm 12.
 
 ```bash
-brew install argon-lab/tap/argonctl      # macOS
+brew install argon-lab/tap/argonctl      # macOS or Linux, builds from source
 npm install -g argonctl --allow-scripts=argonctl # cross-platform
 
 # MongoDB must run as a replica set (one-node is fine):
@@ -138,6 +138,11 @@ run = argon.sandbox_from_pin("myapp", "eval-v1")            # identical state, e
 `saver.merge()` is a convenience call that previews and applies immediately;
 use the separate calls above when approval is required. Pins protect captured
 document state while they exist; keep independent backups.
+
+To keep a person in the loop, withhold tools from the MCP server:
+`argon mcp --disable-tools argon_merge_apply` leaves applying a merge plan to
+`argon merge apply <plan-id>`, and `argon mcp --read-only` offers only the
+tools that inspect state.
 
 The full agent workflow: [docs/AGENTS.md](docs/AGENTS.md).
 
