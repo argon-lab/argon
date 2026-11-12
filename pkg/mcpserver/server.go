@@ -113,6 +113,9 @@ type Server struct {
 	// the database; it doubles up to thirty seconds. Zero means one second.
 	reconnectDelay time.Duration
 	sweeping       bool
+	// background counts what the engine's opening started that must finish
+	// before ingesters are stopped.
+	background sync.WaitGroup
 
 	in    io.Reader
 	outMu sync.Mutex
@@ -179,9 +182,6 @@ func (s *Server) openEngine(ctx context.Context) error {
 	return nil
 }
 
-// startSweeper reaps expired sandboxes until ctx ends. It starts once per
-// server, at whichever comes later: Run, or the call that opens the engine.
-// Callers hold engineMu.
 // connectInBackground opens the engine as soon as the database answers. A
 // server that connected only when a tool was called would, after a restart
 // with no tool call, leave expired sandboxes unswept and their capture
@@ -209,12 +209,51 @@ func (s *Server) connectInBackground(ctx context.Context) {
 	}
 }
 
+// startSweeper reaps expired sandboxes until ctx ends, and resumes capture
+// for the branches an earlier process left checked out. It starts once per
+// server, at whichever comes later: Run, or the call that opens the engine.
+// Callers hold engineMu.
 func (s *Server) startSweeper(ctx context.Context) {
 	if s.services == nil || s.sweeping {
 		return
 	}
 	s.sweeping = true
 	go s.services.RunSandboxSweeper(ctx)
+	s.background.Add(1)
+	go func() { defer s.background.Done(); s.resumeCapture(ctx, s.services) }()
+}
+
+// resumeCapture re-attaches an ingester to every branch that was checked out
+// when an earlier process exited. Supervision lives in memory, so without
+// this a restarted server would leave those branches uncaptured until a tool
+// call happened to drain one, and a write to a collection the agent created
+// could by then be outside MongoDB's snapshot history. Capture resumes from
+// the stored resume token and keeps the stored actor, so writes made while
+// no server ran are caught up rather than lost.
+func (s *Server) resumeCapture(ctx context.Context, services *walcli.Services) {
+	projects, err := services.Projects.ListProjects()
+	if err != nil {
+		log.Printf("mcp: cannot list projects to resume capture: %v", err)
+		return
+	}
+	for _, project := range projects {
+		branches, err := services.Branches.ListBranches(project.ID)
+		if err != nil {
+			log.Printf("mcp: cannot list branches of %s to resume capture: %v", project.Name, err)
+			continue
+		}
+		for _, branch := range branches {
+			if ctx.Err() != nil {
+				return
+			}
+			if !branch.IsLive() {
+				continue
+			}
+			if err := s.startIngester(branch.ID); err != nil {
+				log.Printf("mcp: capture for %s/%s did not resume: %v", project.Name, branch.Name, err)
+			}
+		}
+	}
 }
 
 // unavailable is what an agent is told when a tool did not run because the
@@ -267,7 +306,7 @@ type jsonRPCResponse struct {
 // ingesters started by this server stop with it.
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer func() { cancel(); s.stopAllIngesters() }()
+	defer func() { cancel(); s.background.Wait(); s.stopAllIngesters() }()
 	s.engineMu.Lock()
 	s.startSweeper(ctx)
 	s.engineMu.Unlock()
