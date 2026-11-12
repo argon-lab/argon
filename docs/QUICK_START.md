@@ -76,9 +76,13 @@ argon sandbox create -p myapp --ttl 1h --watch --actor agent:run-1
 `--watch` needs 2.3.0 or newer. Without it, `sandbox create` returns at once and
 you run `argon watch -p myapp -b <sandbox> --actor agent:run-1` yourself.
 
-Collections that came from the parent are ready for exact capture. If the
-agent will create a collection, prepare it before its first update or delete,
-or that history is incomplete and review fails:
+Collections that came from the parent are ready for exact capture. A
+collection the agent creates is captured exactly too while capture is running
+(2.3.1 and newer): its first writes arrive before images are enabled, and Argon
+reads their exact states back from MongoDB. Prepare a collection yourself when
+you run an older version, or when its writes may wait more than MongoDB's
+snapshot history (five minutes by default) before capture or a `diff` sees
+them:
 
 ```bash
 argon collections prepare orders -p myapp -b <sandbox>

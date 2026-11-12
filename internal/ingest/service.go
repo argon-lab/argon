@@ -167,6 +167,7 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 	})
 
 	batch := make([]*wal.Entry, 0, maxBatch)
+	step := &timeStep{}
 	lastSafeToken := append(bson.Raw(nil), stream.ResumeToken()...)
 	var transactionStartToken bson.Raw
 	transactionBarrier := ""
@@ -205,7 +206,7 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 				}
 				continue
 			}
-			entry, err := s.convertEvent(ctx, physical, branch, stream.Current)
+			entry, err := s.convertEvent(ctx, physical, branch, stream.Current, step)
 			if err != nil {
 				if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 					// The current event is not converted or checkpointed. Keep
@@ -293,8 +294,9 @@ func completePrefix(batch []*wal.Entry, last, beforeTransaction bson.Raw) ([]*wa
 // changeEvent is the subset of change-stream event fields the ingester
 // consumes.
 type changeEvent struct {
-	WallTime      time.Time `bson:"wallTime"`
-	OperationType string    `bson:"operationType"`
+	WallTime      time.Time           `bson:"wallTime"`
+	ClusterTime   primitive.Timestamp `bson:"clusterTime"`
+	OperationType string              `bson:"operationType"`
 	NS            struct {
 		Collection string `bson:"coll"`
 	} `bson:"ns"`
@@ -319,22 +321,50 @@ func (e *changeEvent) txnID() string {
 }
 
 // convertEvent maps one change event to a WAL entry (nil for events that
-// carry no document state).
-func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, branch *wal.Branch, raw bson.Raw) (*wal.Entry, error) {
+// carry no document state). Images MongoDB did not attach are read back from
+// its snapshot history; see images.go.
+func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, branch *wal.Branch, raw bson.Raw, step *timeStep) (*wal.Entry, error) {
 	var event changeEvent
 	if err := bson.Unmarshal(raw, &event); err != nil {
 		return nil, fmt.Errorf("failed to decode change event: %w", err)
 	}
 
 	switch event.OperationType {
-	case "insert", "update", "replace":
-		if len(event.FullDocument) == 0 {
-			return nil, &CaptureError{fmt.Sprintf("exact post-image unavailable for %s on %s; history is incomplete; enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection)}
+	case "insert", "update", "replace", "delete":
+		deleted := event.OperationType == "delete"
+		if !deleted {
+			// Enable images first: every later write to this collection then
+			// carries its own, which keeps the recovery below to the few
+			// writes that raced ahead.
+			if err := s.ensurePrePostImages(ctx, physical, event.NS.Collection); err != nil {
+				return nil, imageSetupError(err)
+			}
 		}
-		if err := s.ensurePrePostImages(ctx, physical, event.NS.Collection); err != nil {
-			return nil, imageSetupError(err)
+		needPost := !deleted && len(event.FullDocument) == 0
+		needPre := event.OperationType != "insert" && len(event.FullDocumentBeforeChange) == 0
+		if !step.admit(event.ClusterTime, documentKey(event.NS.Collection, raw), needPost || needPre) {
+			return nil, &CaptureError{fmt.Sprintf("%s on %s changed a document more than once at one cluster time before exact images were enabled; the states in between cannot be read back; history is incomplete; enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection)}
 		}
-		return &wal.Entry{
+		metadata := map[string]interface{}{"capture_operation": event.OperationType, "capture_wall_time": event.WallTime}
+		if needPost || needPre {
+			images, err := recoverImages(ctx, physical, raw, &event, needPost, needPre)
+			if err != nil && !errors.Is(err, errSnapshotGone) {
+				return nil, err
+			}
+			if needPost {
+				if err != nil {
+					return nil, &CaptureError{fmt.Sprintf("exact post-image unavailable for %s on %s; history is incomplete; %v. Keep capture running while writing, or enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection, err)}
+				}
+				event.FullDocument = images.post
+			}
+			if needPre && len(images.pre) > 0 {
+				event.FullDocumentBeforeChange = images.pre
+			}
+			if len(images.post) > 0 || len(images.pre) > 0 {
+				metadata["capture_images"] = "snapshot"
+			}
+		}
+		entry := &wal.Entry{
 			ProjectID:  branch.ProjectID,
 			BranchID:   branch.ID,
 			Operation:  wal.OpPut,
@@ -344,21 +374,13 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 			PreImage:   event.FullDocumentBeforeChange,
 			TxnID:      event.txnID(),
 			Actor:      "ingest",
-			Metadata:   map[string]interface{}{"capture_operation": event.OperationType, "capture_wall_time": event.WallTime},
-		}, nil
-
-	case "delete":
-		return &wal.Entry{
-			ProjectID:  branch.ProjectID,
-			BranchID:   branch.ID,
-			Operation:  wal.OpDelete,
-			Collection: event.NS.Collection,
-			DocumentID: wal.DocumentIDString(event.DocumentKey.ID),
-			PreImage:   event.FullDocumentBeforeChange,
-			TxnID:      event.txnID(),
-			Actor:      "ingest",
-			Metadata:   map[string]interface{}{"capture_operation": event.OperationType, "capture_wall_time": event.WallTime},
-		}, nil
+			Metadata:   metadata,
+		}
+		if deleted {
+			entry.Operation = wal.OpDelete
+			entry.PostImage = nil
+		}
+		return entry, nil
 
 	case "drop", "dropDatabase", "rename":
 		// Collection-level DDL carries no document images; representing it

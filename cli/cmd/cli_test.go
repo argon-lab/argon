@@ -411,7 +411,8 @@ func TestCLIRepeatedResetsKeepBackupAndPin(t *testing.T) {
 }
 
 // A watched sandbox is capturing before its connection string exists, labels
-// the run, and stops cleanly on interrupt with its writes in history.
+// the run, captures a collection the run creates, and stops cleanly on
+// interrupt with its writes in history.
 func TestCLISandboxCreateWatch(t *testing.T) {
 	uri := os.Getenv("ARGON_TEST_MONGODB_URI")
 	if uri == "" {
@@ -472,10 +473,8 @@ func TestCLISandboxCreateWatch(t *testing.T) {
 	}
 	physical := sandbox["physical_db"].(string)
 	databases = append(databases, physical)
-	// A collection the run creates must be prepared before its first update.
-	if _, errText, err := invokeCLI(t, uri, "collections", "prepare", "orders", "-p", project, "-b", "watched"); err != nil {
-		t.Fatalf("prepare failed: %v %s", err, errText)
-	}
+	// The run creates this collection and updates a document at once, before
+	// capture can have enabled images on it.
 	orders := client.Database(physical).Collection("orders")
 	if _, err := orders.InsertOne(ctx, bson.M{"_id": "o1", "total": 5}); err != nil {
 		t.Fatal(err)
