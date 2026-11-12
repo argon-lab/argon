@@ -68,3 +68,29 @@ jobs:
 
           If you would like to keep going, issues labelled [good first issue](https://github.com/$GH_REPO/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) and [help wanted](https://github.com/$GH_REPO/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) are open for anyone to claim."
           fi
+
+  # The website lists outside contributors with what they shipped. Tell it
+  # the moment a pull request merges so the list is rebuilt at once. Without
+  # the secret this is skipped and the website's hourly run picks it up.
+  notify-website:
+    name: Ask the website to refresh its contributors list
+    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'argon-lab/argon' &&
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.user.type == 'User' &&
+      !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+        github.event.pull_request.author_association)
+    permissions: {}
+    env:
+      GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+    steps:
+      - name: Send the refresh event
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "WEBSITE_DISPATCH_TOKEN is not set; the hourly run will pick this up."
+            exit 0
+          fi
+          gh api -X POST repos/jakezwang/argon-website/dispatches -f event_type=contributors
