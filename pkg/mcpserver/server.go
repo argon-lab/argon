@@ -8,12 +8,17 @@
 // creates or connects, so agent writes become versioned history without
 // anyone running "argon watch" by hand. Protocol traffic owns stdout;
 // logs go to stderr.
+//
+// A server made with NewLazy needs no database to start. It answers the
+// handshake and lists its tools with nothing behind it, and opens the engine
+// when a tool is first called.
 package mcpserver
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -73,12 +78,34 @@ func UnknownTools(names []string) []string {
 	return unknown
 }
 
+// Connector opens the engine for a server made with NewLazy. The server calls
+// it when a tool is called and no engine is open yet: on the first call, and
+// on each later one for as long as it fails. Calls never overlap. ctx ends
+// when the server stops waiting for the attempt. An error that wraps
+// walcli.ErrUnreachable is reported to the agent as a MongoDB deployment
+// that could not be reached, any other error in its own words.
+type Connector func(ctx context.Context) (*walcli.Services, error)
+
+// defaultConnectTimeout bounds one attempt to open the engine, so a tool
+// call made while MongoDB is away is answered well inside a client's request
+// timeout.
+const defaultConnectTimeout = 10 * time.Second
+
 // Server speaks MCP over a reader/writer pair (stdin/stdout in production).
 type Server struct {
-	services *walcli.Services
-	in       io.Reader
-	outMu    sync.Mutex
-	out      io.Writer
+	// The engine. New supplies it; NewLazy leaves it nil until a tool call
+	// opens it through connect. It is set once, under engineMu, and never
+	// replaced. Tool handlers run only after openEngine has succeeded, so
+	// they read the field directly.
+	engineMu       sync.Mutex
+	services       *walcli.Services
+	connect        Connector
+	connectTimeout time.Duration
+	sweeping       bool
+
+	in    io.Reader
+	outMu sync.Mutex
+	out   io.Writer
 
 	// Ingesters supervised for sandboxes created/connected via this server.
 	ingestMu sync.Mutex
@@ -92,16 +119,82 @@ type Server struct {
 // New creates an MCP server over the given transport.
 func New(services *walcli.Services, in io.Reader, out io.Writer, opts ...Option) *Server {
 	s := &Server{
-		services: services,
-		in:       in,
-		out:      out,
-		ingest:   make(map[string]context.CancelFunc),
-		disabled: make(map[string]bool),
+		services:       services,
+		connectTimeout: defaultConnectTimeout,
+		in:             in,
+		out:            out,
+		ingest:         make(map[string]context.CancelFunc),
+		disabled:       make(map[string]bool),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// NewLazy creates an MCP server that opens its engine on first use, for a
+// process that may be started where no database is running. The handshake,
+// ping and tools/list never call connect; the first tools/call does. If that
+// fails the call is answered with a tool error, the server keeps serving, and
+// the next call tries again.
+func NewLazy(connect Connector, in io.Reader, out io.Writer, opts ...Option) *Server {
+	s := New(nil, in, out, opts...)
+	s.connect = connect
+	return s
+}
+
+// openEngine makes sure the engine is open, connecting if no earlier call
+// has. ctx is the context Run serves under: what starts here stops when Run
+// returns.
+func (s *Server) openEngine(ctx context.Context) error {
+	s.engineMu.Lock()
+	defer s.engineMu.Unlock()
+	if s.services != nil {
+		return nil
+	}
+	if s.connect == nil {
+		return errors.New("no engine was configured for this server")
+	}
+	attempt, cancel := context.WithTimeout(ctx, s.connectTimeout)
+	defer cancel()
+	services, err := s.connect(attempt)
+	if err != nil {
+		// Nothing is remembered: the next call connects afresh.
+		return err
+	}
+	// From here on this is the server New would have built.
+	s.services = services
+	s.startSweeper(ctx)
+	return nil
+}
+
+// startSweeper reaps expired sandboxes until ctx ends. It starts once per
+// server, at whichever comes later: Run, or the call that opens the engine.
+// Callers hold engineMu.
+func (s *Server) startSweeper(ctx context.Context) {
+	if s.services == nil || s.sweeping {
+		return
+	}
+	s.sweeping = true
+	go s.services.RunSandboxSweeper(ctx)
+}
+
+// unavailable is what an agent is told when a tool did not run because the
+// engine could not be opened. The server itself is fine, so the text says
+// what a person has to put right and that calling again is enough after
+// that. For an unreachable deployment the driver's own error stays in the
+// log: it can quote the connection string.
+func unavailable(err error) string {
+	if errors.Is(err, walcli.ErrUnreachable) {
+		return "MongoDB is not reachable, so this tool did not run. " +
+			"Argon needs a MongoDB replica set (a single-node one is enough) at the address in the " +
+			"MONGODB_URI environment variable this server was started with; when that is not set it " +
+			"uses mongodb://localhost:27017. Start MongoDB or correct MONGODB_URI, then call the tool " +
+			"again: the server is still running and connects on the next call. " +
+			"The driver's error is in this server's log, and \"argon doctor\" checks the deployment."
+	}
+	return fmt.Sprintf("Argon could not start its engine, so this tool did not run: %v. "+
+		"The server is still running and tries again on the next call.", err)
 }
 
 // offers reports whether a tool is available on this instance.
@@ -137,7 +230,9 @@ type jsonRPCResponse struct {
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() { cancel(); s.stopAllIngesters() }()
-	go s.services.RunSandboxSweeper(ctx)
+	s.engineMu.Lock()
+	s.startSweeper(ctx)
+	s.engineMu.Unlock()
 
 	scanner := bufio.NewScanner(s.in)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -231,17 +326,29 @@ func (s *Server) handleToolCall(ctx context.Context, req *jsonRPCRequest) {
 		return
 	}
 
+	// Every tool works on the engine; nothing before this point does.
+	if err := s.openEngine(ctx); err != nil {
+		log.Printf("mcp: %s did not run: %v", params.Name, err)
+		s.replyToolError(req.ID, unavailable(err))
+		return
+	}
+
 	text, err := handler(ctx, s, params.Arguments)
 	if err != nil {
-		// Tool-level failures are results with isError, not protocol errors.
-		s.reply(req.ID, map[string]interface{}{
-			"content": []map[string]interface{}{{"type": "text", "text": err.Error()}},
-			"isError": true,
-		})
+		s.replyToolError(req.ID, err.Error())
 		return
 	}
 	s.reply(req.ID, map[string]interface{}{
 		"content": []map[string]interface{}{{"type": "text", "text": text}},
+	})
+}
+
+// replyToolError answers a tool call that failed. Tool-level failures are
+// results with isError, not protocol errors.
+func (s *Server) replyToolError(id json.RawMessage, text string) {
+	s.reply(id, map[string]interface{}{
+		"content": []map[string]interface{}{{"type": "text", "text": text}},
+		"isError": true,
 	})
 }
 
@@ -301,20 +408,27 @@ func (s *Server) stopIngester(branchID string) error {
 }
 
 func (s *Server) stopAllIngesters() {
+	s.engineMu.Lock()
+	services := s.services
+	s.engineMu.Unlock()
+	if services == nil {
+		// The engine was never opened, so nothing was started.
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.services.Ingest.Shutdown(ctx); err != nil {
+	if err := services.Ingest.Shutdown(ctx); err != nil {
 		log.Printf("mcp: capture shutdown: %v", err)
 	}
 	snapshotCtx, snapshotCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer snapshotCancel()
-	if err := s.services.WaitAuto(snapshotCtx); err != nil {
+	if err := services.WaitAuto(snapshotCtx); err != nil {
 		log.Printf("mcp: snapshot shutdown: %v", err)
 		// Cancellation interrupts cooperative storage I/O; give its independent
 		// deferred publication-lock cleanup a short grace before process exit.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		if cleanupErr := s.services.WaitAuto(cleanupCtx); cleanupErr != nil {
+		if cleanupErr := services.WaitAuto(cleanupCtx); cleanupErr != nil {
 			log.Printf("mcp: snapshot cleanup still incomplete: %v", cleanupErr)
 		}
 	}
