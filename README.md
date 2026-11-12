@@ -154,8 +154,8 @@ and undo history. See [operations](docs/OPERATIONS.md) for recovery and credenti
 Two things to know before handing a sandbox to an agent. A collection the agent
 creates is captured exactly while capture is running, or when it is next
 synchronized within MongoDB's snapshot history (five minutes by default); the
-one exception is a document changed twice in one transaction on a collection
-created moments earlier. Before 2.3.1 such a collection needed
+one exception is a document that is updated and then changed again inside one
+transaction on a collection created moments earlier. Before 2.3.1 such a collection needed
 `argon collections prepare` first. And a sandbox is a full physical copy with
 capture ready, so creating one takes longer as the data grows: the
 [benchmarks](https://github.com/argon-lab/benchmarks) measure it as

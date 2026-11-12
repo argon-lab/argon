@@ -6,6 +6,7 @@ import (
 	"math"
 	"testing"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -30,34 +31,36 @@ func TestPreviousTimestampIsStrictlyEarlier(t *testing.T) {
 	}
 }
 
-// A snapshot read describes one event only when that event is the document's
-// sole change at its cluster time.
-func TestTimeStepRefusesRecoveryForARepeatedDocument(t *testing.T) {
+// The tracker answers two questions about a document at one cluster time:
+// did it change earlier, and was that change's post-image read back.
+func TestTimeStepRemembersADocumentsEarlierChange(t *testing.T) {
 	first := primitive.Timestamp{T: 100, I: 1}
 	second := primitive.Timestamp{T: 100, I: 2}
+	attached := bson.Raw{5, 0, 0, 0, 0}
 
 	var step timeStep
-	if !step.admit(first, "orders/a", true) {
-		t.Fatal("a document's only change at a time can be read back")
+	if _, changed := step.earlier(first, "orders/a"); changed {
+		t.Fatal("nothing has changed yet")
 	}
-	if !step.admit(first, "orders/b", true) {
-		t.Fatal("another document at the same time is independent")
-	}
-	if step.admit(first, "orders/a", false) {
-		t.Fatal("a later change at the same time means the earlier read-back was not that event's image")
-	}
+	step.record("orders/a", stepDoc{post: attached})
+	step.record("orders/b", stepDoc{readBack: true})
 
-	step = timeStep{}
-	for range 2 {
-		if !step.admit(first, "orders/a", false) {
-			t.Fatal("events that carry their own images are never refused")
-		}
+	a, changed := step.earlier(first, "orders/a")
+	if !changed || a.readBack || len(a.post) == 0 {
+		t.Fatalf("the earlier change and its attached post-image must be remembered: %+v %v", a, changed)
 	}
-	if step.admit(first, "orders/a", true) {
-		t.Fatal("a read-back cannot isolate a change that follows another at the same time")
+	b, changed := step.earlier(first, "orders/b")
+	if !changed || !b.readBack {
+		t.Fatal("a read-back post-image must be remembered as such")
 	}
-	if !step.admit(second, "orders/a", true) {
+	if _, changed := step.earlier(first, "orders/c"); changed {
+		t.Fatal("documents are tracked independently")
+	}
+	if _, changed := step.earlier(second, "orders/a"); changed {
 		t.Fatal("a new cluster time starts a new step")
+	}
+	if _, changed := step.earlier(second, "orders/b"); changed {
+		t.Fatal("the previous step is forgotten as a whole")
 	}
 }
 

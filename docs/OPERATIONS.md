@@ -174,8 +174,9 @@ Driver alternative: create the collection with
 `changeStreamPreAndPostImages: {enabled: true}`. From 2.3.1, capture reads back
 the exact states of updates and deletes made before images were enabled, as long
 as it processes them within MongoDB's snapshot history
-(`minSnapshotHistoryWindowInSeconds`, five minutes by default); a document
-changed more than once in one transaction in that interval cannot be read back.
+(`minSnapshotHistoryWindowInSeconds`, five minutes by default); an update that
+is followed by another change to the same document in the same transaction, in
+that interval, cannot be read back.
 A watcher retries temporary index-build
 or topology errors; a post-image that can no longer be read back, unsupported
 drop/rename or expired resume token marks capture degraded. Stop writers, inspect the reported cause

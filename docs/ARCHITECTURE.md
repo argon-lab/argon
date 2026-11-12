@@ -389,9 +389,12 @@ document, byte for byte, and the entry records `capture_images: snapshot`.
 This has two limits. MongoDB keeps snapshot history for a bounded time
 (`minSnapshotHistoryWindowInSeconds`, five minutes by default), so the event
 has to be captured within it. And a snapshot shows a document only before or
-after everything that commits at one cluster time, so a document changed more
-than once in a single transaction cannot be recovered and stops capture with a
-reported gap. Running
+after everything that commits at one cluster time. Inside a transaction that
+gives a change's pre-image when the change is the document's first and its
+post-image when it is the last; a change that follows one whose event carried
+the document takes that document as its pre-image. What cannot be read is the
+state after an update that is followed by another change to the same document
+in the same transaction, and that stops capture with a reported gap. Running
 `argon collections prepare <collection> -p <project> -b <branch>`, or creating
 the collection with `changeStreamPreAndPostImages: {enabled:true}`, before the
 first write avoids both.

@@ -21,9 +21,9 @@ entry — a synchronization barrier, not in-proxy capture).
   stored documents byte for byte; the entry is marked `capture_images:
   snapshot`. Deletes and replaces in that interval gain their pre-images the
   same way, which makes them undoable. Two cases still stop capture with a
-  reported gap: an event older than MongoDB's snapshot history (five minutes by
-  default) when it is captured, and a document changed more than once in one
-  transaction before images were enabled.
+  reported gap: an update older than MongoDB's snapshot history (five minutes by
+  default) when it is captured, and an update that is followed by another change
+  to the same document in the same transaction, before images were enabled.
 
 ## [2.3.0] - 2026-11-12
 

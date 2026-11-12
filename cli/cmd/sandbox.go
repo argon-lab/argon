@@ -35,8 +35,8 @@ or "argon console", which manage capture themselves.
 Collections the agent creates are captured exactly while capture is running.
 Run "argon collections prepare" first only when writes to a new collection may
 wait longer than MongoDB's snapshot history (five minutes by default) before
-they are captured, or when one transaction changes a document more than once
-right after creating its collection.`,
+they are captured, or when one transaction updates a document and then changes
+it again right after creating its collection.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		from, _ := cmd.Flags().GetString("from")

@@ -83,33 +83,41 @@ func previousTimestamp(at primitive.Timestamp) (primitive.Timestamp, bool) {
 	}
 }
 
-// timeStep remembers which documents changed at the cluster time being
+// timeStep remembers the documents changed at the cluster time being
 // processed. A snapshot read shows a document after, or just before,
-// everything that committed at one cluster time. That is one event's image
-// only when the event is the document's sole change at that time, so a
-// document changed twice in one transaction cannot be recovered this way.
+// everything that committed at one cluster time, so within a transaction it
+// gives a change's pre-image only if the change is the document's first, and
+// its post-image only if it is the last.
 type timeStep struct {
 	at   primitive.Timestamp
-	docs map[string]bool // document → whether one of its events was recovered
+	docs map[string]stepDoc
 }
 
-// admit records an event and reports whether its images can be trusted:
-// either MongoDB attached them, or it is the document's only change at this
-// cluster time.
-func (t *timeStep) admit(at primitive.Timestamp, document string, recovering bool) bool {
+// stepDoc is a document's latest change at the current cluster time.
+type stepDoc struct {
+	// post is the document after that change when the event carried it; the
+	// next change at this time has exactly this as its pre-image.
+	post bson.Raw
+	// readBack marks a post-image read from a snapshot, which is only right
+	// if no later change to the document commits at the same time.
+	readBack bool
+}
+
+// earlier returns a document's previous change at this cluster time.
+func (t *timeStep) earlier(at primitive.Timestamp, document string) (stepDoc, bool) {
 	if at != t.at {
 		t.at = at
 		clear(t.docs)
 	}
-	recovered, seen := t.docs[document]
-	if seen && (recovered || recovering) {
-		return false
-	}
+	change, ok := t.docs[document]
+	return change, ok
+}
+
+func (t *timeStep) record(document string, change stepDoc) {
 	if t.docs == nil {
-		t.docs = make(map[string]bool)
+		t.docs = make(map[string]stepDoc)
 	}
-	t.docs[document] = recovered || recovering
-	return true
+	t.docs[document] = change
 }
 
 // recoveredImages are the states read back for one event.

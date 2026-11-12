@@ -340,10 +340,19 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 				return nil, imageSetupError(err)
 			}
 		}
+		key := documentKey(event.NS.Collection, raw)
+		earlier, changedEarlier := step.earlier(event.ClusterTime, key)
+		if changedEarlier && earlier.readBack {
+			return nil, &CaptureError{fmt.Sprintf("%s on %s follows an update of the same document at the same cluster time, made before exact images were enabled; the state between the two cannot be read back; history is incomplete; enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection)}
+		}
 		needPost := !deleted && len(event.FullDocument) == 0
 		needPre := event.OperationType != "insert" && len(event.FullDocumentBeforeChange) == 0
-		if !step.admit(event.ClusterTime, documentKey(event.NS.Collection, raw), needPost || needPre) {
-			return nil, &CaptureError{fmt.Sprintf("%s on %s changed a document more than once at one cluster time before exact images were enabled; the states in between cannot be read back; history is incomplete; enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection)}
+		if needPre && changedEarlier {
+			// Not the document's first change at this cluster time, so the
+			// state before the time step is not its pre-image. The previous
+			// change's post-image is, and that event carried it.
+			event.FullDocumentBeforeChange = earlier.post
+			needPre = false
 		}
 		metadata := map[string]interface{}{"capture_operation": event.OperationType, "capture_wall_time": event.WallTime}
 		if needPost || needPre {
@@ -364,6 +373,11 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 				metadata["capture_images"] = "snapshot"
 			}
 		}
+		change := stepDoc{readBack: needPost}
+		if !deleted && !needPost {
+			change.post = event.FullDocument
+		}
+		step.record(key, change)
 		entry := &wal.Entry{
 			ProjectID:  branch.ProjectID,
 			BranchID:   branch.ID,

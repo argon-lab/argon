@@ -295,6 +295,57 @@ func TestIngest_WritesRacingImageSetupAreCaptured(t *testing.T) {
 	stop() // fails the test if capture stopped with a gap
 }
 
+// Inside one transaction a document's changes share a cluster time. The first
+// change's pre-image is the state before the transaction, the last change's
+// post-image is the state after it, and a change that follows one whose event
+// carried the document has that document as its pre-image.
+func TestIngest_InsertThenChangeInOneTransactionIsExact(t *testing.T) {
+	f := newIngestFixture(t, "ingest-images-txn-chain")
+	ctx := context.Background()
+	r := newRecorder(t, f.physical.Collection("ledger"))
+	r.insert(bson.D{{Key: "_id", Value: "z"}, {Key: "n", Value: int32(1)}})
+
+	insertedX := bson.D{{Key: "_id", Value: "x"}, {Key: "n", Value: int32(0)}}
+	insertedY := bson.D{{Key: "_id", Value: "y"}, {Key: "tmp", Value: true}}
+	session, err := f.client.StartSession()
+	require.NoError(t, err)
+	defer session.EndSession(ctx)
+	_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		if _, err := r.c.InsertOne(sc, insertedX); err != nil {
+			return nil, err
+		}
+		if _, err := r.c.UpdateOne(sc, bson.M{"_id": "x"}, bson.M{"$set": bson.M{"n": int32(1)}}); err != nil {
+			return nil, err
+		}
+		if _, err := r.c.InsertOne(sc, insertedY); err != nil {
+			return nil, err
+		}
+		if _, err := r.c.DeleteOne(sc, bson.M{"_id": "y"}); err != nil {
+			return nil, err
+		}
+		_, err := r.c.UpdateOne(sc, bson.M{"_id": "z"}, bson.M{"$inc": bson.M{"n": int32(1)}})
+		return nil, err
+	})
+	require.NoError(t, err)
+
+	rawX, err := bson.Marshal(insertedX)
+	require.NoError(t, err)
+	rawY, err := bson.Marshal(insertedY)
+	require.NoError(t, err)
+	beforeZ := r.current["z"]
+	r.changes = append(r.changes,
+		change{operation: wal.OpPut, id: "x", post: rawX},
+		change{operation: wal.OpPut, id: "x", post: r.stored(ctx, "x"), pre: rawX},
+		change{operation: wal.OpPut, id: "y", post: rawY},
+		change{operation: wal.OpDelete, id: "y", pre: rawY},
+		change{operation: wal.OpPut, id: "z", post: r.stored(ctx, "z"), pre: beforeZ},
+	)
+
+	stop := f.startIngester(t)
+	r.requireExactHistory(f)
+	stop()
+}
+
 // A snapshot read cannot show the state between two changes that commit
 // together. Capture must say so instead of recording a guess.
 func TestIngest_RepeatedChangeInOneTransactionIsReportedNotGuessed(t *testing.T) {
@@ -321,7 +372,7 @@ func TestIngest_RepeatedChangeInOneTransactionIsReportedNotGuessed(t *testing.T)
 	err = f.ingest.Run(runCtx, f.branchID)
 	var gap *ingest.CaptureError
 	require.True(t, errors.As(err, &gap), "capture must stop with a reported gap, got %v", err)
-	assert.Contains(t, gap.Message, "more than once at one cluster time")
+	assert.Contains(t, gap.Message, "cannot be read back")
 
 	// Nothing from the transaction was recorded.
 	branch, err := f.branches.GetBranchByID(f.branchID)

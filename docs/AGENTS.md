@@ -41,8 +41,8 @@ states of its first writes back from MongoDB, which keeps them for five minutes
 by default, so capture has to be running or a `diff` has to follow within that
 time. Two cases still need `argon collections prepare` (or
 `changeStreamPreAndPostImages: {enabled: true}` at creation): older versions,
-and a document changed more than once in a single transaction on a collection
-created moments earlier. A sandbox is a full physical copy; the
+and a document that is updated and then changed again inside one transaction on
+a collection created moments earlier. A sandbox is a full physical copy; the
 [benchmarks](https://github.com/argon-lab/benchmarks) measure how long one takes
 to be ready as `sandbox_capture_ready_ms`. Then:
 
