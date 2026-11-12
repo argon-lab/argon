@@ -21,6 +21,7 @@ import (
 	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // exchange sends one request through a server that has no engine behind it
@@ -558,4 +559,73 @@ func TestBackgroundConnectionStopsWithTheServer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the server did not stop while waiting to reconnect")
 	}
+}
+
+// A client that restarts its MCP server must not lose capture for the sandbox
+// the earlier server handed out. The new server resumes it once connected,
+// with no tool call, and catches up what was written while nothing ran.
+func TestARestartedServerResumesCaptureWithoutAToolCall(t *testing.T) {
+	e := newEngine(t)
+	t.Setenv("MONGODB_URI", replicaSet)
+	first := serve(t, func(in io.Reader, out io.Writer) *Server { return NewLazy(e.connect, in, out) })
+	text, failed := first.tool("argon_branch_list", map[string]interface{}{"project": "shop"})
+	require.True(t, failed, text)
+	earlier := e.services.Load()
+	require.NotNil(t, earlier)
+	project, err := earlier.Projects.CreateProject("shop")
+	require.NoError(t, err)
+	text, failed = first.tool("argon_sandbox_create", map[string]interface{}{
+		"project": "shop", "name": "run-1", "actor": "agent:run-1",
+	})
+	require.False(t, failed, text)
+	branch, err := earlier.Branches.GetBranch(project.ID, "run-1")
+	require.NoError(t, err)
+	require.NoError(t, first.end())
+	earlier.Monitor.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	orders := earlier.Client.Database(branch.PhysicalDB).Collection("orders")
+	_, err = orders.InsertOne(ctx, bson.M{"_id": "while-stopped"})
+	require.NoError(t, err)
+
+	var server *Server
+	second := serve(t, func(in io.Reader, out io.Writer) *Server {
+		server = NewLazy(e.connect, in, out, ConnectInBackground())
+		return server
+	})
+	require.Len(t, second.tools(), 13)
+	require.Eventually(t, func() bool {
+		server.engineMu.Lock()
+		defer server.engineMu.Unlock()
+		return server.services != nil
+	}, 10*time.Second, 10*time.Millisecond)
+	later := e.services.Load()
+	require.NotSame(t, earlier, later, "the second server opened an engine of its own")
+	require.Eventually(t, func() bool {
+		capture := later.Ingest.Statuses()
+		return len(capture) == 1 && capture[0].State == "running"
+	}, 15*time.Second, 20*time.Millisecond, "capture resumes with no tool call")
+
+	_, err = orders.InsertOne(ctx, bson.M{"_id": "after-restart"})
+	require.NoError(t, err)
+	log := later.Client.Database(e.metadataDB).Collection("wal_log")
+	captured := func(id string) func() bool {
+		return func() bool {
+			var entry struct {
+				Actor string `bson:"actor"`
+			}
+			err := log.FindOne(ctx, bson.M{"branch_id": branch.ID, "document_id": id}).Decode(&entry)
+			return err == nil && entry.Actor == "agent:run-1"
+		}
+	}
+	require.Eventually(t, captured("while-stopped"), 15*time.Second, 20*time.Millisecond,
+		"a write made while no server ran is caught up under the sandbox's actor")
+	require.Eventually(t, captured("after-restart"), 15*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, second.end())
+	capture := later.Ingest.Statuses()
+	require.Len(t, capture, 1)
+	assert.Equal(t, "stopped", capture[0].State, "resumed capture stops with the server")
+	_ = earlier.Client.Disconnect(ctx)
 }

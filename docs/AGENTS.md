@@ -87,6 +87,14 @@ not reachable when a tool is called, that call returns a tool error that says so
 keeps running, and the next call tries again. Capture and the sweep of expired
 sandboxes begin as soon as the database answers.
 
+A restarted server resumes capture for the branches an earlier server left
+checked out, as soon as it connects and without a tool call (releases after
+2.3.3). Writes made while no server ran are caught up from the stored
+position. Up to 2.3.3 capture resumed only when a tool such as `argon_diff`
+next drained the branch; a collection the agent created and changed in between
+could by then be outside MongoDB's snapshot history, and that `diff` reported
+the history as incomplete.
+
 Every tool declares how it behaves (MCP tool annotations): `argon_branch_list`,
 `argon_diff` and `argon_pin_list` are read-only; `argon_merge_apply`,
 `argon_undo` and `argon_sandbox_discard` are marked destructive, so clients
