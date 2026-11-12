@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"reflect"
@@ -406,5 +407,110 @@ func TestCLIRepeatedResetsKeepBackupAndPin(t *testing.T) {
 		if _, stderr, err := run(args...); err == nil || !strings.Contains(stderr, "beyond branch HEAD") {
 			t.Fatalf("%v must be rejected: %v %s", args, err, stderr)
 		}
+	}
+}
+
+// A watched sandbox is capturing before its connection string exists, labels
+// the run, and stops cleanly on interrupt with its writes in history.
+func TestCLISandboxCreateWatch(t *testing.T) {
+	uri := os.Getenv("ARGON_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("set ARGON_TEST_MONGODB_URI to run the MongoDB integration workflow")
+	}
+	t.Setenv("ARGON_METADATA_DB", "argon_cli_test_"+primitive.NewObjectID().Hex())
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Disconnect(context.Background()) }()
+	var databases []string
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for _, name := range databases {
+			_ = client.Database(name).Drop(cleanup)
+		}
+		_ = client.Database(metadataDatabase()).Drop(cleanup)
+	}()
+
+	project := "cli-watch-" + primitive.NewObjectID().Hex()
+	if _, stderr, err := invokeCLI(t, uri, "projects", "create", project, "--output", "json"); err != nil {
+		t.Fatalf("project create failed: %v %s", err, stderr)
+	}
+	if _, stderr, err := invokeCLI(t, uri, "sandbox", "create", "-p", project, "--actor", "agent:run"); err == nil || !strings.Contains(stderr, "--watch") {
+		t.Fatalf("--actor without --watch must be rejected: %v %s", err, stderr)
+	}
+
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCLIHelperProcess$", "--",
+		"sandbox", "create", "-p", project, "--name", "watched", "--watch", "--actor", "agent:run", "--output", "json")
+	command.Env = append(os.Environ(), "ARGON_CLI_TEST_HELPER=1", "MONGODB_URI="+uri)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := false
+	defer func() {
+		if !exited {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	// The JSON value arrives only once capture is running.
+	var sandbox map[string]any
+	if err := json.NewDecoder(stdout).Decode(&sandbox); err != nil {
+		t.Fatalf("no sandbox JSON: %v %s", err, stderr.String())
+	}
+	if sandbox["capture_managed"] != true {
+		t.Fatal("a watched sandbox must report managed capture")
+	}
+	physical := sandbox["physical_db"].(string)
+	databases = append(databases, physical)
+	// A collection the run creates must be prepared before its first update.
+	if _, errText, err := invokeCLI(t, uri, "collections", "prepare", "orders", "-p", project, "-b", "watched"); err != nil {
+		t.Fatalf("prepare failed: %v %s", err, errText)
+	}
+	orders := client.Database(physical).Collection("orders")
+	if _, err := orders.InsertOne(ctx, bson.M{"_id": "o1", "total": 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orders.UpdateOne(ctx, bson.M{"_id": "o1"}, bson.M{"$set": bson.M{"total": 6}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	rest, _ := io.ReadAll(stdout)
+	err = command.Wait()
+	exited = true
+	if err != nil {
+		t.Fatalf("watched sandbox did not stop cleanly: %v %s", err, stderr.String())
+	}
+	if strings.TrimSpace(string(rest)) != "" {
+		t.Fatalf("stdout must hold one JSON value, got extra %q", rest)
+	}
+	count, err := client.Database(metadataDatabase()).Collection("wal_ingest_state").CountDocuments(ctx,
+		bson.M{"capture_status.state": bson.M{"$exists": true, "$nin": bson.A{"stopped", "degraded"}}})
+	if err != nil || count != 0 {
+		t.Fatalf("command exited with active capture: count=%d error=%v", count, err)
+	}
+
+	out, errText, err := invokeCLI(t, uri, "merge", "preview", "-p", project, "-b", "watched", "--output", "json")
+	if err != nil {
+		t.Fatalf("preview after a watched run failed: %v %s", err, errText)
+	}
+	var preview map[string]any
+	if err := json.Unmarshal([]byte(out), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if changes := preview["plan"].(map[string]any)["changes"].([]any); len(changes) != 1 {
+		t.Fatalf("expected the one new document, got %v", changes)
 	}
 }

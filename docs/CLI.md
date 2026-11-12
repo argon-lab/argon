@@ -118,12 +118,17 @@ backups.
 
 ```
 argon sandbox create -p P [--from B] [--name N] [--ttl 1h]   fork+checkout+TTL
+argon sandbox create -p P --watch [--actor A]                 …and capture it in the foreground
 argon sandbox list / discard / keep / sweep
 ```
 
 `sweep` reaps expired sandboxes (pinned ones skipped loudly); `keep`
 removes the TTL. Bare CLI commands do not start background workers. Keep
 `watch` running and schedule `sweep`, or use console/API/MCP managed sandboxes.
+`sandbox create --watch` starts capture before it prints the connection string
+and runs until interrupted, so one terminal replaces `sandbox create` plus
+`watch`. A collection the agent creates still needs `collections prepare`
+before its first update or delete.
 
 ## Snapshots, GC, agents, migration
 
