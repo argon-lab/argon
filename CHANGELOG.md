@@ -11,6 +11,10 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.3.3] - 2026-11-12
+
+Fixes a regression in 2.3.2. No data format changes since 2.3.2.
+
 ### Fixed
 
 - `argon mcp` sweeps expired sandboxes again when no tool is called. 2.3.2 made
@@ -465,7 +469,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.2...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.3...HEAD
+[2.3.3]: https://github.com/argon-lab/argon/releases/tag/v2.3.3
 [2.3.2]: https://github.com/argon-lab/argon/releases/tag/v2.3.2
 [2.3.1]: https://github.com/argon-lab/argon/releases/tag/v2.3.1
 [2.3.0]: https://github.com/argon-lab/argon/releases/tag/v2.3.0
