@@ -11,6 +11,11 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.3.1] - 2026-11-12
+
+Collections an agent creates are captured exactly. No data format changes
+since 2.3.0; recovered entries carry one extra metadata field.
+
 ### Fixed
 
 - A collection created by the application no longer breaks capture when one of
@@ -419,7 +424,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.1...HEAD
+[2.3.1]: https://github.com/argon-lab/argon/releases/tag/v2.3.1
 [2.3.0]: https://github.com/argon-lab/argon/releases/tag/v2.3.0
 [2.2.0]: https://github.com/argon-lab/argon/releases/tag/v2.2.0
 [2.1.6]: https://github.com/argon-lab/argon/releases/tag/v2.1.6
