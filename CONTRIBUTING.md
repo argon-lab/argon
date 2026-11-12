@@ -5,6 +5,7 @@ Thank you for your interest in contributing to Argon! This document provides gui
 ## Table of Contents
 
 - [Code of Conduct](#code-of-conduct)
+- [Your First Contribution](#your-first-contribution)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [How to Contribute](#how-to-contribute)
@@ -17,6 +18,32 @@ Thank you for your interest in contributing to Argon! This document provides gui
 ## Code of Conduct
 
 Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to ensure a welcoming environment for all contributors.
+
+## Your First Contribution
+
+New here? This is the short path.
+
+1. **Pick something small.** Issues labelled
+   [`good first issue`](https://github.com/argon-lab/argon/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+   are scoped to a few files and say where to look. Comment on one to claim
+   it. Nothing there that fits? Ask in
+   [Discussions](https://github.com/argon-lab/argon/discussions) and we will
+   suggest something.
+2. **Code is not the only way in.** Documentation fixes, a new script in
+   `examples/`, a driver workload in `compat/`, and a bug report with exact
+   reproduction steps are all contributions and are credited the same way.
+3. **Find your way around.** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+   describes the engine. The code follows it: `internal/` holds one package
+   per concept (`branch`, `merge`, `sandbox`, `undo`, ...), `cli/cmd/` holds
+   one file per command, `api/server/` is the REST control plane and
+   `tests/wal/` holds the integration tests.
+4. **Open the pull request early.** A draft with a question is welcome. A
+   maintainer approves CI for a first contribution and reviews within a few
+   days.
+
+Every merged contributor is named in the release notes for the version
+their change ships in and appears in the
+[contributors list](README.md#contributors).
 
 ## Getting Started
 
@@ -326,14 +353,14 @@ Two tests search for failures instead of checking fixed cases:
 ### Communication Channels
 
 - **Development discussion**: GitHub Discussions
-- **Real-time discussion**: GitHub Discussions
 - **Security issues**: see [SECURITY.md](SECURITY.md)
 
 ### Recognition
 
-We value all contributions! Contributors will be:
-- Mentioned in release notes for significant contributions
-- Invited to our contributor recognition program
+We value all contributions. Contributors are:
+- Named in the release notes for the version their change ships in
+- Listed in the [contributors section](README.md#contributors) of the README
+- Thanked on their first merged pull request, with pointers to what is open next
 
 ## Development Tips
 

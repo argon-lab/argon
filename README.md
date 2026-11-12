@@ -158,6 +158,18 @@ The full agent workflow: [docs/AGENTS.md](docs/AGENTS.md).
 [Contributing](CONTRIBUTING.md) ·
 [argonlabs.tech](https://argonlabs.tech) · [Blog](https://argonlabs.tech/blog)
 
+## Contributors
+
+Thank you to everyone who has made Argon better.
+
+<a href="https://github.com/argon-lab/argon/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=argon-lab/argon" alt="Argon contributors">
+</a>
+
+New here? Start with a
+[good first issue](https://github.com/argon-lab/argon/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+and the [first-contribution guide](CONTRIBUTING.md#your-first-contribution).
+
 ---
 
 <div align="center">
