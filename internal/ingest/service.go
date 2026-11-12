@@ -373,6 +373,25 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 				metadata["capture_images"] = "snapshot"
 			}
 		}
+		// MongoDB 7.0 and 8.x can attach a post-image that names a moved field
+		// twice. Outside a transaction the event is the document's only change
+		// at its cluster time, so the stored document can be read back in its
+		// place. Otherwise the attached image is kept, as it always was, and
+		// marked: decoding it still yields the right values because the newer
+		// occurrence comes last.
+		if event.OperationType == "update" && !needPost && hasDuplicateFields(event.FullDocument) {
+			metadata["capture_images"] = "attached_unverified"
+			if event.txnID() == "" && !changedEarlier {
+				stored, err := recoverImages(ctx, physical, raw, &event, true, false)
+				if err != nil && !errors.Is(err, errSnapshotGone) {
+					return nil, err
+				}
+				if err == nil {
+					event.FullDocument = stored.post
+					metadata["capture_images"] = "snapshot"
+				}
+			}
+		}
 		change := stepDoc{readBack: needPost}
 		if !deleted && !needPost {
 			change.post = event.FullDocument
