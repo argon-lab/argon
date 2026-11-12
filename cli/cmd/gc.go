@@ -8,6 +8,25 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// gcBranchJSON is one branch's reclaim cutoffs in the JSON output.
+type gcBranchJSON struct {
+	Branch  string           `json:"branch"`
+	Cutoffs map[string]int64 `json:"cutoffs"`
+}
+
+// gcReportJSON is the JSON shape of `argon gc -o json`. It is split out of the
+// command so the shape can be tested without a running server.
+func gcReportJSON(dryRun bool, entriesRemoved int64, branches []gcBranchJSON) map[string]any {
+	if branches == nil {
+		branches = []gcBranchJSON{}
+	}
+	return map[string]any{
+		"dry_run":         dryRun,
+		"branches":        branches,
+		"entries_removed": entriesRemoved,
+	}
+}
+
 var gcCmd = &cobra.Command{
 	Use:   "gc",
 	Short: "Reclaim WAL entries covered by snapshots and outside retention",
@@ -38,6 +57,17 @@ that is what a retention window means. Use --dry-run to preview.`,
 		report, err := services.RunGC(context.Background(), project.ID, retention, dryRun)
 		if err != nil {
 			return fmt.Errorf("gc failed: %w", err)
+		}
+
+		if jsonOutput(cmd) {
+			branches := make([]gcBranchJSON, 0, len(report.Branches))
+			for _, br := range report.Branches {
+				if len(br.Cutoffs) == 0 {
+					continue
+				}
+				branches = append(branches, gcBranchJSON{Branch: br.BranchName, Cutoffs: br.Cutoffs})
+			}
+			return writeJSON(cmd, gcReportJSON(report.DryRun, report.EntriesRemoved, branches))
 		}
 
 		verb := "Removed"
