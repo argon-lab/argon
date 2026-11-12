@@ -32,7 +32,14 @@ MCP and REST sandboxes wait for capture readiness and drain before returning
 URIs. Their server processes also sweep expired sandboxes every minute. With
 the bare CLI, keep `argon watch --actor <run-label>` running and explicitly
 schedule `argon sandbox sweep`. Actor labels apply to an entire branch and
-are persisted; use a new sandbox for a different run label. Then:
+are persisted; use a new sandbox for a different run label.
+
+Collections inherited from the parent are ready for exact capture. A collection
+the agent creates is not: prepare it with `argon collections prepare` (or create
+it with `changeStreamPreAndPostImages: {enabled: true}`) before its first update
+or delete, or that history is incomplete and review fails. A sandbox is a full
+physical copy; the [benchmarks](https://github.com/argon-lab/benchmarks) measure
+how long one takes to be ready as `sandbox_capture_ready_ms`. Then:
 
 ```bash
 argon diff -p myapp -b <sandbox>              # review supported document changes

@@ -1,7 +1,9 @@
 # Quick start
 
-This path runs a real MongoDB replica set, checks prerequisites, and uses a
-managed API/console process for write capture and sandbox expiry.
+This path gives an agent a disposable MongoDB sandbox, reviews what it wrote
+and merges or discards the result. It runs a real MongoDB replica set, checks
+prerequisites, and uses a managed API/console process for write capture and
+sandbox expiry.
 
 ## Install and check MongoDB
 
@@ -10,7 +12,7 @@ approval allows npm 12 to download the CLI binary during installation.
 
 ```bash
 npm install -g argonctl --allow-scripts=argonctl
-# macOS alternative: brew install argon-lab/tap/argonctl
+# macOS or Linux alternative: brew install argon-lab/tap/argonctl
 
 docker run -d --name argon-mongo -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0
 docker exec argon-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
@@ -26,7 +28,7 @@ cross-database transactions and exact change-stream images. It creates and
 removes uniquely named temporary probe collections. `argon status` provides
 read-only readiness checks. Both return nonzero on failure.
 
-## Run the managed workflow
+## Give agents sandboxes: the managed workflow
 
 In terminal A:
 
@@ -55,41 +57,56 @@ check isolation and the final database state. No LLM account is needed; the
 two deterministic proposals make the data workflow reproducible. The resulting
 project and pin remain available in the console for inspection.
 
-## CLI-only workflow
+## A sandbox from the CLI
 
 CLI commands connect directly to MongoDB. A one-shot checkout/sandbox command
-does not leave a background watcher or TTL worker behind.
+does not leave a background watcher or TTL worker behind, so you start capture
+yourself.
 
 ```bash
-argon projects create myapp --output json
-argon branches create experiment -p myapp --output json
-argon checkout -p myapp -b experiment --output json
-argon collections prepare orders -p myapp -b experiment
-# Keep this running in terminal A; use the printed URI from terminal B:
-argon watch -p myapp -b experiment --actor agent:experiment
+# Bring existing data in once, with source writers and DDL stopped
+# (or start empty: argon projects create myapp)
+argon import database --uri "$MONGODB_URI" --database myapp --project myapp --source-quiesced
+
+# Fork + checkout + TTL. Note the sandbox name and connection string it prints
+argon sandbox create -p myapp --ttl 1h
+
+# Keep this running in terminal A; hand the printed URI to the agent in terminal B
+argon watch -p myapp -b <sandbox> --actor agent:run-1
 ```
 
-After writing through that URI, use another terminal:
+Collections that came from the parent are ready for exact capture. If the
+agent will create a collection, prepare it before its first update or delete,
+or that history is incomplete and review fails:
 
 ```bash
-argon diff -p myapp -b experiment --output json
-argon merge preview -p myapp -b experiment --output json
-argon merge apply <plan-id> --output json
+argon collections prepare orders -p myapp -b <sandbox>
+```
+
+After the agent has written through the URI, use another terminal:
+
+```bash
+argon diff -p myapp -b <sandbox> --output json
+argon merge preview -p myapp -b <sandbox> --output json
+argon merge apply <plan-id> --output json      # adopt the run
+argon sandbox discard -p myapp -b <sandbox>    # or throw it away
 ```
 
 Use the `plan.id` returned by preview. Versioned operations synchronize
 completed native writes first; stale plans fail and require a new preview.
 For bare CLI sandboxes, schedule `argon sandbox sweep -p myapp` yourself.
+A long-lived branch works the same way: `argon branches create`, then
+`argon checkout`, in place of `sandbox create`.
 
 ## History and cleanup
 
 ```bash
 argon time-travel info -p myapp -b main --output json
 argon time-travel query -p myapp -b main --lsn <retained-lsn> --output json
-argon undo -p myapp -b experiment --from-lsn <first-change-lsn> --dry-run --output json
+argon undo -p myapp -b <sandbox> --from-lsn <first-change-lsn> --dry-run --output json
 # Stop native writers, then drain and release before a reset:
-argon release -p myapp -b experiment
-argon restore preview -p myapp -b experiment --lsn <retained-lsn>
+argon release -p myapp -b <branch>
+argon restore preview -p myapp -b <branch> --lsn <retained-lsn>
 ```
 
 Read retained LSNs from `time-travel info`; sample numbers are not valid for

@@ -151,6 +151,13 @@ versioned. Native writes are asynchronous; control operations drain capture.
 Stop writers before release. Existing pins protect their referenced states, while GC can expire audit
 and undo history. See [operations](docs/OPERATIONS.md) for recovery and credentials.
 
+Two things to know before handing a sandbox to an agent. A collection the agent
+creates needs `argon collections prepare` before its first update or delete;
+collections inherited from the parent are already prepared. And a sandbox is a
+full physical copy with capture ready, so creating one takes longer as the data
+grows: the [benchmarks](https://github.com/argon-lab/benchmarks) measure it as
+`sandbox_capture_ready_ms`.
+
 Storage retention uses snapshots + retention-window GC to keep state plus a
 window of history, not every write forever. Details and the consistency
 model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
