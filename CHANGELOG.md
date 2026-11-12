@@ -11,6 +11,11 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.3.2] - 2026-11-12
+
+The MCP server starts without a database, and capture corrects a post-image
+MongoDB attaches wrongly. No data format changes since 2.3.1.
+
 ### Changed
 
 - `argon mcp` starts without a reachable MongoDB. The handshake, `ping` and
@@ -450,7 +455,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.1...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.2...HEAD
+[2.3.2]: https://github.com/argon-lab/argon/releases/tag/v2.3.2
 [2.3.1]: https://github.com/argon-lab/argon/releases/tag/v2.3.1
 [2.3.0]: https://github.com/argon-lab/argon/releases/tag/v2.3.0
 [2.2.0]: https://github.com/argon-lab/argon/releases/tag/v2.2.0
