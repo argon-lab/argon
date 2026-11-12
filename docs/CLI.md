@@ -143,8 +143,8 @@ argon gc -p P [--retention 168h] [--dry-run]
 argon mcp [--read-only] [--disable-tools a,b]
                                     MCP server over stdio (13 tools); withhold tools
                                     such as argon_merge_apply to keep them manual.
-                                    Starts without a database and connects on the
-                                    first tool call (releases after 2.3.1)
+                                    Starts without a database and connects in the
+                                    background (releases after 2.3.1)
 argon migrate-wal --project P [--dry-run]      v1 → v2 schema migration
 argon status / metrics              health and performance counters
 ```
