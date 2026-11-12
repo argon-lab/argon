@@ -11,6 +11,16 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Fixed
+
+- `argon mcp` sweeps expired sandboxes again when no tool is called. 2.3.2 made
+  the server connect to MongoDB on the first tool call so that it could start
+  without a database; a server that was restarted and then only listed its
+  tools, or sat idle, therefore never connected and never swept. It now reaches
+  for the database in the background from the moment it starts and keeps
+  trying until it answers. Starting without a database, and listing tools
+  without one, work as in 2.3.2.
+
 ## [2.3.2] - 2026-11-12
 
 The MCP server starts without a database, and capture corrects a post-image

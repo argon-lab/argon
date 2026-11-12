@@ -21,8 +21,9 @@ capture for every sandbox it hands out, so agent writes become
 versioned history automatically.
 
 The server starts without a database. Listing its tools needs no
-connection; it connects to MONGODB_URI when a tool is first called. If
-MongoDB is not reachable then, the call fails with an error that says
+connection. It reaches for MONGODB_URI in the background from the start,
+so expired sandboxes are swept even when no tool is called. If
+MongoDB is not reachable when a tool is called, the call fails with an error that says
 so, the server keeps running, and the next call tries again.
 
 Register it with an MCP client, e.g. Claude Code:
@@ -43,7 +44,7 @@ pin list).`,
 		if unknown := mcpserver.UnknownTools(disabled); len(unknown) > 0 {
 			return fmt.Errorf("--disable-tools names unknown tool(s): %s", strings.Join(unknown, ", "))
 		}
-		opts := []mcpserver.Option{mcpserver.DisableTools(disabled...)}
+		opts := []mcpserver.Option{mcpserver.DisableTools(disabled...), mcpserver.ConnectInBackground()}
 		if readOnly {
 			opts = append(opts, mcpserver.ReadOnly())
 		}

@@ -82,10 +82,10 @@ out — no extra process.
 The server starts without a database (releases after 2.3.1; up to 2.3.1 it
 exits at startup when MongoDB is unreachable). The handshake and `tools/list`
 need no connection, so a client or a directory can start it just to see what it
-offers. It connects to `MONGODB_URI` when a tool is first called. If MongoDB is
-not reachable then, that call returns a tool error that says so, the server
+offers. It reaches for `MONGODB_URI` in the background from the start (2.3.3; in 2.3.2 only when a tool was first called), so expired sandboxes are swept even if no tool is ever called. If MongoDB is
+not reachable when a tool is called, that call returns a tool error that says so, the server
 keeps running, and the next call tries again. Capture and the sweep of expired
-sandboxes begin with that first connection.
+sandboxes begin as soon as the database answers.
 
 Every tool declares how it behaves (MCP tool annotations): `argon_branch_list`,
 `argon_diff` and `argon_pin_list` are read-only; `argon_merge_apply`,

@@ -506,3 +506,56 @@ func TestCallsArrivingTogetherConnectOnce(t *testing.T) {
 	s.stopAllIngesters()
 	require.Eventually(t, func() bool { return sweepers() == 0 }, 10*time.Second, 10*time.Millisecond)
 }
+
+// A server that waited for a tool call would, after a restart with no call,
+// leave expired sandboxes unswept. With ConnectInBackground it opens the
+// engine by itself as soon as the database answers, and keeps trying until
+// then without disturbing introspection.
+func TestBackgroundConnectionOpensTheEngineWithoutAToolCall(t *testing.T) {
+	e := newEngine(t)
+	var attempts atomic.Int32
+	connect := func(ctx context.Context) (*walcli.Services, error) {
+		if attempts.Add(1) < 3 {
+			return nil, walcli.ErrUnreachable
+		}
+		return e.connect(ctx)
+	}
+	var server *Server
+	c := serve(t, func(in io.Reader, out io.Writer) *Server {
+		server = NewLazy(connect, in, out, ConnectInBackground())
+		server.reconnectDelay = 10 * time.Millisecond
+		return server
+	})
+	require.Len(t, c.tools(), 13, "introspection works while the database is still out of reach")
+
+	require.Eventually(t, func() bool {
+		server.engineMu.Lock()
+		defer server.engineMu.Unlock()
+		return server.services != nil
+	}, 10*time.Second, 10*time.Millisecond, "the engine opens with no tool call")
+	assert.EqualValues(t, 3, attempts.Load(), "two failures, one connection, then no more attempts")
+	time.Sleep(100 * time.Millisecond)
+	assert.EqualValues(t, 3, attempts.Load())
+	require.NoError(t, c.end())
+}
+
+// A server that never reaches the database still stops promptly.
+func TestBackgroundConnectionStopsWithTheServer(t *testing.T) {
+	connect := func(ctx context.Context) (*walcli.Services, error) {
+		return nil, walcli.ErrUnreachable
+	}
+	c := serve(t, func(in io.Reader, out io.Writer) *Server {
+		server := NewLazy(connect, in, out, ConnectInBackground())
+		server.reconnectDelay = time.Hour
+		return server
+	})
+	require.Len(t, c.tools(), 13)
+	done := make(chan error, 1)
+	go func() { done <- c.end() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server did not stop while waiting to reconnect")
+	}
+}

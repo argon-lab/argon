@@ -53,6 +53,12 @@ type Option func(*Server)
 // forked, checked out, merged, undone or deleted through it.
 func ReadOnly() Option { return func(s *Server) { s.readOnly = true } }
 
+// ConnectInBackground makes a server created with NewLazy start reaching for
+// the database as soon as it runs, without waiting for a tool call. Listing
+// tools still needs no database. Once one answers, the server sweeps expired
+// sandboxes as a server that connected at startup does.
+func ConnectInBackground() Option { return func(s *Server) { s.eager = true } }
+
 // DisableTools withholds the named tools. The usual use is keeping
 // argon_merge_apply away from an agent so that applying a reviewed plan
 // stays a human action (argon merge apply <plan-id>).
@@ -101,6 +107,11 @@ type Server struct {
 	services       *walcli.Services
 	connect        Connector
 	connectTimeout time.Duration
+	// eager makes a lazy server connect in the background from the start.
+	eager bool
+	// reconnectDelay is the first wait between background attempts to reach
+	// the database; it doubles up to thirty seconds. Zero means one second.
+	reconnectDelay time.Duration
 	sweeping       bool
 
 	in    io.Reader
@@ -171,6 +182,33 @@ func (s *Server) openEngine(ctx context.Context) error {
 // startSweeper reaps expired sandboxes until ctx ends. It starts once per
 // server, at whichever comes later: Run, or the call that opens the engine.
 // Callers hold engineMu.
+// connectInBackground opens the engine as soon as the database answers. A
+// server that connected only when a tool was called would, after a restart
+// with no tool call, leave expired sandboxes unswept and their capture
+// unsupervised, which the server never did when it connected at startup.
+// Listing tools still needs no database: until one answers, this only waits.
+func (s *Server) connectInBackground(ctx context.Context) {
+	delay := s.reconnectDelay
+	if delay <= 0 {
+		delay = time.Second
+	}
+	for {
+		if err := s.openEngine(ctx); err == nil {
+			return
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+		}
+	}
+}
+
 func (s *Server) startSweeper(ctx context.Context) {
 	if s.services == nil || s.sweeping {
 		return
@@ -233,6 +271,11 @@ func (s *Server) Run(ctx context.Context) error {
 	s.engineMu.Lock()
 	s.startSweeper(ctx)
 	s.engineMu.Unlock()
+	if s.connect != nil && s.eager {
+		background := make(chan struct{})
+		go func() { defer close(background); s.connectInBackground(ctx) }()
+		defer func() { cancel(); <-background }()
+	}
 
 	scanner := bufio.NewScanner(s.in)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
