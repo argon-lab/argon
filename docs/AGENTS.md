@@ -30,8 +30,9 @@ argon sandbox create -p myapp --ttl 1h
 
 MCP and REST sandboxes wait for capture readiness and drain before returning
 URIs. Their server processes also sweep expired sandboxes every minute. With
-the bare CLI, keep `argon watch --actor <run-label>` running and explicitly
-schedule `argon sandbox sweep`. Actor labels apply to an entire branch and
+the bare CLI, add `--watch --actor <run-label>` to `sandbox create` (or keep
+`argon watch --actor <run-label>` running) and explicitly schedule
+`argon sandbox sweep`. Actor labels apply to an entire branch and
 are persisted; use a new sandbox for a different run label.
 
 Collections inherited from the parent are ready for exact capture. A collection
