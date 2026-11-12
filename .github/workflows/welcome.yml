@@ -1,0 +1,70 @@
+name: Welcome
+
+# Greets people on their first issue and first pull request, and thanks them
+# when their first pull request merges.
+#
+# pull_request_target is used so the job can comment on pull requests from
+# forks. It is safe here because the job never checks out or runs the pull
+# request's code: it only calls the GitHub API with values passed through
+# the environment.
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened, closed]
+
+permissions: {}
+
+concurrency:
+  group: welcome-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.event.action }}
+  cancel-in-progress: false
+
+jobs:
+  welcome:
+    name: Welcome a first-time contributor
+    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'argon-lab/argon' &&
+      (github.event.issue.user.type || github.event.pull_request.user.type) == 'User' &&
+      !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+        github.event.issue.author_association || github.event.pull_request.author_association)
+    permissions:
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      AUTHOR: ${{ github.event.issue.user.login || github.event.pull_request.user.login }}
+      NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+      EVENT: ${{ github.event_name }}
+      ACTION: ${{ github.event.action }}
+      MERGED: ${{ github.event.pull_request.merged }}
+    steps:
+      - name: Comment if this is the author's first
+        run: |
+          set -euo pipefail
+
+          count() {
+            gh api -X GET search/issues -f q="repo:$GH_REPO author:$AUTHOR $1" --jq .total_count
+          }
+
+          if [ "$EVENT" = issues ]; then
+            [ "$(count 'is:issue')" -le 1 ] || exit 0
+            gh issue comment "$NUMBER" --body "Thanks for opening your first issue here, @$AUTHOR.
+
+          A maintainer will reply within a few days. If this is a bug, the exact \`argon\` version, MongoDB version and the commands you ran make it much faster to reproduce.
+
+          Want to fix it yourself? Say so here and we will help you find the right place in the code. [CONTRIBUTING.md](https://github.com/$GH_REPO/blob/master/CONTRIBUTING.md#your-first-contribution) has the setup."
+          elif [ "$ACTION" = opened ]; then
+            [ "$(count 'is:pr')" -le 1 ] || exit 0
+            gh pr comment "$NUMBER" --body "Thanks for your first pull request to Argon, @$AUTHOR.
+
+          CI needs a maintainer's approval before it runs on a first contribution, so the checks may sit idle for a little while. A maintainer will review within a few days. If a check fails and the log is not clear, ask here and we will help."
+          elif [ "$MERGED" = true ]; then
+            [ "$(count 'is:pr is:merged')" -le 1 ] || exit 0
+            gh pr comment "$NUMBER" --body "Merged. Thank you, @$AUTHOR, and welcome to the Argon contributors.
+
+          Your change will be credited by name in the next release notes, you now appear in the [contributors list](https://github.com/$GH_REPO#contributors), and you will be listed on [argonlabs.tech](https://argonlabs.tech/about#contributors) with the release it ships in.
+
+          If you would like to keep going, issues labelled [good first issue](https://github.com/$GH_REPO/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) and [help wanted](https://github.com/$GH_REPO/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) are open for anyone to claim."
+          fi
