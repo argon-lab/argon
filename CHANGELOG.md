@@ -11,6 +11,21 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Changed
+
+- `argon mcp` starts without a reachable MongoDB. The handshake, `ping` and
+  `tools/list` no longer need a connection, so an MCP client or a directory
+  that only lists the server's tools can start it anywhere. The server connects
+  when a tool is first called. If MongoDB is not reachable then, the call
+  returns a tool error that names `MONGODB_URI` and the replica-set
+  requirement, the server stays up, and the next call tries again; an attempt
+  waits at most ten seconds for MongoDB to answer. Capture for the sandboxes it
+  hands out and the sweep of expired ones begin with that first connection.
+  Until now the command exited at startup with `failed to connect`, before
+  answering any request. With MongoDB reachable nothing changes except that the
+  connection is made on the first tool call. For Go embedders this is
+  `mcpserver.NewLazy` with `walcli.Connect`; `mcpserver.New` is unchanged.
+
 ## [2.3.1] - 2026-11-12
 
 Collections an agent creates are captured exactly. No data format changes

@@ -2,6 +2,7 @@ package walcli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/wireproxy"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
 // Services holds all WAL-related services for CLI use
@@ -58,28 +60,77 @@ type Services struct {
 // MONGODB_URI (default localhost) and the standard argon_wal metadata
 // database.
 func NewServices() (*Services, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
+	return NewServicesAt(deploymentFromEnv())
+}
+
+func deploymentFromEnv() (mongoURI, metadataDB string) {
+	mongoURI = os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
 		mongoURI = "mongodb://localhost:27017"
 	}
-	metadataDB := os.Getenv("ARGON_METADATA_DB")
+	metadataDB = os.Getenv("ARGON_METADATA_DB")
 	if metadataDB == "" {
 		metadataDB = "argon_wal"
 	}
-	return NewServicesAt(mongoURI, metadataDB)
+	return mongoURI, metadataDB
+}
+
+// ErrUnreachable reports that the deployment named by MONGODB_URI did not
+// answer: nothing is listening there, the connection settings cannot be used,
+// the replica set has no primary, or the server turned the connection away.
+var ErrUnreachable = errors.New("MongoDB is not reachable")
+
+// Connect is NewServices for a process that can be started before its
+// database, such as an MCP server a client launches only to list its tools.
+// It stops waiting for the deployment to answer when ctx ends, instead of
+// sitting out the driver's server selection (30 seconds by default), and
+// reports that as ErrUnreachable. A failed call leaves nothing running, so
+// the caller can simply call again later. Once the deployment has answered,
+// setting up on it is not interrupted.
+func Connect(ctx context.Context) (*Services, error) {
+	mongoURI, metadataDB := deploymentFromEnv()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrUnreachable, err)
+	}
+	// Nearly everything Argon does writes metadata, so a deployment without
+	// a primary is not one it can use yet.
+	if err := client.Ping(ctx, readpref.Primary()); err != nil {
+		disconnect(client)
+		return nil, fmt.Errorf("%w: %w", ErrUnreachable, err)
+	}
+	return newServices(client, mongoURI, metadataDB)
 }
 
 // NewServicesAt creates all WAL services against an explicit deployment and
 // metadata database — for embedding (REST server, tests) where the global
 // environment must not decide.
 func NewServicesAt(mongoURI, dbName string) (*Services, error) {
-	// Connect to MongoDB
-	ctx := context.Background()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
+	return newServices(client, mongoURI, dbName)
+}
 
+func disconnect(client *mongo.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = client.Disconnect(ctx)
+}
+
+// newServices builds the services on a client and owns it from then on.
+func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, error) {
+	// If the services cannot be built the client is closed: a caller that
+	// tries again would otherwise leave one behind per attempt, each still
+	// probing the deployment.
+	built := false
+	defer func() {
+		if !built {
+			disconnect(client)
+		}
+	}()
+	ctx := context.Background()
 	db := client.Database(dbName)
 
 	// Create services
@@ -175,6 +226,7 @@ func NewServicesAt(mongoURI, dbName string) (*Services, error) {
 	monitor := wal.NewMonitor(wal.GlobalMetrics, monitorConfig)
 	monitor.Start()
 
+	built = true
 	return &Services{
 		WAL:          walService,
 		Branches:     branchService,

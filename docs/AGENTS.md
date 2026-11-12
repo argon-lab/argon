@@ -79,6 +79,14 @@ diff · merge preview/apply · undo · snapshot create · pin create/list/
 sandbox. The server runs a capture ingester for every sandbox it hands
 out — no extra process.
 
+The server starts without a database (releases after 2.3.1; up to 2.3.1 it
+exits at startup when MongoDB is unreachable). The handshake and `tools/list`
+need no connection, so a client or a directory can start it just to see what it
+offers. It connects to `MONGODB_URI` when a tool is first called. If MongoDB is
+not reachable then, that call returns a tool error that says so, the server
+keeps running, and the next call tries again. Capture and the sweep of expired
+sandboxes begin with that first connection.
+
 Every tool declares how it behaves (MCP tool annotations): `argon_branch_list`,
 `argon_diff` and `argon_pin_list` are read-only; `argon_merge_apply`,
 `argon_undo` and `argon_sandbox_discard` are marked destructive, so clients

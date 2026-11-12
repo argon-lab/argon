@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/argon-lab/argon/v2/pkg/mcpserver"
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +19,11 @@ tools: fork a TTL sandbox and get a connection string, list branches,
 diff and merge, undo, snapshot. The server supervises change-stream
 capture for every sandbox it hands out, so agent writes become
 versioned history automatically.
+
+The server starts without a database. Listing its tools needs no
+connection; it connects to MONGODB_URI when a tool is first called. If
+MongoDB is not reachable then, the call fails with an error that says
+so, the server keeps running, and the next call tries again.
 
 Register it with an MCP client, e.g. Claude Code:
 
@@ -37,15 +43,16 @@ pin list).`,
 		if unknown := mcpserver.UnknownTools(disabled); len(unknown) > 0 {
 			return fmt.Errorf("--disable-tools names unknown tool(s): %s", strings.Join(unknown, ", "))
 		}
-		services, err := newCommandServices(cmd)
-		if err != nil {
-			return fmt.Errorf("failed to connect: %w", err)
-		}
 		opts := []mcpserver.Option{mcpserver.DisableTools(disabled...)}
 		if readOnly {
 			opts = append(opts, mcpserver.ReadOnly())
 		}
-		return mcpserver.New(services, os.Stdin, os.Stdout, opts...).Run(context.Background())
+		// A client may start the server only to ask what it offers, on a
+		// machine with no database. Connect when a tool is called instead.
+		connect := func(ctx context.Context) (*walcli.Services, error) {
+			return connectCommandServices(ctx, cmd)
+		}
+		return mcpserver.NewLazy(connect, os.Stdin, os.Stdout, opts...).Run(context.Background())
 	},
 }
 

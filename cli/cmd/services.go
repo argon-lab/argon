@@ -18,13 +18,28 @@ func newCommandServices(cmd *cobra.Command) (*walcli.Services, error) {
 	if err != nil {
 		return nil, err
 	}
+	return retainCommandServices(cmd, services), nil
+}
+
+// connectCommandServices is newCommandServices for a server that opens its
+// connection on first use: it gives up when ctx ends, and a failed call can
+// be repeated because it leaves nothing to clean up.
+func connectCommandServices(ctx context.Context, cmd *cobra.Command) (*walcli.Services, error) {
+	services, err := walcli.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return retainCommandServices(cmd, services), nil
+}
+
+func retainCommandServices(cmd *cobra.Command, services *walcli.Services) *walcli.Services {
 	switch cmd.Name() {
 	case "console", "mcp", "watch", "proxy":
 	default:
 		services.SynchronousSnapshots()
 	}
 	commandServices = append(commandServices, services)
-	return services, nil
+	return services
 }
 
 func closeCommandServices() error {
