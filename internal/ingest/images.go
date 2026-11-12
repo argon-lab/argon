@@ -171,3 +171,72 @@ func documentKey(collection string, raw bson.Raw) string {
 	}
 	return collection + "\x00" + string(rune(id.Type)) + string(id.Value)
 }
+
+// hasDuplicateFields reports whether a document, at any depth, names a field
+// twice. MongoDB 7.0 and 8.x attach such a post-image after an update that
+// moves a field: the field appears at its old position with its old value and
+// again at the end with the new one, while the stored document has it once.
+func hasDuplicateFields(document bson.Raw) bool {
+	elements, err := document.Elements()
+	if err != nil {
+		return false
+	}
+	var seen map[string]struct{}
+	for i, element := range elements {
+		key := element.Key()
+		// Most documents are small: compare directly before paying for a map.
+		if seen == nil {
+			for _, earlier := range elements[:i] {
+				if earlier.Key() == key {
+					return true
+				}
+			}
+			if i >= 16 {
+				seen = make(map[string]struct{}, len(elements))
+				for _, earlier := range elements[:i+1] {
+					seen[earlier.Key()] = struct{}{}
+				}
+			}
+		} else {
+			if _, dup := seen[key]; dup {
+				return true
+			}
+			seen[key] = struct{}{}
+		}
+		value := element.Value()
+		switch value.Type {
+		case bson.TypeEmbeddedDocument:
+			if hasDuplicateFields(value.Document()) {
+				return true
+			}
+		case bson.TypeArray:
+			if items, err := value.Array().Values(); err == nil {
+				for _, item := range items {
+					if item.Type == bson.TypeEmbeddedDocument && hasDuplicateFields(item.Document()) {
+						return true
+					}
+					if item.Type == bson.TypeArray && arrayHasDuplicateFields(item.Array()) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func arrayHasDuplicateFields(array bson.Raw) bool {
+	items, err := array.Values()
+	if err != nil {
+		return false
+	}
+	for _, item := range items {
+		if item.Type == bson.TypeEmbeddedDocument && hasDuplicateFields(item.Document()) {
+			return true
+		}
+		if item.Type == bson.TypeArray && arrayHasDuplicateFields(item.Array()) {
+			return true
+		}
+	}
+	return false
+}

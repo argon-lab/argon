@@ -85,3 +85,37 @@ func TestOnlyLastingSnapshotFailuresBecomeUnavailable(t *testing.T) {
 		t.Fatal("the reason must not hide the sentinel")
 	}
 }
+
+func TestHasDuplicateFieldsLooksAtEveryDepth(t *testing.T) {
+	doc := func(elements ...bson.E) bson.Raw {
+		raw, err := bson.Marshal(bson.D(elements))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	wide := bson.D{}
+	for i := range 40 {
+		wide = append(wide, bson.E{Key: fmt.Sprintf("f%d", i), Value: i})
+	}
+	wideRaw, _ := bson.Marshal(wide)
+	wideDup, _ := bson.Marshal(append(wide, bson.E{Key: "f3", Value: "again"}))
+
+	for name, tc := range map[string]struct {
+		raw  bson.Raw
+		want bool
+	}{
+		"plain":            {doc(bson.E{Key: "a", Value: 1}, bson.E{Key: "b", Value: 2}), false},
+		"top level":        {doc(bson.E{Key: "z", Value: "old"}, bson.E{Key: "b", Value: 2}, bson.E{Key: "z", Value: "new"}), true},
+		"nested":           {doc(bson.E{Key: "a", Value: bson.D{{Key: "x", Value: 1}, {Key: "x", Value: 2}}}), true},
+		"inside an array":  {doc(bson.E{Key: "a", Value: bson.A{bson.A{bson.D{{Key: "x", Value: 1}, {Key: "x", Value: 2}}}}}), true},
+		"same name deeper": {doc(bson.E{Key: "a", Value: bson.D{{Key: "a", Value: 1}}}, bson.E{Key: "b", Value: bson.A{bson.D{{Key: "a", Value: 1}}}}), false},
+		"wide":             {wideRaw, false},
+		"wide duplicate":   {wideDup, true},
+		"empty":            {bson.Raw{5, 0, 0, 0, 0}, false},
+	} {
+		if got := hasDuplicateFields(tc.raw); got != tc.want {
+			t.Fatalf("%s: hasDuplicateFields = %v, want %v", name, got, tc.want)
+		}
+	}
+}

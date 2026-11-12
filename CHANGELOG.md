@@ -26,6 +26,17 @@ entry — a synchronization barrier, not in-proxy capture).
   connection is made on the first tool call. For Go embedders this is
   `mcpserver.NewLazy` with `walcli.Connect`; `mcpserver.New` is unchanged.
 
+### Fixed
+
+- On MongoDB 7.0 and 8.x, the post-image attached to an update that moves a
+  field names that field twice: at its old position with the old value and at
+  the end with the new one. Capture stored that image as it came. It now reads
+  the stored document back in its place and marks the entry `capture_images:
+  snapshot`. Inside a transaction, or when MongoDB's snapshot history no longer
+  covers the change, the attached image is kept as before and marked
+  `capture_images: attached_unverified`; decoded values were and remain
+  correct, because the newer occurrence comes last.
+
 ## [2.3.1] - 2026-11-12
 
 Collections an agent creates are captured exactly. No data format changes

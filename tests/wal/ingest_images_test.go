@@ -381,3 +381,89 @@ func TestIngest_RepeatedChangeInOneTransactionIsReportedNotGuessed(t *testing.T)
 	require.NoError(t, err)
 	require.Len(t, entries, 1, "only the insert that preceded the transaction")
 }
+
+// duplicateFields reports whether a raw document names a top-level field twice.
+func duplicateFields(raw bson.Raw) bool {
+	elements, err := raw.Elements()
+	if err != nil {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, element := range elements {
+		if seen[element.Key()] {
+			return true
+		}
+		seen[element.Key()] = true
+	}
+	return false
+}
+
+// MongoDB 7.0 and 8.x attach a post-image with a field named twice after an
+// update that moves the field. Capture reads the stored document back instead.
+func TestIngest_PostImageWithDuplicateFieldIsReadBack(t *testing.T) {
+	f := newIngestFixture(t, "ingest-images-duplicate")
+	ctx := context.Background()
+	stop := f.startIngester(t)
+
+	// "users" came from the checkout, so its events carry attached images.
+	users := f.physical.Collection("users")
+	_, err := users.InsertOne(ctx, bson.D{{Key: "_id", Value: "m"}, {Key: "z", Value: "new"}, {Key: "b", Value: int32(10)},
+		{Key: "pad", Value: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}, {Key: "n", Value: bson.D{{Key: "m", Value: true}}}})
+	require.NoError(t, err)
+	move := mongo.Pipeline{{{Key: "$unset", Value: "z"}}, {{Key: "$set", Value: bson.D{{Key: "z", Value: "back"}, {Key: "first", Value: "$b"}}}}}
+	_, err = users.UpdateOne(ctx, bson.M{"_id": "m"}, move)
+	require.NoError(t, err)
+	stored, err := users.FindOne(ctx, bson.M{"_id": "m"}).Raw()
+	require.NoError(t, err)
+
+	// The same update inside a transaction: a snapshot cannot single the
+	// change out, so the attached image is kept and marked when it is suspect.
+	_, err = users.InsertOne(ctx, bson.D{{Key: "_id", Value: "t"}, {Key: "z", Value: "new"}, {Key: "b", Value: int32(10)},
+		{Key: "pad", Value: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}, {Key: "n", Value: bson.D{{Key: "m", Value: true}}}})
+	require.NoError(t, err)
+	session, err := f.client.StartSession()
+	require.NoError(t, err)
+	defer session.EndSession(ctx)
+	_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		_, err := users.UpdateOne(sc, bson.M{"_id": "t"}, move)
+		return nil, err
+	})
+	require.NoError(t, err)
+
+	f.waitForEntries(t, "users", 5) // the fixture's seed, two inserts, two updates
+	stop()
+	branch, err := f.branches.GetBranchByID(f.branchID)
+	require.NoError(t, err)
+	entries, err := f.wal.GetBranchEntries(f.branchID, "users", 0, branch.HeadLSN)
+	require.NoError(t, err)
+
+	var plain, inTransaction *wal.Entry
+	for _, entry := range entries {
+		if entry.DocumentID == "m" && len(entry.PreImage) > 0 {
+			plain = entry
+		}
+		if entry.DocumentID == "t" && len(entry.PreImage) > 0 {
+			inTransaction = entry
+		}
+	}
+	require.NotNil(t, plain)
+	require.NotNil(t, inTransaction)
+
+	if !bytes.Equal(stored, plain.PostImage) {
+		t.Fatalf("post-image differs from the stored document\n database: %s\n captured: %s", stored, plain.PostImage)
+	}
+	assert.False(t, duplicateFields(plain.PostImage))
+
+	if duplicateFields(inTransaction.PostImage) {
+		assert.Equal(t, "attached_unverified", inTransaction.Metadata["capture_images"], "a suspect image that could not be replaced must be marked")
+	} else {
+		assert.Nil(t, inTransaction.Metadata["capture_images"])
+	}
+	var decoded bson.M
+	require.NoError(t, bson.Unmarshal(inTransaction.PostImage, &decoded))
+	assert.Equal(t, "back", decoded["z"], "decoding keeps the newer value")
+
+	state, err := f.matFull.MaterializeCollection(branch, "users")
+	require.NoError(t, err)
+	assert.Equal(t, f.physicalState(t, "users"), state)
+}

@@ -399,6 +399,15 @@ in the same transaction, and that stops capture with a reported gap. Running
 the collection with `changeStreamPreAndPostImages: {enabled:true}`, before the
 first write avoids both.
 
+The same read corrects one image MongoDB attaches wrongly. On MongoDB 7.0 and
+8.x, after an update that moves a field, the attached post-image names that
+field twice: once where it was, with the old value, and once at the end with
+the new one. Capture detects a repeated field name and stores the document read
+back from the snapshot instead. Inside a transaction, or outside the snapshot
+history, it keeps the attached image and records
+`capture_images: attached_unverified`; materialization decodes images into
+maps, where the later value wins, so the state is correct either way.
+
 Document insert/update/replace/delete operations are versioned. Collection
 rename/drop/database-drop is unsupported and produces persisted `degraded`
 health. Indexes, validators and collection options are executed by mongod but
