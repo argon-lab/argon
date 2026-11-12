@@ -64,7 +64,7 @@ jobs:
             [ "$(count 'is:pr is:merged')" -le 1 ] || exit 0
             gh pr comment "$NUMBER" --body "Merged. Thank you, @$AUTHOR, and welcome to the Argon contributors.
 
-          Your change will be credited by name in the next release notes, and you now appear in the [contributors list](https://github.com/$GH_REPO#contributors).
+          Your change will be credited by name in the next release notes, you now appear in the [contributors list](https://github.com/$GH_REPO#contributors), and you will be listed on [argonlabs.tech](https://argonlabs.tech/about#contributors) with the release it ships in.
 
           If you would like to keep going, issues labelled [good first issue](https://github.com/$GH_REPO/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) and [help wanted](https://github.com/$GH_REPO/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) are open for anyone to claim."
           fi
