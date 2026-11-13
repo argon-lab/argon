@@ -165,7 +165,9 @@ var restoreResetCmd = &cobra.Command{
 			if _, err := services.Restore.CreateBranchAtLSN(project.ID, branchID, backup, branch.HeadLSN); err != nil {
 				return fmt.Errorf("failed to create backup branch: %w", err)
 			}
-			fmt.Printf("Backup branch %q created at LSN %d\n", backup, branch.HeadLSN)
+			if !jsonOutput(cmd) {
+				fmt.Printf("Backup branch %q created at LSN %d\n", backup, branch.HeadLSN)
+			}
 		}
 
 		branch, err := services.Restore.ResetBranchToLSN(branchID, target)
