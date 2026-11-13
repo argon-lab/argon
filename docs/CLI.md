@@ -157,6 +157,8 @@ argon status --output json          # read-only checks, last reported capture st
 argon projects list --output json   # {"projects": [...]}
 argon branches list -p P --output json
 argon merge preview -p P -b B --output json  # {"plan": {"id": ...}}
+argon gc -p P --output json                      # {"dry_run": ..., "branches": [...], "entries_removed": ...}
+argon restore preview -p P -b B --output json     # {"branch": ..., "target_lsn": ...}
 ```
 
 Doctor/status return nonzero when readiness fails. A stored capture status
