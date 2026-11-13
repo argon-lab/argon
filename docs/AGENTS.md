@@ -243,6 +243,11 @@ provide database credentials. Native MongoDB credentials remain deployment
 credentials, not a security boundary between mutually untrusted agents.
 Provision restricted MongoDB users/deployments for those workloads.
 
+[examples/boxd-sandbox](../examples/boxd-sandbox/) does that for agent-written
+code running in a separate code sandbox: a boxd machine gets a MongoDB user
+that can only read and write its Argon sandbox, then the host reviews the diff
+and merges or discards it.
+
 A newly materialized collection is already prepared by checkout, and from
 2.3.1 capture reads back the exact states of writes that reach a new collection
 before its images are enabled. Preparing a collection first, with
