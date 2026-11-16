@@ -18,6 +18,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/ingest"
 	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
 	"github.com/argon-lab/argon/v2/pkg/version"
 	"github.com/argon-lab/argon/v2/pkg/walcli"
@@ -635,26 +636,34 @@ func TestARestartedServerResumesCaptureWithoutAToolCall(t *testing.T) {
 	_ = earlier.Client.Disconnect(ctx)
 }
 
-func TestResumeCaptureCancelsMetadataListing(t *testing.T) {
+func TestResumeCaptureCancelsMetadataReads(t *testing.T) {
 	e := newEngine(t)
 	t.Setenv("MONGODB_URI", replicaSet)
 	ctx, stop := context.WithTimeout(context.Background(), 20*time.Second)
 	defer stop()
 	fixture, err := e.connect(ctx)
 	require.NoError(t, err)
+	var branchID string
 	for _, name := range []string{"first", "second"} {
-		_, err := fixture.Projects.CreateProject(name)
+		project, err := fixture.Projects.CreateProject(name)
 		require.NoError(t, err)
+		branchID = project.MainBranchID
 	}
 
-	for _, collection := range []string{"wal_projects", "wal_branches"} {
-		t.Run(collection, func(t *testing.T) {
+	for _, test := range []struct {
+		name, collection string
+	}{
+		{"list projects", "wal_projects"},
+		{"list branches", "wal_branches"},
+		{"drain lookup", "wal_branches"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			scan, cancel := context.WithCancel(ctx)
 			defer cancel()
 			var finds atomic.Int32
 			var inheritedCancellation atomic.Bool
 			monitor := &event.CommandMonitor{Started: func(commandCtx context.Context, command *event.CommandStartedEvent) {
-				if command.CommandName == "find" && command.Command.Lookup("find").StringValue() == collection {
+				if command.CommandName == "find" && command.Command.Lookup("find").StringValue() == test.collection {
 					finds.Add(1)
 					cancel()
 					inheritedCancellation.Store(errors.Is(commandCtx.Err(), context.Canceled))
@@ -669,9 +678,15 @@ func TestResumeCaptureCancelsMetadataListing(t *testing.T) {
 			projects, err := projectwal.NewProjectService(db, nil, branches)
 			require.NoError(t, err)
 
-			newBareServer().resumeCapture(scan, &walcli.Services{Projects: projects, Branches: branches})
-			assert.EqualValues(t, 1, finds.Load(), "do not continue listing after shutdown begins")
-			assert.True(t, inheritedCancellation.Load(), "the in-flight MongoDB list uses the server context")
+			if test.name == "drain lookup" {
+				// StartCapture calls Drain after the stream is ready. It must
+				// not begin its branch lookup with a fresh background context.
+				_ = ingest.NewService(client, db, nil, branches).Drain(scan, branchID)
+			} else {
+				newBareServer().resumeCapture(scan, &walcli.Services{Projects: projects, Branches: branches})
+			}
+			assert.EqualValues(t, 1, finds.Load(), "do not continue querying after shutdown begins")
+			assert.True(t, inheritedCancellation.Load(), "the in-flight MongoDB read uses the server context")
 		})
 	}
 }
