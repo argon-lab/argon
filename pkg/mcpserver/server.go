@@ -231,14 +231,22 @@ func (s *Server) startSweeper(ctx context.Context) {
 // the stored resume token and keeps the stored actor, so writes made while
 // no server ran are caught up rather than lost.
 func (s *Server) resumeCapture(ctx context.Context, services *walcli.Services) {
-	projects, err := services.Projects.ListProjects()
+	projects, err := services.Projects.ListProjectsContext(ctx)
 	if err != nil {
-		log.Printf("mcp: cannot list projects to resume capture: %v", err)
+		if ctx.Err() == nil {
+			log.Printf("mcp: cannot list projects to resume capture: %v", err)
+		}
 		return
 	}
 	for _, project := range projects {
-		branches, err := services.Branches.ListBranches(project.ID)
+		if ctx.Err() != nil {
+			return
+		}
+		branches, err := services.Branches.ListBranchesContext(ctx, project.ID)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("mcp: cannot list branches of %s to resume capture: %v", project.Name, err)
 			continue
 		}
@@ -249,7 +257,7 @@ func (s *Server) resumeCapture(ctx context.Context, services *walcli.Services) {
 			if !branch.IsLive() {
 				continue
 			}
-			if err := s.startIngester(branch.ID); err != nil {
+			if err := s.startIngesterContext(ctx, branch.ID); err != nil && ctx.Err() == nil {
 				log.Printf("mcp: capture for %s/%s did not resume: %v", project.Name, branch.Name, err)
 			}
 		}
@@ -462,11 +470,15 @@ func (s *Server) write(resp *jsonRPCResponse) {
 // startIngester supervises a change-stream ingester for a branch until the
 // server stops or the branch is discarded.
 func (s *Server) startIngester(branchID string, actors ...string) error {
+	return s.startIngesterContext(context.Background(), branchID, actors...)
+}
+
+func (s *Server) startIngesterContext(ctx context.Context, branchID string, actors ...string) error {
 	actor := ""
 	if len(actors) > 0 {
 		actor = actors[0]
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := s.services.StartCapture(ctx, branchID, actor); err != nil {
 		return err

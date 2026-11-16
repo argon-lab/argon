@@ -249,7 +249,11 @@ func (s *BranchService) CompareAndSetCheckout(ctx context.Context, expected *wal
 
 // ListBranches lists all branches for a project
 func (s *BranchService) ListBranches(projectID string) ([]*wal.Branch, error) {
-	ctx := context.Background()
+	return s.ListBranchesContext(context.Background(), projectID)
+}
+
+// ListBranchesContext lists non-deleted branches using the caller's context.
+func (s *BranchService) ListBranchesContext(ctx context.Context, projectID string) ([]*wal.Branch, error) {
 	cursor, err := s.collection.Find(ctx, bson.M{
 		"project_id": projectID,
 		"is_deleted": false,

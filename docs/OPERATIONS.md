@@ -194,6 +194,10 @@ worker: keep `watch` running and schedule `sandbox sweep` explicitly. Automatic
 snapshots are triggered by native capture and programmatic writers; retention
 GC still runs through its explicit command/service.
 
+Run one capture supervisor per branch. Checkpoint fencing prevents stale
+streams from committing against a newer head; restart recovery does not
+coordinate which process owns capture.
+
 Stop native writers before release/reset. Release waits through a durable
 capture barrier; reset requires a released branch. Discard intentionally drops
 physical data and history, including degraded sandboxes, after pin/child checks.

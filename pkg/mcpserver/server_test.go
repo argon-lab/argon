@@ -17,11 +17,16 @@ import (
 	"testing"
 	"time"
 
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
 	"github.com/argon-lab/argon/v2/pkg/version"
 	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/event"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // exchange sends one request through a server that has no engine behind it
@@ -628,4 +633,45 @@ func TestARestartedServerResumesCaptureWithoutAToolCall(t *testing.T) {
 	require.Len(t, capture, 1)
 	assert.Equal(t, "stopped", capture[0].State, "resumed capture stops with the server")
 	_ = earlier.Client.Disconnect(ctx)
+}
+
+func TestResumeCaptureCancelsMetadataListing(t *testing.T) {
+	e := newEngine(t)
+	t.Setenv("MONGODB_URI", replicaSet)
+	ctx, stop := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stop()
+	fixture, err := e.connect(ctx)
+	require.NoError(t, err)
+	for _, name := range []string{"first", "second"} {
+		_, err := fixture.Projects.CreateProject(name)
+		require.NoError(t, err)
+	}
+
+	for _, collection := range []string{"wal_projects", "wal_branches"} {
+		t.Run(collection, func(t *testing.T) {
+			scan, cancel := context.WithCancel(ctx)
+			defer cancel()
+			var finds atomic.Int32
+			var inheritedCancellation atomic.Bool
+			monitor := &event.CommandMonitor{Started: func(commandCtx context.Context, command *event.CommandStartedEvent) {
+				if command.CommandName == "find" && command.Command.Lookup("find").StringValue() == collection {
+					finds.Add(1)
+					cancel()
+					inheritedCancellation.Store(errors.Is(commandCtx.Err(), context.Canceled))
+				}
+			}}
+			client, err := mongo.Connect(ctx, options.Client().ApplyURI(replicaSet).SetMonitor(monitor))
+			require.NoError(t, err)
+			defer func() { _ = client.Disconnect(ctx) }()
+			db := client.Database(e.metadataDB)
+			branches, err := branchwal.NewBranchService(db, nil)
+			require.NoError(t, err)
+			projects, err := projectwal.NewProjectService(db, nil, branches)
+			require.NoError(t, err)
+
+			newBareServer().resumeCapture(scan, &walcli.Services{Projects: projects, Branches: branches})
+			assert.EqualValues(t, 1, finds.Load(), "do not continue listing after shutdown begins")
+			assert.True(t, inheritedCancellation.Load(), "the in-flight MongoDB list uses the server context")
+		})
+	}
 }

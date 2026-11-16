@@ -142,7 +142,11 @@ func (s *ProjectService) GetProjectIDByName(name string) (string, error) {
 
 // ListProjects lists all WAL-enabled projects
 func (s *ProjectService) ListProjects() ([]*wal.Project, error) {
-	ctx := context.Background()
+	return s.ListProjectsContext(context.Background())
+}
+
+// ListProjectsContext lists WAL-enabled projects using the caller's context.
+func (s *ProjectService) ListProjectsContext(ctx context.Context) ([]*wal.Project, error) {
 	cursor, err := s.collection.Find(ctx, bson.M{"use_wal": true, "importing": bson.M{"$ne": true}})
 	if err != nil {
 		return nil, err
