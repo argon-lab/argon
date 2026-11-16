@@ -15,7 +15,8 @@ entry — a synchronization barrier, not in-proxy capture).
 
 - `examples/boxd-sandbox`: agent-written code runs in an isolated boxd machine
   and writes to an Argon sandbox through a MongoDB user restricted to that
-  sandbox's database; the host reviews the diff and merges or discards it.
+  sandbox's database; the host prints the diff and discards the sandbox, or
+  merges it with `--apply`.
 
 ## [2.3.3] - 2026-11-12
 

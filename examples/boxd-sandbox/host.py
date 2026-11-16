@@ -2,10 +2,13 @@
 """Run agent-written code in a boxd machine against an Argon MongoDB sandbox.
 
 The host creates an Argon sandbox, gives a boxd machine a MongoDB user that
-can only reach that sandbox, runs agent.py there, and then reviews the diff
-and merges or discards it. See README.md for the setup this expects.
+can only reach that sandbox, runs agent.py there, and prints the diff. By
+default it then discards the sandbox and the main branch stays unchanged.
+With --apply it merges the diff into the main branch without asking (a
+scripted merge). See README.md for the setup this expects.
 
   python3 examples/boxd-sandbox/host.py --network argon-example --region nyc
+  python3 examples/boxd-sandbox/host.py --network argon-example --region nyc --apply
 """
 
 import argparse
@@ -102,8 +105,37 @@ def run_agent(boxd: Boxd, machine_id: str, sandbox_uri: str, main_db: str) -> st
     return stdout.decode()
 
 
+def review(api: Api, prefix: str, main: Any, apply: bool) -> tuple[int, str]:
+    """Print the agent's diff, then discard the sandbox, or merge it when apply is set.
+
+    Without apply the main branch stays as the agent found it. With apply this
+    is a scripted merge: it previews a merge plan and applies it without asking.
+    """
+    diff = api("GET", prefix + "/branches/agent/diff")
+    for change in diff["changes"]:
+        print("change:", json.dumps(change, default=str))
+    assert main.tickets.find_one({"_id": "T-1"})["status"] == "open"
+    if not apply:
+        api("DELETE", prefix + "/sandboxes/agent")
+        assert main.tickets.find_one({"_id": "T-1"})["status"] == "open"
+        assert main.triage_notes.find_one({"_id": "triage-1"}) is None
+        print("discarded the sandbox; run again with --apply to merge")
+        return len(diff["changes"]), "discarded"
+    plan = api("POST", prefix + "/branches/agent/merge-preview", {})
+    if plan["conflicts"]:
+        raise RuntimeError(
+            f"merge plan {plan['id']} has conflicts: {plan['conflicts']}"
+        )
+    print("applying merge plan", plan["id"])
+    api("POST", "/merge-plans/" + plan["id"] + "/apply", {})
+    api("DELETE", prefix + "/sandboxes/agent")
+    assert main.tickets.find_one({"_id": "T-1"})["status"] == "closed"
+    assert main.triage_notes.find_one({"_id": "triage-1"})["escalated"] == 1
+    return len(diff["changes"]), "merged"
+
+
 def run(args: argparse.Namespace) -> None:
-    """Create the sandboxes, run the agent, then review and merge or discard."""
+    """Create the sandboxes, run the agent, print the diff, then discard or apply."""
     if not os.environ.get("BOXD_API_KEY"):
         raise SystemExit("set BOXD_API_KEY to a boxd API key")
     if not os.environ.get("MONGODB_URI"):
@@ -202,31 +234,16 @@ def run(args: argparse.Namespace) -> None:
             finally:
                 admin.close()
 
-    # 6. The host reviews what the agent changed, then merges or discards it.
-    diff = api("GET", prefix + "/branches/agent/diff")
-    for change in diff["changes"]:
-        print("change:", json.dumps(change, default=str))
+    # 6. The host prints the diff, then discards the sandbox, or merges it with --apply.
     with MongoClient(main_uri) as client:
-        main = client.get_default_database()
-        assert main.tickets.find_one({"_id": "T-1"})["status"] == "open"
-        if args.discard:
-            api("DELETE", prefix + "/sandboxes/agent")
-            assert main.tickets.find_one({"_id": "T-1"})["status"] == "open"
-            outcome = "discarded"
-        else:
-            plan = api("POST", prefix + "/branches/agent/merge-preview", {})
-            assert not plan["conflicts"]
-            api("POST", "/merge-plans/" + plan["id"] + "/apply", {})
-            api("DELETE", prefix + "/sandboxes/agent")
-            assert main.tickets.find_one({"_id": "T-1"})["status"] == "closed"
-            assert main.triage_notes.find_one({"_id": "triage-1"})["escalated"] == 1
-            outcome = "merged"
-
+        changes, outcome = review(
+            api, prefix, client.get_default_database(), args.apply
+        )
     print(
         json.dumps(
             {
                 "project": project,
-                "changes": len(diff["changes"]),
+                "changes": changes,
                 "outcome": outcome,
                 "machine": machine.id,
                 "machine_kept": args.keep_machine,
@@ -256,9 +273,9 @@ if __name__ == "__main__":
     )
     parser.add_argument("--name", help="name for the boxd machine")
     parser.add_argument(
-        "--discard",
+        "--apply",
         action="store_true",
-        help="discard the agent's changes instead of merging",
+        help="merge the agent's changes into the main branch instead of discarding them",
     )
     parser.add_argument(
         "--keep-machine",

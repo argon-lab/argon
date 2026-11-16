@@ -1,15 +1,16 @@
 # A boxd code sandbox and an Argon data sandbox together
 
 Agent-written code runs in a [boxd](https://boxd.sh/?ref=argon) machine and
-writes to an Argon MongoDB sandbox. The host then reviews the diff and merges or
-discards it. No LLM account is needed: `agent.py` stands in for the code an agent
-would write.
+writes to an Argon MongoDB sandbox. The host then prints the diff and discards
+the sandbox, so you can review the changes before anything reaches the main
+branch. A second run with `--apply` merges them as a scripted merge. No LLM
+account is needed: `agent.py` stands in for the code an agent would write.
 
 ```
 data machine (host)                              agent machine (isolated)
   mongod with auth, argon console, host.py  ──▶   agent.py
   1. Argon sandbox + restricted user              2. writes through PyMongo
-  3. diff, then merge or discard              ◀── network: argon-example only
+  3. diff, then discard (or --apply)          ◀── network: argon-example only
 ```
 
 `host.py` does this:
@@ -22,7 +23,10 @@ data machine (host)                              agent machine (isolated)
    environment. The agent closes one ticket, escalates another, creates a
    `triage_notes` collection, and checks that it cannot read the main branch.
 5. Drops the MongoDB user and deletes the boxd machine.
-6. Prints the diff, then merges it, or discards it with `--discard`.
+6. Prints the diff, then discards the Argon sandbox. The main branch stays
+   unchanged. With `--apply` it previews a merge plan and applies it to the
+   main branch without asking. That is a scripted merge: run it only after
+   you reviewed the diff of a default run.
 
 ## How the machine reaches MongoDB
 
@@ -33,6 +37,7 @@ machines it shares a named network with, so it reaches the data machine at
 `<data-machine>.boxd:27017` and no other machine you own. Only machines on
 `argon-example` can open port 27017; boxd forwards a raw TCP port from the
 internet only when you add one with `boxd machine proxy add --raw`.
+[Check port 27017](#check-port-27017) before you run the example.
 
 The agent machine may reach PyPI while it installs PyMongo, before it has any
 credential. Then `host.py` sets its egress allowlist to `none`, so the agent's
@@ -101,7 +106,43 @@ argon doctor
 argon console --no-browser > ~/argon-console.log 2>&1 &
 ```
 
-Run the example:
+### Check port 27017
+
+`docker run -p 27017:27017` listens on every interface of the data machine.
+Before you run the example, check that only machines on `argon-example` reach
+MongoDB there. On your computer, look at the data machine's networks and
+ports, then create two check machines: one isolated on `argon-example`, like
+the agent machine, and one on your default network:
+
+```bash
+boxd machine networks argon-data            # argon-example and no other network
+boxd machine proxy list --vm argon-data     # no tcp forward for port 27017
+boxd machine new argon-check --isolated --networks=argon-example --region nyc
+boxd machine new argon-outside --region nyc
+```
+
+Then ping MongoDB from each of them. The ping runs `mongosh` from the
+`mongo:7` image on the check machine, so you need no MongoDB client on your
+computer:
+
+```bash
+ping27017() { boxd machine exec "$1" -- "docker run --rm mongo:7 mongosh --quiet --eval 'db.runCommand({ping: 1}).ok' 'mongodb://$2:27017/?directConnection=true&serverSelectionTimeoutMS=5000' || echo not reachable"; }
+ping27017 argon-check argon-data.boxd              # prints 1
+ping27017 argon-outside argon-data.boxd            # prints not reachable
+ping27017 argon-outside argon-data.nyc.boxd.sh     # public address: prints not reachable
+```
+
+Use a MongoDB ping for the public address, not a plain TCP check like
+`nc -z`. Other services share that address, so a TCP connection to port 27017
+there can succeed without reaching MongoDB. If either of the last two prints
+`1`, stop and remove the network or the port forward that allows it. Then
+remove the two check machines:
+
+```bash
+boxd machine remove argon-check -y && boxd machine remove argon-outside -y
+```
+
+### Run the example
 
 ```bash
 git clone https://github.com/argon-lab/argon.git && cd argon
@@ -110,10 +151,22 @@ read -rs BOXD_API_KEY && export BOXD_API_KEY   # paste the key from `boxd auth k
 ~/argon-example/bin/python examples/boxd-sandbox/host.py --network argon-example --region nyc
 ```
 
-It prints the boxd machine, the agent's output, the three changes it made and
-the outcome. Add `--discard` to throw the run away instead, and
-`--keep-machine` to keep the agent machine for a look around (its MongoDB user
-is dropped all the same). Remove a kept machine with
-`boxd machine remove <name> -y` on your computer. Set
-`ARGON_API_TOKEN` when the console uses a bearer token. `--region` must be the
-data machine's region, because networks do not cross regions.
+It prints the boxd machine, the agent's output and the three changes it made,
+then discards the Argon sandbox. The main branch is unchanged. When you have
+reviewed the diff and want the changes in the main branch, run the scripted
+merge:
+
+```bash
+~/argon-example/bin/python examples/boxd-sandbox/host.py --network argon-example --region nyc --apply
+```
+
+Each run starts a new project, agent machine and sandbox, so `--apply` merges
+the diff of its own run. The agent's code is deterministic, so that diff has
+the same three changes. With a real agent two runs can differ, and `--apply`
+merges whatever its own run produced.
+
+Add `--keep-machine` to keep the agent machine for a look around (its MongoDB
+user is dropped all the same). Remove a kept machine with
+`boxd machine remove <name> -y` on your computer. Set `ARGON_API_TOKEN` when
+the console uses a bearer token. `--region` must be the data machine's region,
+because networks do not cross regions.
