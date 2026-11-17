@@ -88,8 +88,8 @@ keeps running, and the next call tries again. Capture and the sweep of expired
 sandboxes begin as soon as the database answers.
 
 A restarted server resumes capture for the branches an earlier server left
-checked out, as soon as it connects and without a tool call (releases after
-2.3.3). Writes made while no server ran are caught up from the stored
+checked out, as soon as it connects and without a tool call (2.4.0 and
+newer). Writes made while no server ran are caught up from the stored
 position. Up to 2.3.3 capture resumed only when a tool such as `argon_diff`
 next drained the branch; a collection the agent created and changed in between
 could by then be outside MongoDB's snapshot history, and that `diff` reported
