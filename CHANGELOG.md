@@ -11,6 +11,17 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Fixed
+
+- A restarted `argon mcp` resumes capture for the branches an earlier server
+  left checked out, as soon as it connects. Before, capture resumed only when a
+  tool next drained the branch, for example `argon_diff`. Writes made in
+  between were caught up then, but a change to a collection the agent had
+  created could by that time be outside MongoDB's snapshot history (five
+  minutes by default), and the drain reported the history as incomplete. The
+  REST API already re-attached capture at startup; the MCP server now does the
+  same.
+
 ## [2.3.3] - 2026-11-12
 
 Fixes a regression in 2.3.2. No data format changes since 2.3.2.

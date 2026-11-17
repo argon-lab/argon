@@ -262,7 +262,7 @@ func (s *Service) Statuses() []Status {
 // in the WAL. Writers must be quiesced before a release; later writes are outside
 // the barrier and must not race a destructive lifecycle operation.
 func (s *Service) Drain(ctx context.Context, branchID string) error {
-	branch, err := s.branches.GetBranchByID(branchID)
+	branch, err := s.branches.GetBranchByIDContext(ctx, branchID)
 	if err != nil {
 		return err
 	}
