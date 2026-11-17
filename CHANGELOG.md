@@ -11,6 +11,13 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Added
+
+- `examples/boxd-sandbox`: agent-written code runs in an isolated boxd machine
+  and writes to an Argon sandbox through a MongoDB user restricted to that
+  sandbox's database; the host prints the diff and discards the sandbox, or
+  merges it with `--apply`.
+
 ## [2.4.0] - 2026-11-16
 
 JSON output for `gc` and `restore`, and a restarted MCP server resumes capture.
