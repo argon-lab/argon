@@ -63,9 +63,12 @@ which Argon reports as degraded capture. See
 
 ## Run it
 
-You need the [boxd CLI](https://docs.boxd.sh/?ref=argon) on your computer and
-Argon 2.3.1 or newer. From 2.3.1, the collection the agent creates is captured
-exactly without `argon collections prepare`.
+You need a boxd account, the [boxd CLI](https://docs.boxd.sh/?ref=argon) on
+your computer and Argon 2.3.1 or newer. From 2.3.1, the collection the agent
+creates is captured exactly without `argon collections prepare`.
+
+boxd charges your account for the machines this example creates, so
+[clean up](#clean-up) when you are done.
 
 On your computer, create the data machine on the network and an API key for
 `host.py`:
@@ -170,3 +173,17 @@ user is dropped all the same). Remove a kept machine with
 `boxd machine remove <name> -y` on your computer. Set `ARGON_API_TOKEN` when
 the console uses a bearer token. `--region` must be the data machine's region,
 because networks do not cross regions.
+
+## Clean up
+
+The data machine and the API key stay until you remove them. On your computer:
+
+```bash
+boxd machine remove argon-data -y
+boxd auth keys remove argon-example
+```
+
+Removing the data machine deletes its MongoDB deployment, and with it the
+Argon projects the runs created. A run that fails before the review leaves its
+Argon sandbox behind. The sandbox expires after 60 minutes and the console
+removes it then, as long as the console is still running.
