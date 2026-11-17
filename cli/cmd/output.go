@@ -25,6 +25,7 @@ func init() {
 		diffCmd, mergePreviewCmd, mergeApplyCmd, mergeListCmd, undoCmd,
 		checkoutCmd, connectCmd, releaseCmd, statusCmd, doctorCmd,
 		timeTravelInfoCmd, timeTravelQueryCmd, snapshotCreateCmd, snapshotListCmd,
+		gcCmd, restorePreviewCmd, restoreResetCmd, restoreBranchCmd,
 	} {
 		command.Flags().StringP("output", "o", "table", "Output format: table or json")
 	}
