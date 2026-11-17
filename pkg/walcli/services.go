@@ -196,7 +196,7 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 	// pure linear replay until something trips the auto-snapshot threshold.
 	importerService.SetImportedHook(func(branch *wal.Branch) {
 		if _, err := snapshotService.CreateSnapshot(context.Background(), branch.ID, branch.HeadLSN); err != nil {
-			fmt.Printf("Warning: post-import snapshot failed for branch %s: %v\n", branch.ID, err)
+			fmt.Fprintf(os.Stderr, "Warning: post-import snapshot failed for branch %s: %v\n", branch.ID, err)
 		}
 	})
 	// Reclaim a deleted branch's WAL entries and snapshots. Safe because
@@ -206,7 +206,7 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 			fmt.Fprintf(os.Stderr, "Warning: failed to reclaim capture state for %s: %v\n", branchID, err)
 		}
 		if _, _, _, err := gcService.ReclaimDeletedBranch(context.Background(), branchID); err != nil {
-			fmt.Printf("Warning: failed to reclaim storage for branch %s: %v\n", branchID, err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to reclaim storage for branch %s: %v\n", branchID, err)
 		}
 	})
 

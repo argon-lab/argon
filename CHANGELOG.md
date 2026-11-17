@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Engine warnings go to stderr. A failed storage reclaim after a branch was
+  deleted, a failed post-import snapshot and a branch that could not be deleted
+  with its project were reported on stdout. Under `argon mcp` stdout is the
+  protocol stream, and with `--output json` it is the JSON value, so such a
+  warning corrupted both.
+
 Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
@@ -182,7 +183,7 @@ func (s *ProjectService) DeleteProject(projectID string) error {
 		if branch.Name != "main" {
 			if err := s.branches.DeleteBranch(projectID, branch.Name); err != nil {
 				// Log error but continue
-				fmt.Printf("Failed to delete branch %s: %v\n", branch.Name, err)
+				fmt.Fprintf(os.Stderr, "Failed to delete branch %s: %v\n", branch.Name, err)
 			}
 		}
 	}
@@ -203,7 +204,7 @@ func (s *ProjectService) DeleteProject(projectID string) error {
 
 	// Force delete main branch (special case for project deletion)
 	if err := s.branches.ForceDeleteBranch(projectID, "main"); err != nil {
-		fmt.Printf("Failed to delete main branch: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to delete main branch: %v\n", err)
 	}
 
 	// Delete project record
