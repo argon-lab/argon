@@ -1,6 +1,6 @@
 # A boxd code sandbox and an Argon data sandbox together
 
-Agent-written code runs in a [boxd](https://boxd.sh/?ref=argon) machine and
+Agent-written code runs in a [boxd](https://boxd.sh/) machine and
 writes to an Argon MongoDB sandbox. The host then prints the diff and discards
 the sandbox, so you can review the changes before anything reaches the main
 branch. A second run with `--apply` merges them as a scripted merge. No LLM
@@ -63,7 +63,7 @@ which Argon reports as degraded capture. See
 
 ## Run it
 
-You need a boxd account, the [boxd CLI](https://docs.boxd.sh/?ref=argon) on
+You need a boxd account, the [boxd CLI](https://docs.boxd.sh/) on
 your computer and Argon 2.3.1 or newer. From 2.3.1, the collection the agent
 creates is captured exactly without `argon collections prepare`.
 
