@@ -18,6 +18,26 @@ entry — a synchronization barrier, not in-proxy capture).
   sandbox's database; the host prints the diff and discards the sandbox, or
   merges it with `--apply`.
 
+## [2.4.0] - 2026-11-16
+
+JSON output for `gc` and `restore`, and a restarted MCP server resumes capture.
+No data format changes since 2.3.3.
+
+### Added
+
+- `argon gc` and `argon restore preview|reset|branch` accept `-o json`.
+
+### Fixed
+
+- A restarted `argon mcp` resumes capture for the branches an earlier server
+  left checked out, as soon as it connects. Before, capture resumed only when a
+  tool next drained the branch, for example `argon_diff`. Writes made in
+  between were caught up then, but a change to a collection the agent had
+  created could by that time be outside MongoDB's snapshot history (five
+  minutes by default), and the drain reported the history as incomplete. The
+  REST API already re-attached capture at startup; the MCP server now does the
+  same.
+
 ## [2.3.3] - 2026-11-12
 
 Fixes a regression in 2.3.2. No data format changes since 2.3.2.
@@ -476,7 +496,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.3...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/argon-lab/argon/releases/tag/v2.4.0
 [2.3.3]: https://github.com/argon-lab/argon/releases/tag/v2.3.3
 [2.3.2]: https://github.com/argon-lab/argon/releases/tag/v2.3.2
 [2.3.1]: https://github.com/argon-lab/argon/releases/tag/v2.3.1
