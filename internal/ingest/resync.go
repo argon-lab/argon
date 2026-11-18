@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -145,7 +147,7 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 		cause = stored.Error
 	}
 
-	cfg := runConfig{actor: sourceActor, redact: opts.Redact}
+	cfg := runConfig{actor: sourceActor, redact: opts.Redact, follower: true}
 	run, runCtx, created := s.register(ctx, branchID, cfg)
 	if !created {
 		return nil, fmt.Errorf("the source is being followed for branch %s in this process; stop that first", branchID)
@@ -201,6 +203,11 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 		return fmt.Errorf("failed to list the source's collections: %w", err)
 	}
 	result.SourceCollections = collections
+	if series, err := source.TimeSeries(ctx, src); err != nil {
+		return fmt.Errorf("failed to list the source's collections: %w", err)
+	} else if len(series) > 0 {
+		return &ConfigurationError{fmt.Sprintf("the source has time-series collection(s) %s; their measurements cannot be followed, so the branch could not be made equal to the source. A source with time-series collections cannot be followed", strings.Join(series, ", "))}
+	}
 
 	// The status goes first. From here until the replay ends the branch is
 	// reported as catching up, and nothing but a resync may continue it.
@@ -518,15 +525,18 @@ func (r *resyncer) commit() error {
 			return nil, fmt.Errorf("failed to append resync entries: %w", err)
 		}
 		head = lsns[len(lsns)-1]
-		if err := s.branches.CompareAndSetHead(sc, branch.ID, branch.HeadLSN, head); err != nil {
+		if err := s.branches.FollowerSetHead(sc, branch.ID, branch.Follows, branch.HeadLSN, head); err != nil {
 			return nil, err
 		}
-		_, err = s.state.UpdateOne(sc, bson.M{"_id": branch.ID}, bson.M{"$set": bson.M{
+		stored, err := s.state.UpdateOne(sc, bson.M{"_id": branch.ID}, bson.M{"$set": bson.M{
 			"updated_at": at, "capture_status.last_captured_at": at, "capture_status.head_lsn": head,
 		}})
+		if err == nil && stored.MatchedCount != 1 {
+			err = branchwal.ErrNoLongerFollows
+		}
 		return nil, err
 	}); err != nil {
-		return err
+		return followerWriteError(branch, err)
 	}
 	branch.HeadLSN = head
 	r.pending = nil

@@ -253,37 +253,75 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/checkout/service.go:dropPhysical",
 	}, unique(calls["Drop"]), "a new database or collection drop must go through checkout's guarded dropPhysical")
 
-	// Code that holds a connection to a source.
-	sourceFacing := map[string]bool{
-		"internal/ingest/follow.go":   true,
-		"internal/ingest/resync.go":   true,
-		"internal/importer/online.go": true,
-		"internal/merge/writeback.go": true,
-		"internal/source/source.go":   true,
-		"pkg/walcli/source.go":        true,
-	}
-	for _, method := range []string{"Drop", "DeleteMany", "UpdateMany", "InsertMany", "BulkWrite", "Rename", "CreateCollection", "CreateView", "CreateOne", "CreateMany", "DropOne", "DropAll"} {
+	// Every package that can hold a connection to a source. In them, each
+	// call that writes to a database or sends it a command is listed here by
+	// file, function and method, and the list must match exactly. A new one
+	// (a RunCommand, an Aggregate, a single-document write) fails this test
+	// until someone has looked at what it is sent to and added it.
+	prefixes := []string{"internal/ingest/", "internal/importer/", "internal/merge/", "internal/source/", "pkg/walcli/", "cli/cmd/"}
+	var sites []string
+	for _, method := range strings.Fields("InsertOne InsertMany UpdateOne UpdateMany UpdateByID ReplaceOne DeleteOne DeleteMany BulkWrite FindOneAndUpdate FindOneAndReplace FindOneAndDelete Drop CreateCollection CreateView CreateOne CreateMany DropOne DropAll Rename RunCommand RunCommandCursor Aggregate") {
 		for _, site := range unique(calls[method]) {
-			file := strings.SplitN(site, ":", 2)[0]
-			if file == "internal/source/source.go" && site == "internal/source/source.go:NewRegistry" {
-				continue // indexes on Argon's own wal_sources collection
-			}
-			if file == "internal/merge/writeback.go" && site == "internal/merge/writeback.go:EnsureIndexes" {
-				continue // an index on Argon's own wal_merge_plans collection
-			}
-			require.False(t, sourceFacing[file], "%s calls %s; code that reaches a source database may only read it or write single documents", site, method)
-		}
-	}
-	// The single-document writes to a source all live in the write-back
-	// transaction body.
-	for _, method := range []string{"DeleteOne", "ReplaceOne"} {
-		for _, site := range unique(calls[method]) {
-			file := strings.SplitN(site, ":", 2)[0]
-			if sourceFacing[file] && file != "pkg/walcli/source.go" {
-				require.Contains(t, []string{"internal/merge/writeback.go:writeChanges", "internal/source/source.go:Unbind"}, site)
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(site, prefix) {
+					sites = append(sites, site+" "+method)
+				}
 			}
 		}
 	}
+	sort.Strings(sites)
+	require.Equal(t, []string{
+		// The doctor's probe: its own temporary database and collection.
+		"cli/cmd/doctor.go:inspectDeployment RunCommand",
+		"cli/cmd/doctor.go:probeCapture Drop",
+		"cli/cmd/doctor.go:probeCapture InsertOne",
+		"cli/cmd/doctor.go:probeCapture RunCommand",
+		"cli/cmd/doctor.go:probeCapture UpdateOne",
+		// READS A SOURCE: collStats for the import preview.
+		"internal/importer/service.go:PreviewImport RunCommand",
+		// Argon's wal_ingest_state.
+		"internal/ingest/follow.go:CatchUp UpdateOne",
+		"internal/ingest/follow.go:commit UpdateOne",
+		"internal/ingest/follow.go:heartbeat UpdateOne",
+		// READS A SOURCE: hello, and a find at a past cluster time.
+		"internal/ingest/follow.go:primaryTime RunCommand",
+		"internal/ingest/images.go:documentAt RunCommand",
+		// Capture of a branch's own physical database, and its status.
+		"internal/ingest/lifecycle.go:Drain DeleteOne",
+		"internal/ingest/lifecycle.go:Drain InsertOne",
+		"internal/ingest/lifecycle.go:report FindOneAndUpdate",
+		// Argon's wal_ingest_state.
+		"internal/ingest/resync.go:commit UpdateOne",
+		"internal/ingest/resync.go:resync UpdateOne",
+		"internal/ingest/service.go:ClearResumeState DeleteOne",
+		"internal/ingest/service.go:flush UpdateOne",
+		"internal/ingest/service.go:runStream DeleteOne",
+		"internal/ingest/service.go:runStream InsertOne",
+		"internal/ingest/service.go:runStream UpdateOne",
+		// Argon's wal_merge_plans, and a branch's own physical database.
+		"internal/merge/service.go:Apply UpdateOne",
+		"internal/merge/service.go:Preview InsertOne",
+		"internal/merge/service.go:applyPhysical DeleteOne",
+		"internal/merge/service.go:applyPhysical ReplaceOne",
+		"internal/merge/writeback.go:ApplyToSource UpdateOne",
+		"internal/merge/writeback.go:EnsureIndexes CreateOne",
+		"internal/merge/writeback.go:ReleaseWriteBacks UpdateMany",
+		"internal/merge/writeback.go:SettleWriteBack UpdateOne",
+		// WRITES TO A SOURCE: the write-back transaction body, one document
+		// at a time, into collections that exist.
+		"internal/merge/writeback.go:writeChanges DeleteOne",
+		"internal/merge/writeback.go:writeChanges InsertOne",
+		"internal/merge/writeback.go:writeChanges ReplaceOne",
+		// Argon's wal_sources.
+		"internal/source/source.go:AdoptID UpdateOne",
+		"internal/source/source.go:Bind InsertOne",
+		// ALTERS A SOURCE, when asked for by name: collMod for images.
+		"internal/source/source.go:EnableImages RunCommand",
+		// READS A SOURCE: hello and replSetGetConfig.
+		"internal/source/source.go:Identify RunCommand",
+		"internal/source/source.go:NewRegistry CreateMany",
+		"internal/source/source.go:Unbind DeleteOne",
+	}, sites, "a database write or command was added to, or removed from, code that can hold a source connection; check what it is sent to, then update this list")
 }
 
 // The source connection string is used and forgotten. Its credentials are in

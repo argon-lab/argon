@@ -29,8 +29,19 @@ entry — a synchronization barrier, not in-proxy capture).
   time. A position the oplog no longer holds, a dropped or renamed
   collection, and an update older than MongoDB's snapshot history are
   reported as degraded; `--allow-inexact` converges past the last of these
-  and records the range. The source may be a different deployment from the
-  Argon metadata.
+  and records the range, and has to be given on each run. The source may be a
+  different deployment from the Argon metadata. Following also ends as
+  degraded, instead of retrying without end or carrying on, when the source
+  keeps answering one position with an error (an event too large to return,
+  a missing privilege), when a time-series collection is created on the
+  source, and when something other than the follower wrote to `main`. A
+  follower's writes are conditional on the branch still following its source,
+  so `source detach` stops a follower in another process as well.
+- A source is identified by its replica-set ID when the importing user may
+  read it, and otherwise by its set name together with its member hosts; a
+  matching set name alone is never accepted, for following, resync,
+  write-back or `--enable-source-images`. `argon source status` shows which
+  applies.
 - Resync: `argon source resync` repairs a project whose follower ended as
   degraded, in place, instead of importing the database again: after a
   collection was dropped or renamed on the source, after the database was
@@ -50,10 +61,22 @@ entry — a synchronization barrier, not in-proxy capture).
   to the database its target follows, in one transaction that compares every
   document with the plan's before-image and writes nothing if one differs.
   It happens only when the flag is given on the call; the MCP server and the
-  REST API do not offer it.
+  REST API do not offer it. It writes single documents into collections the
+  source already has and never creates one; a replaced document keeps the
+  field order production gave it; a document whose fields were reordered
+  since the review counts as changed; and it is refused while following is
+  degraded. A plan whose write-back was interrupted before it committed is
+  pending again.
 - `--enable-source-images` on `import database --online` and `source follow`
   switches on `changeStreamPreAndPostImages` for the source's collections.
-  Argon does not alter a source's collections without it.
+  Argon does not alter a source's collections without it, makes the change
+  only once the import or the follower can actually start, and names the
+  altered collections in the error if the import then fails.
+- An online import copies and follows every collection of the source except
+  `system.*`, including ones named `config.*`, `admin.*` or `local.*`. It
+  skips views and refuses time-series collections. A failed or cancelled
+  import, and `argon import cleanup`, remove the snapshots taken of the
+  unpublished project as well as its rows.
 
 ### Changed
 
@@ -76,6 +99,9 @@ entry — a synchronization barrier, not in-proxy capture).
   any other database as its physical database.
 - Source connection strings are removed from import errors before they are
   printed, and `--uri` may be given as `ARGON_SOURCE_URI`.
+- `checkout` of an already checked-out branch whose record names a database
+  other than the one Argon created for it is refused instead of returning
+  that database's connection string.
 - The README, the npm package description and the MCP Registry description
   name what is underneath a sandbox as Git for MongoDB. The README sets seven
   Git commands beside the Argon command that does the same job and says where

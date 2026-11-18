@@ -403,11 +403,15 @@ func TestOnlineImport_SourceWrittenThroughout(t *testing.T) {
 		f.seedShop(t)
 
 		traffic := f.startTraffic(t, 3, time.Millisecond)
-		time.Sleep(100 * time.Millisecond)
+		// The writers must be under way before the import starts, however
+		// long their first connections take.
+		for started := time.Now(); traffic.ops.Load() < 20; time.Sleep(10 * time.Millisecond) {
+			require.Less(t, time.Since(started), 30*time.Second, "production traffic never started (%d failed writes)", traffic.fails.Load())
+		}
 		before := traffic.ops.Load()
 		result := f.importOnline(t, walcli.OnlineImport{BatchSize: 100})
 		during := traffic.ops.Load() - before
-		require.Greater(t, during, int64(50), "the source must actually be written while it is imported")
+		require.Greater(t, during, int64(50), "the source must actually be written while it is imported (%d writes failed)", traffic.fails.Load())
 		require.True(t, result.Online)
 		require.NotNil(t, result.ConsistentClusterTime)
 		require.Greater(t, result.ConsistentLSN, result.StartLSN)

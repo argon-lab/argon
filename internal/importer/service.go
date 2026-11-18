@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -233,7 +234,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	}
 	// Check collection types and read permissions before reserving a target
 	// project. Views/time-series options cannot be reproduced by this importer.
-	collectionNames, err := importCollections(ctx, sourceDB)
+	collectionNames, err := importCollections(ctx, sourceDB, isSystemCollection)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +324,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	return result, nil
 }
 
-func importCollections(ctx context.Context, db *mongo.Database) ([]string, error) {
+func importCollections(ctx context.Context, db *mongo.Database, skip func(string) bool, viewsAllowed ...bool) ([]string, error) {
 	cursor, err := db.ListCollections(ctx, bson.D{})
 	if err != nil {
 		return nil, fmt.Errorf("source collection preflight: %w", err)
@@ -338,7 +339,11 @@ func importCollections(ctx context.Context, db *mongo.Database) ([]string, error
 		if err := cursor.Decode(&spec); err != nil {
 			return nil, err
 		}
-		if isSystemCollection(spec.Name) {
+		if skip(spec.Name) {
+			continue
+		}
+		if spec.Type == "view" && len(viewsAllowed) > 0 && viewsAllowed[0] {
+			// A view holds no documents of its own.
 			continue
 		}
 		if spec.Type != "collection" {
@@ -483,7 +488,16 @@ func (s *ImportService) validateImportOptions(opts ImportOptions) error {
 }
 
 // isSystemCollection returns true if the collection name represents a system collection
+//
+// This is the quiesced import's rule and is wider than MongoDB's own: only
+// system.* is reserved inside a user database. It is kept as it was for
+// that path. The online import uses source.SkipCollection, which skips
+// system.* alone, because a followed project claims to equal its source.
 func isSystemCollection(name string) bool {
-	// Shared with the follower: both must skip exactly the same collections.
-	return source.SkipCollection(name)
+	for _, prefix := range []string{"system.", "admin.", "local.", "config.", "argon_wal."} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }

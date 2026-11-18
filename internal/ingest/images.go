@@ -24,6 +24,23 @@ import (
 // point in time.
 var errSnapshotGone = errors.New("the change is outside MongoDB's snapshot history")
 
+// errSnapshotUnsupported accompanies errSnapshotGone when the refusal has
+// nothing to do with how old the change is. Keeping up more closely does not
+// help then, and neither does enabling images after the fact.
+var errSnapshotUnsupported = errors.New("MongoDB does not serve this collection at a past cluster time")
+
+type snapshotUnsupported struct{ message string }
+
+func (e *snapshotUnsupported) Error() string {
+	return errSnapshotUnsupported.Error() + ": " + e.message
+}
+
+// Is makes the error count as errSnapshotGone for callers that only ask
+// whether the image can still be read.
+func (e *snapshotUnsupported) Is(target error) bool {
+	return target == errSnapshotGone || target == errSnapshotUnsupported
+}
+
 // Server errors that mean a snapshot read at this time will not succeed
 // later either. Anything else is left to the caller's retry.
 var snapshotGoneCodes = map[int32]bool{
@@ -60,6 +77,12 @@ func documentAt(ctx context.Context, physical *mongo.Database, collection string
 	if err != nil {
 		var command mongo.CommandError
 		if errors.As(err, &command) && snapshotGoneCodes[command.Code] {
+			if command.Code != 239 {
+				// Not a matter of age: the server will not serve this
+				// collection at any past cluster time (a capped collection,
+				// a pending catalog change, a missing privilege).
+				return nil, &snapshotUnsupported{command.Message}
+			}
 			return nil, fmt.Errorf("%w: %s", errSnapshotGone, command.Message)
 		}
 		return nil, err

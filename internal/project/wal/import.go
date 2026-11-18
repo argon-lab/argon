@@ -60,7 +60,9 @@ func (s *ProjectService) AbortImport(ctx context.Context, projectID string) erro
 		return err
 	}
 	defer session.EndSession(ctx)
+	var removed []string
 	_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		removed = nil
 		result, err := s.collection.DeleteOne(sc, bson.M{"_id": projectID, "importing": true})
 		if err != nil {
 			return nil, err
@@ -80,6 +82,11 @@ func (s *ProjectService) AbortImport(ctx context.Context, projectID string) erro
 				return nil, err
 			}
 		}
+		for _, id := range branchIDs {
+			if text, ok := id.(string); ok {
+				removed = append(removed, text)
+			}
+		}
 		for _, name := range []string{"wal_log", "wal_branches", "wal_sources"} {
 			if _, err := s.db.Collection(name).DeleteMany(sc, bson.M{"project_id": projectID}); err != nil {
 				return nil, err
@@ -88,7 +95,18 @@ func (s *ProjectService) AbortImport(ctx context.Context, projectID string) erro
 		_, err = s.db.Collection("wal_counters").DeleteOne(sc, bson.M{"_id": projectID})
 		return nil, err
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// Snapshots of the unpublished branches hold a copy of the imported
+	// data. They are removed outside the transaction: their cleanup takes
+	// the publication lock and may reach an external chunk store.
+	if s.afterImportAbort != nil && len(removed) > 0 {
+		if err := s.afterImportAbort(ctx, removed); err != nil {
+			return fmt.Errorf("the unfinished import was removed, but its snapshots were not: %w", err)
+		}
+	}
+	return nil
 }
 
 // CleanupImport is an explicit recovery operation after a killed/crashed import.

@@ -69,6 +69,10 @@ type SourceInfo struct {
 	Database   string `json:"database"`
 	Location   string `json:"location"`
 	ReplicaSet string `json:"replica_set"`
+	// Identity says what tells this source apart from another deployment:
+	// its replica-set ID, or, when that could not be read, its set name and
+	// member hosts.
+	Identity string `json:"identity"`
 
 	// State is the follower's last report: running, catching_up, retrying,
 	// degraded or stopped. It is not proof that a follower is running now.
@@ -141,6 +145,11 @@ func (s *Services) openSource(ctx context.Context, binding *source.Binding, uri 
 	if err == nil {
 		err = binding.Verify(identity)
 	}
+	if err == nil {
+		// A binding made by a user who could not read the replica-set ID
+		// takes it from the first verified connection that can.
+		err = s.Sources.AdoptID(ctx, binding, identity)
+	}
 	if err != nil {
 		disconnect(client)
 		return nil, nil, source.RedactError(err, uri)
@@ -156,7 +165,7 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 	}
 	info := &SourceInfo{
 		Project: project.Name, Branch: branch.Name, BranchID: branch.ID,
-		Database: binding.Database, Location: binding.Display, ReplicaSet: binding.SetName,
+		Database: binding.Database, Location: binding.Display, ReplicaSet: binding.SetName, Identity: binding.Strength(),
 		HeadLSN: branch.HeadLSN, State: "stopped", Mode: ingest.ModeExact, InexactRanges: []InexactRange{},
 	}
 	status, err := s.Ingest.SourceStatusFor(ctx, branch.ID)
@@ -229,9 +238,20 @@ func (s *Services) FollowSource(ctx context.Context, projectName string, opts Fo
 	}
 	defer disconnect(client)
 	if opts.EnableSourceImages {
+		// The source is altered only once following can actually start:
+		// nothing else is following in this process and there is a position
+		// to follow from.
+		if s.Ingest.Running(branch.ID) {
+			return fmt.Errorf("the source is already being followed for project %q in this process; its collections were not altered", projectName)
+		}
+		if status, err := s.Ingest.SourceStatusFor(ctx, branch.ID); err != nil {
+			return err
+		} else if status == nil || status.Source == nil {
+			return fmt.Errorf("project %q has no saved source position to follow from; its source's collections were not altered", projectName)
+		}
 		collections, err := source.Collections(ctx, db)
 		if err == nil {
-			err = source.EnableImages(ctx, db, collections)
+			_, err = source.EnableImages(ctx, db, collections)
 		}
 		if err != nil {
 			return source.RedactError(err, opts.URI)
@@ -382,6 +402,19 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	if binding == nil {
 		return nil, errors.New("this plan's target branch does not follow an external database; apply it without --write-back")
 	}
+	// A plan is reviewed against the followed branch. When following has
+	// ended on a gap, or a resync is under way, that branch is known not to
+	// be the source, and so is what the reviewer saw.
+	if status, err := s.Ingest.SourceStatusFor(ctx, plan.TargetBranchID); err != nil {
+		return nil, err
+	} else if status != nil {
+		if status.State == "degraded" {
+			return nil, fmt.Errorf("write-back refused: following ended as degraded (%s), so the branch this plan was reviewed against no longer matches the source. Run `argon source resync`, then preview again", status.Error)
+		}
+		if status.Source != nil && status.Source.Resync != nil {
+			return nil, errors.New("write-back refused: a resync of the followed branch has not finished. Complete it with `argon source resync`, then preview again")
+		}
+	}
 	client, db, err := s.openSource(ctx, binding, uri)
 	if err != nil {
 		return nil, err
@@ -403,6 +436,10 @@ func (l writeBackLedger) Lookup(ctx context.Context, branchID string, session pr
 		return nil, err
 	}
 	return &ingest.WriteBack{PlanID: plan.ID.Hex(), SourceBranchID: plan.SourceBranchID, SourceBranch: plan.SourceBranch}, nil
+}
+
+func (l writeBackLedger) Release(ctx context.Context, branchID string, claimedBefore time.Time) error {
+	return l.merge.ReleaseWriteBacks(ctx, branchID, claimedBefore)
 }
 
 func (l writeBackLedger) Settle(ctx context.Context, planID string) error {

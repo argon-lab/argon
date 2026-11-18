@@ -108,7 +108,9 @@ the only way to import a standalone mongod.
 ### Preflight, failure and recovery
 
 Preflight verifies readable ordinary collections before creating the target;
-views/time-series collections and an absent/no-collection source are rejected.
+views/time-series collections and an absent/no-collection source are rejected
+(an online import skips views, which hold no documents, and rejects
+time-series collections).
 The reserved target is hidden from normal project lookup/listing until every
 collection succeeds. A handled error or cancellation removes that unpublished
 project, its branches, WAL and counter transactionally, so retrying its name
@@ -138,6 +140,21 @@ log in to it. Every command that reaches the source takes the connection
 string again, from `--uri` or `ARGON_SOURCE_URI`, and refuses a deployment
 other than the recorded one.
 
+What "the recorded one" rests on depends on what the importing user could
+read, and `argon source status` shows which (`identity`):
+
+- **The replica set's ID**, when the import could run `replSetGetConfig`.
+  Every later connection then has to show the same ID. One that cannot read
+  it is refused, however well the names match: grant the user
+  `replSetGetConfig` (the `clusterMonitor` role has it).
+- **The set name and member hosts**, when it could not. A later connection
+  has to report the same set name and at least one of the hosts recorded at
+  import. A matching name alone is never accepted: separate deployments
+  routinely share one, and a staging set is often a restore of production.
+  The first verified connection that can read the ID records it, and the
+  stronger check applies from then on. This weaker check cannot tell two
+  deployments apart if they share a set name and a member host name.
+
 ### What `argon source follow` guarantees
 
 - **No change is skipped or repeated across restarts.** The entries, the
@@ -152,6 +169,10 @@ other than the recorded one.
 - **Stored documents are exact.** An insert or replacement carries its
   document. An update's document is read from the source as of the update's
   own cluster time and stored byte for byte.
+- **Detaching stops every follower.** `argon source detach` cannot reach a
+  follower in another process, so the follower's own writes are conditional
+  on the branch still following the source, in the same transaction. After a
+  detach its next write fails, it stops, and `main` is not written again.
 - **Nothing is written to the source.** No marker collections, no collection
   options. The only writes Argon ever makes to a source are `--write-back`
   transactions and, when asked for by name, `--enable-source-images`.
@@ -190,8 +211,45 @@ before the problem:
     writes and more storage on the source for every update and delete, a
     `collMod` on each collection, and the source user needs the privilege to
     run it. Argon never does this unless the flag is given, and does not
-    undo it. Collections created later are not covered until the flag is
-    given again.
+    undo it, also when the import that asked for it then fails: the error
+    names the collections that were changed. The change is made only after
+    the import has reserved its project and bound the source, and for
+    `source follow` only once following can actually start. Collections
+    created later are not covered until the flag is given again. It helps
+    with updates made after it is enabled, not with ones already waiting in
+    the stream.
+
+  On MongoDB 6.0 an update cannot be read at its own cluster time once its
+  collection has been altered afterwards: an index build, a `collMod`
+  (enabling images is one), a rename or a drop. Updates the follower had not
+  stored by then stop it, with a message that says so; `--allow-inexact` or a
+  resync gets past them. On 6.0, enable images while the follower is caught
+  up, not while a backlog is waiting. MongoDB 7.0 and 8.x serve such reads
+  (checked on 7.0.45 and 8.3.17).
+
+  A collection MongoDB does not serve at a past cluster time has no exact
+  reads at all. A capped collection is one on MongoDB 7.0 and earlier (8.x
+  serves it). Its updates are followed
+  exactly only through attached images; without them every one of them stops
+  following, or with `--allow-inexact` is stored as the document's current
+  state inside one inexact range whose reason names the collection.
+
+Following also ends as `degraded`, rather than retrying for ever, when the
+source keeps answering the same position with an error and nothing can be
+stored in between: an update event too large to return (over 16 MB with its
+images), a privilege the user lacks, a transaction too large to store in the
+time allowed. An import in that situation fails with the error instead of
+hanging. And it ends as `degraded` when something else has written to `main`
+(a process from before following existed does not know the branch is
+read-only) or has replaced its saved position: the head on record no longer
+being the branch's head is checked on every start and on every write.
+
+A time-series collection created on a followed source ends following: its
+measurements never reach a change stream as documents, so `main` could not
+equal such a source, and a resync refuses it for the same reason. Views are
+ignored; they hold no documents. Collections named `config.*`, `admin.*` or
+`local.*` inside the source database are ordinary collections and are
+imported and followed (a quiesced import still skips them).
 
 Without images, each followed update costs the source one point read. Pre-images
 of followed changes are stored only when the source supplies them, so `main`
@@ -289,18 +347,38 @@ argon merge apply <plan-id> --write-back
   new plan shows the production change as a conflict to resolve.
 - The plan does not have to match `main`'s head, which moves with every
   production write. The per-document comparison is the staleness check.
-- Only single-document replacements and deletes are sent. A replaced document
-  is written with the bytes the sandbox stored, so its field order is the
-  sandbox's.
+- Single-document inserts, replacements and deletes are sent, nothing else,
+  and only into collections the source already has. A plan that puts a
+  document into a collection the source lacks is refused before anything is
+  claimed or written: create the collection there, with the options it should
+  have, and preview again. Write-back never upserts. The check is made just
+  before the transaction; a collection dropped in the instant between the two
+  would be created again by an insert.
+- A replacement keeps production's layout. Fields the document already had
+  stay in the order production has them, at every level of nesting, and
+  fields the plan adds follow. An inserted document has the order the sandbox
+  stored, or sorted fields when the sandbox was written through the SDK.
+- The comparison with the before-image is byte for byte when `main` holds the
+  source's own bytes for that document, which it does for everything the
+  import copied or following stored: a document whose fields production
+  reordered since the review is a conflict. When those bytes are not
+  available (reclaimed by GC, or stored from an image MongoDB attached with a
+  repeated field) values are compared and field order is not.
+- Write-back is refused while following is `degraded` or a resync is
+  unfinished: the plan was reviewed against a `main` known not to be the
+  source. Resync, then preview again.
 - `main` is not written by the write-back. It receives the change through
   following, like any other change to the source, attributed to the merge
   (`actor: merge:<sandbox>`) with a `merge` record carrying the plan ID.
 - The plan is claimed in the metadata before the transaction starts and
   cannot be applied twice. If the process dies after the source commit and
   before recording it, the plan stays `writing_back`; the follower closes it
-  as applied when it sees the transaction in the stream. A plan that is still
-  `writing_back` after following has caught up was never committed; preview
-  again.
+  as applied when it sees the transaction in the stream. A claim whose
+  transaction never committed (the process died first, or was interrupted
+  before the commit) is returned to pending: at once when the interruption is
+  seen, otherwise by the follower once `main` has passed the claim by ten
+  minutes without that transaction appearing. This relies on the clocks of
+  the writing host and the source agreeing to within minutes.
 - Undoing a write-back means writing another plan back. `argon undo` does not
   apply to a branch that follows a source.
 
@@ -313,16 +391,25 @@ metadata database and MongoDB's system databases cannot be imported online,
 so a followed source can never carry a name a drop path accepts. A branch
 record that names any other database as its physical database is refused by
 release, discard, the sandbox sweep, capture, live merge and undo, and the
-wire proxy. Import cleanup deletes rows in the metadata database only. The
-code that holds a connection to a source contains no drop, rename, collection
-creation or multi-document write, and a test fails the build if one is added.
+wire proxy. Import cleanup deletes rows and snapshots in the metadata
+deployment only.
+
+In the packages that can hold a connection to a source, every call that
+writes to a database or sends it a command is on a list in the test suite, by
+file and function, and the build fails when one is added or removed without
+the list being updated. Three of them reach a source: the write-back
+transaction body (single-document insert, replace and delete), the `collMod`
+of `--enable-source-images`, and read-only commands (`hello`,
+`replSetGetConfig`, `find`, `collStats`). The list pins where such calls are,
+not what a future one would do; a reviewer still has to look.
 
 ### Source permissions
 
 Reading and following need `find` and `changeStream` on the source database
-and the ability to run `hello`. `replSetGetConfig` is used when permitted, to
-tell deployments with the same replica-set name apart. `--write-back` needs
-`readWrite` on the database. `--enable-source-images` needs `collMod`.
+and the ability to run `hello`. `replSetGetConfig` is what identifies the
+deployment for certain (see above); once a project has recorded the ID, every
+user that reaches the source for it needs that privilege too. `--write-back`
+needs `readWrite` on the database. `--enable-source-images` needs `collMod`.
 
 ## Snapshot chunk stores
 
@@ -402,9 +489,14 @@ a branch alias, not a real database SCRAM can run against).
 A source connection string (`--uri`, `ARGON_SOURCE_URI`) is used for the
 command it is given to and is not written anywhere. Errors, status reports
 and stored documents show the source as scheme, hosts and database only;
-user names, passwords and options are removed from driver errors before they
-are printed or stored. Prefer the environment variable to `--uri`, which is
-visible in the process list.
+the connection string itself, the `user:password` pair, the password in any
+escaping and the values of options that carry secrets
+(`tlsCertificateKeyFilePassword`, `authMechanismProperties` and the like) are
+removed from driver errors before they are printed or stored. A user name on
+its own is not removed, and neither is a password shorter than four
+characters outside the string and the pair, because removing it would cut up
+ordinary words. Prefer the environment variable to `--uri`, which is visible
+in the process list.
 
 ## Preflight and new collections
 
