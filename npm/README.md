@@ -1,6 +1,6 @@
 # Argon CLI
 
-Argon creates versioned MongoDB sandboxes for branches, time travel, merges, and undo with native MongoDB drivers.
+Argon gives AI agents MongoDB sandboxes, with Git for MongoDB underneath: branch, diff, merge, time travel and undo through native MongoDB drivers.
 
 ## Installation
 
