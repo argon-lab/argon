@@ -159,21 +159,19 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	}
 	// Persist a stream boundary before making the URI available. A first watch
 	// can now recover writes that arrived between checkout and stream startup.
-	var boundary bson.Raw
-	if err := physical.RunCommand(ctx, bson.D{{Key: "ping", Value: 1}}).Decode(&boundary); err != nil {
+	// The boundary is read from hello, not ping: Atlas free clusters answer
+	// ping with {ok: 1} alone, while hello carries operationTime on every
+	// replica set.
+	var reply bson.Raw
+	if err := physical.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&reply); err != nil {
 		return nil, fmt.Errorf("failed to establish capture boundary: %w", err)
 	}
-	t, inc, ok := boundary.Lookup("operationTime").TimestampOK()
+	startAt, ok := captureBoundary(reply)
 	if !ok {
-		return nil, fmt.Errorf("MongoDB replica set with change streams is required (missing operationTime)")
-	}
-	// startAtOperationTime is inclusive; exclude the materialization itself.
-	inc++
-	if inc == 0 {
-		t++
+		return nil, fmt.Errorf("MongoDB replica set with change streams is required (hello returned no operationTime)")
 	}
 	if _, err := s.ingestState.UpdateOne(ctx, bson.M{"_id": branch.ID},
-		bson.M{"$set": bson.M{"start_at": primitive.Timestamp{T: t, I: inc}}}, options.Update().SetUpsert(true)); err != nil {
+		bson.M{"$set": bson.M{"start_at": startAt}}, options.Update().SetUpsert(true)); err != nil {
 		return nil, fmt.Errorf("failed to persist capture boundary: %w", err)
 	}
 
@@ -181,6 +179,23 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 		return nil, fmt.Errorf("failed to mark branch live: %w", err)
 	}
 	return info, nil
+}
+
+// captureBoundary returns the first cluster time after a command reply's
+// operationTime. A change stream opened with startAtOperationTime includes
+// that instant, so the boundary is one increment later and the checkout's own
+// writes stay out of the capture. ok is false when the reply has no
+// operationTime, which is the case for a standalone server.
+func captureBoundary(reply bson.Raw) (primitive.Timestamp, bool) {
+	t, inc, ok := reply.Lookup("operationTime").TimestampOK()
+	if !ok {
+		return primitive.Timestamp{}, false
+	}
+	inc++
+	if inc == 0 {
+		t++
+	}
+	return primitive.Timestamp{T: t, I: inc}, true
 }
 
 // loadCollection bulk-inserts one collection's state and prepares it for

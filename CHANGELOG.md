@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Engine warnings go to stderr. A failed storage reclaim after a branch was
-  deleted, a failed post-import snapshot and a branch that could not be deleted
-  with its project were reported on stdout. Under `argon mcp` stdout is the
-  protocol stream, and with `--output json` it is the JSON value, so such a
-  warning corrupted both.
-
 Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
@@ -47,10 +39,6 @@ entry — a synchronization barrier, not in-proxy capture).
 - `--enable-source-images` on `import database --online` and `source follow`
   switches on `changeStreamPreAndPostImages` for the source's collections.
   Argon does not alter a source's collections without it.
-- `examples/boxd-sandbox`: agent-written code runs in an isolated boxd machine
-  and writes to an Argon sandbox through a MongoDB user restricted to that
-  sandbox's database; the host prints the diff and discards the sandbox, or
-  merges it with `--apply`.
 
 ### Changed
 
@@ -65,6 +53,36 @@ entry — a synchronization barrier, not in-proxy capture).
   any other database as its physical database.
 - Source connection strings are removed from import errors before they are
   printed, and `--uri` may be given as `ARGON_SOURCE_URI`.
+
+## [2.4.1] - 2026-11-17
+
+Sandboxes and checkouts work on MongoDB Atlas free clusters. No data format
+changes since 2.4.0.
+
+### Fixed
+
+- Sandboxes and checkouts work on MongoDB Atlas free (M0) clusters. Checkout
+  read its capture boundary from the reply to `ping`, which a free cluster
+  answers without `operationTime`, so `argon sandbox create` and
+  `argon checkout` failed with "missing operationTime" although `argon doctor`
+  passed. The boundary now comes from `hello`.
+- `examples/boxd-sandbox`: the host script reviews a sandbox the agent wrote
+  nothing to instead of stopping with a TypeError.
+- Engine warnings go to stderr. A failed storage reclaim after a branch was
+  deleted, a failed post-import snapshot and a branch that could not be deleted
+  with its project were reported on stdout. Under `argon mcp` stdout is the
+  protocol stream, and with `--output json` it is the JSON value, so such a
+  warning corrupted both.
+
+### Added
+
+- `examples/boxd-sandbox`: agent-written code runs in an isolated boxd machine
+  and writes to an Argon sandbox through a MongoDB user restricted to that
+  sandbox's database; the host prints the diff and discards the sandbox, or
+  merges it with `--apply`.
+
+### Changed
+
 - CI's audit of the console's dependencies can excuse an advisory by name. The
   whole tree is still audited, a production install must be clean, and an
   exception ends as soon as npm offers a compatible fix. One exception is
@@ -549,7 +567,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.4.1...HEAD
+[2.4.1]: https://github.com/argon-lab/argon/releases/tag/v2.4.1
 [2.4.0]: https://github.com/argon-lab/argon/releases/tag/v2.4.0
 [2.3.3]: https://github.com/argon-lab/argon/releases/tag/v2.3.3
 [2.3.2]: https://github.com/argon-lab/argon/releases/tag/v2.3.2
