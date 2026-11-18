@@ -127,6 +127,14 @@ assets and their SHA-256 provenance. Commit source and built assets together.
 No private companion checkout is needed. CI tests the production console
 against the same engine commit, including Undo scope and expired sessions.
 
+CI also audits the console's whole dependency tree with
+`node scripts/console-audit.mjs`. An advisory fails it unless
+`scripts/console-audit-exceptions.json` names it. An exception holds only for
+build-time dependencies (a production install must stay clean) and only while
+npm offers no compatible fix; after that the check fails until the lockfile is
+updated and the exception deleted. Add one only when no patched release
+exists, and give the reason in the entry.
+
 ### Model and fuzz tests
 
 Two tests search for failures instead of checking fixed cases:
