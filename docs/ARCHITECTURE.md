@@ -455,7 +455,8 @@ source's own change stream:
    dry-run stops after preflight and estimates document counts without
    reserving a project.
 2. Start a causally consistent session at `T0` and copy every listed collection
-   into put entries with majority read concern.
+   into put entries with majority read concern. The document key preserves
+   the BSON type of `_id`, including an explicit null.
 3. Replay the change stream from just after `T0` on top of the copy. Each
    entry is a whole document, so applying a change the copy already contained
    leaves the same document.
@@ -501,12 +502,17 @@ physical entry, as capture does, and differs where the source is not Argon's:
   is.
 
 A follower and a resync take the same per-branch lease in `wal_ingest_state`.
-Acquisition and heartbeat timestamps use the metadata primary's clock. The
-owner releases the lease on exit. If the heartbeat expires, another run can
-take over. Only the current owner can update capture status or advance the
-stream position. Transactions that publish the log and branch head also
-check the lease, the branch's source and its checkout state. Detach removes
-the saved state and a previous owner cannot write into a recreated record.
+The metadata primary's clock determines acquisition, heartbeat timestamps
+and expiry. The owner releases a fresh lease on exit. Once the heartbeat
+expires, the owner loses the lease and another run can take over.
+Renewals, capture status writes and transactions that publish the log,
+branch head and stream position require a fresh lease. Those transactions
+also check the branch's source and checkout state. Detach removes the
+saved state and a previous owner cannot write into a recreated record.
+A follower stops after a full lease period without a successful renewal.
+Source status reads the saved position, branch head and server-clock
+lease freshness from one metadata snapshot. An expired live state is
+reported as stopped while retaining the last position and consistent point.
 A head that moved without the follower, or a saved position another process
 replaced, ends following as degraded and requires a manual resync. Automatic
 resync handles gaps in the source stream and unfinished resyncs.
@@ -555,7 +561,8 @@ documents:
 3. Source to branch: read every source document with majority reads in a
    causally consistent session that starts at `T0`; append a put unless the
    branch's newest entry for the document is a put of the same bytes.
-   Flush each batch at the document-count or raw BSON byte limit.
+   Flush each batch at the document-count, raw BSON or encoded selector
+   byte limit.
 4. Branch to source: walk the branch's document keys, look each batch up on
    the source by `_id` in the same session, and append a delete for every
    document the source does not have. A dropped collection has none of its
@@ -576,8 +583,9 @@ Step 4 does not hold a collection in memory. The keys come from the WAL's
 `(branch, collection, document, lsn)` index, read in key order with one key
 at a time. Each batch is resolved to the branch's live documents with the
 materializer's point read. For an ordinary collection in the source catalog,
-one `$in` query checks the batch against the source. A name outside that
-catalog, including a name now used by a view, is pruned as absent. Where
+`$in` queries check the batch against the source. Both lookups budget the
+encoded selector size, including expansion for typed metadata keys. A name
+outside that catalog, including a name now used by a view, is pruned as absent. Where
 garbage collection has reclaimed part of a collection's history
 the log no longer names every document, and the collection is listed from its
 snapshot instead, loaded whole as every reader of reclaimed history does.
@@ -605,12 +613,18 @@ The write is one source transaction that compares each document with the
 plan's before-image and then inserts, replaces or deletes it, in a collection
 that already exists: it never upserts, so it cannot create one. The
 comparison is on the bytes the followed branch stored for the document when
-it has them, which makes a reordered document a changed one. A replacement
-preserves the source's field order, including array elements matched by
-`_id` or value. Elements without a match keep the plan's order. Because the
+it has them, which makes a reordered document a changed one. A history read
+failure or before-image possibly reclaimed by garbage collection stops
+preparation before the plan is claimed. A replacement
+preserves the source's field order. It reserves exact array element matches
+first, then matches remaining elements by `_id` or value. Ambiguous and
+unmatched elements keep the plan's order. Because the
 source and the metadata may be different deployments, the plan's status
 cannot commit with the documents. The writer claims the plan first with the
-ID of a session used for nothing else. The follower recognises events from
+ID of a session used for nothing else. The source transaction starts only
+after the metadata deployment acknowledges the claim with majority write
+concern, which also applies to settlement and return to pending.
+The follower recognises events from
 that session, attributes their entries to the merge, appends the `merge`
 record and marks the plan applied in the same transaction that stores them.
 An acknowledged source commit also lets the writer mark the plan applied.
@@ -630,8 +644,10 @@ stays `writing_back` and cannot be reused.
 - To enable source images, the follower first checks the binding, lease and
   saved position and opens the change stream. If the saved position is
   degraded, replay must clear the gap or a resync must finish before the
-  follower issues `collMod`. An error after a change lists the collections
-  it altered.
+  follower issues `collMod`. The follower checks its lease before each
+  collection, and an error after a change lists the collections it altered.
+  The metadata check and source alteration run separately, so a source
+  alteration on another deployment can finish after lease loss.
 - A resync restores the source's current state, not its history: the
   changes between the last applied one and the resync are recorded as their
   outcome only, inside a range marked inexact. A write-back that committed in

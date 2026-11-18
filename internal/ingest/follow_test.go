@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -144,6 +145,9 @@ func TestFollowReportsLostOplogHistoryAsDegraded(t *testing.T) {
 		{Code: 280, Name: "ChangeStreamFatalError", Message: "cannot resume stream; the resume token was not found."},
 	} {
 		branchID := primitive.NewObjectID().Hex()
+		if _, err := db.Collection("wal_branches").InsertOne(context.Background(), wal.Branch{ID: branchID}); err != nil {
+			t.Fatal(err)
+		}
 		attempts := 0
 		cfg := runConfig{actor: sourceActor, redact: func(text string) string { return strings.ReplaceAll(text, "hunter2", "[redacted]") }}
 		cfg.stream = func(context.Context, *running) error {

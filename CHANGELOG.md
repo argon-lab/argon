@@ -21,9 +21,9 @@ experimental and off by default.
   metadata, judged by the metadata deployment's clock, and every write it
   makes is conditional on still holding it. A second `source follow` or
   `source resync` ends at once and names the run that holds the lease
-  instead of marking the project degraded; a run that was paused past the
-  lease and replaced stops without writing. `argon source status` shows the
-  owner (kind, host, process ID, last heartbeat).
+  instead of marking the project degraded. Expiry revokes the lease even
+  if no other run has taken over. The owner stops, and `argon source status`
+  shows the expired lease and the last saved position.
 - A write-back claim is settled only on evidence: the writer knows its
   transaction's outcome, or following sees the transaction. The follower no
   longer returns a claimed plan to pending after a waiting time. A plan that
@@ -43,8 +43,8 @@ experimental and off by default.
   starts, and resyncs only when the source's stream can no longer be
   followed. A head moved by something other than the follower needs an
   explicit `source resync`.
-- A resync batch is bounded by size (16 MiB of documents) as well as by
-  count.
+- Resync bounds document batches and both metadata and source lookup
+  selectors by encoded size as well as by count.
 - `connect` returns a connection string only for the branch's own physical
   database, and the console omits it for a sandbox whose record names
   another database.
@@ -84,6 +84,19 @@ experimental and off by default.
 - A status write from a follower or resync could recreate the state of a
   project that had been detached, or change the capture status of a branch
   checked out afterwards.
+- A branch head moved outside the follower is reported as degraded by
+  source and deployment status. An ordinary resync can repair it, and
+  write-back refuses it.
+- Deployment status also fails for unfinished resyncs and expired source
+  leases.
+- Write-back requires majority acknowledgment for plan claim transitions.
+  A failed before-image history read aborts before the plan is claimed.
+- Write-back preserves exact matches among equal-valued array elements
+  with different BSON field order.
+- Online import and resync accept documents with an explicit BSON null
+  `_id`. Following tracks inserts, updates and deletes of those documents.
+- The follower checks its lease before enabling images on each collection.
+  If its lease expires, the error identifies which collections changed.
 
 ## [2.6.0] - 2026-11-18
 

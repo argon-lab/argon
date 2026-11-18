@@ -66,8 +66,11 @@ type Status struct {
 	// Source is set for a branch that follows an external database.
 	Source *SourceStatus `bson:"source,omitempty" json:"source,omitempty"`
 	Owner  *SourceOwner  `bson:"owner,omitempty" json:"-"`
+	// SourceLeaseExpired is evaluated against the metadata server's clock.
+	SourceLeaseExpired bool `bson:"-" json:"-"`
 
-	hasResumeToken bool
+	hasResumeToken         bool
+	synthesizedDegradation bool
 }
 
 type running struct {
@@ -175,7 +178,7 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 	defer func() {
 		run.cancel()
 		if heartbeat != nil {
-			if lost := <-heartbeat; lost != nil {
+			if lost := <-heartbeat; lost != nil && !errors.Is(err, lost) {
 				err = lost
 			}
 		}
@@ -191,7 +194,11 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 				state = "degraded"
 			}
 		}
-		if (!cfg.resync || run.resyncStarted) && !errors.Is(err, ErrUnfinishedResync) {
+		var leaseErr error
+		if run.lease != nil {
+			_, leaseErr = run.lease.renewal()
+		}
+		if leaseErr == nil && (!cfg.resync || run.resyncStarted) && !errors.Is(err, ErrUnfinishedResync) {
 			reportErr := s.report(branchID, state, s.currentActor(run), message)
 			var lost *ConfigurationError
 			if run.lease != nil && errors.As(reportErr, &lost) {
@@ -315,7 +322,11 @@ func (s *Service) report(branchID, state, actor, message string) error {
 		s.statuses[branchID] = status
 	}
 	s.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	base := context.Background()
+	if lease != nil {
+		base = lease.ctx
+	}
+	ctx, cancel := context.WithTimeout(base, 5*time.Second)
 	defer cancel()
 	// Lifecycle reports must not replace checkpoint metrics: a fresh process
 	// starts with empty memory, and another watcher may have committed newer

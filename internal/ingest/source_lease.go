@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/argon-lab/argon/v2/internal/wal"
@@ -33,13 +34,69 @@ type SourceOwner struct {
 }
 
 type sourceLease struct {
-	branch      *wal.Branch
-	id          string
-	initialized bool
+	branch             *wal.Branch
+	id                 string
+	initialized        bool
+	replacedExpiredRun bool
+
+	ctx       context.Context
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	renewedAt time.Time
+	err       error
 }
 
 func (l *sourceLease) filter() bson.M {
-	return bson.M{"_id": l.branch.ID, sourceOwnerPath + ".id": l.id}
+	return bson.M{"_id": l.branch.ID, sourceOwnerPath + ".id": l.id, "$expr": sourceLeaseFresh()}
+}
+
+func sourceLeaseFresh() bson.M {
+	return bson.M{"$gt": bson.A{"$" + sourceOwnerPath + ".heartbeat_at",
+		bson.M{"$subtract": bson.A{"$$NOW", SourceLeasePeriod.Milliseconds()}}}}
+}
+
+func (l *sourceLease) recordRenewal() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.renewedAt = time.Now()
+}
+
+func (l *sourceLease) renewal() (time.Time, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.renewedAt, l.err
+}
+
+func (l *sourceLease) revoke(err error) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.err == nil {
+		l.err = err
+		l.cancel()
+	}
+	return l.err
+}
+
+func (s *Status) applySourceLeaseFreshness(fresh bool) {
+	if fresh {
+		return
+	}
+	switch s.State {
+	case "starting", "running", "catching_up", "retrying", "resyncing":
+		s.State = "stopped"
+		s.SourceLeaseExpired = true
+		owner := s.Owner
+		if owner == nil {
+			s.Error = "the source has no current lease owner; see the last saved position"
+			return
+		}
+		kind := "follower"
+		if owner.Kind == "resync" {
+			kind = "resync"
+		}
+		s.Error = fmt.Sprintf("the source %s on %s (pid %d) last renewed its lease at %s and has not been heard from since; see the last saved position",
+			kind, owner.Host, owner.PID, owner.HeartbeatAt.UTC().Format(time.RFC3339))
+	}
 }
 
 // InitSourceState reserves an empty state document for a new import or a
@@ -90,19 +147,23 @@ func (s *Service) acquireSourceLease(ctx context.Context, branchID, database, ki
 		// can create a different state document after a detach deletes this one.
 		filter := bson.M{"_id": branchID, "$or": bson.A{
 			bson.M{sourceOwnerPath: bson.M{"$exists": false}},
-			bson.M{"$expr": bson.M{"$lt": bson.A{"$" + sourceOwnerPath + ".heartbeat_at",
-				bson.M{"$subtract": bson.A{"$$NOW", SourceLeasePeriod.Milliseconds()}}}}},
+			bson.M{"$expr": bson.M{"$not": bson.A{sourceLeaseFresh()}}},
 		}}
 		owner := bson.M{"id": id, "kind": kind, "host": bson.M{"$literal": host}, "pid": os.Getpid(),
 			"started_at": "$$NOW", "heartbeat_at": "$$NOW"}
-		updated, err := s.state.UpdateOne(sc, filter, mongo.Pipeline{{{Key: "$set", Value: bson.M{sourceOwnerPath: owner}}}})
-		if err != nil {
-			return nil, err
+		var previous struct {
+			Status Status `bson:"capture_status"`
 		}
-		if updated.MatchedCount == 1 {
+		err = s.state.FindOneAndUpdate(sc, filter, mongo.Pipeline{{{Key: "$set", Value: bson.M{sourceOwnerPath: owner}}}}).Decode(&previous)
+		if err == nil {
+			previous.Status.applySourceLeaseFreshness(false)
+			lease.replacedExpiredRun = previous.Status.SourceLeaseExpired
 			return lease, nil
 		}
-		status, err := s.SourceStatusFor(sc, branchID)
+		if !errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, err
+		}
+		status, err := s.loadSourceLeaseStatus(sc, branchID)
 		if err != nil {
 			return nil, err
 		}
@@ -116,7 +177,12 @@ func (s *Service) acquireSourceLease(ctx context.Context, branchID, database, ki
 	if err != nil {
 		return nil, err
 	}
-	return result.(*sourceLease), nil
+	lease := result.(*sourceLease)
+	// A revocation cancels metadata work too. An ordinary stop can still
+	// finish storing complete groups from the stream before releasing.
+	lease.ctx, lease.cancel = context.WithCancel(context.Background())
+	lease.recordRenewal()
+	return lease, nil
 }
 
 func sourceDetached(branch, database string) *ConfigurationError {
@@ -129,6 +195,24 @@ func sourceCheckoutError(branch string) *CaptureError {
 
 func sourcePositionError(branch string) *CaptureError {
 	return &CaptureError{Message: fmt.Sprintf("the saved source position of branch %s is missing or was replaced by another process. Upgrade every process that uses this metadata database, then run `argon source resync`", branch)}
+}
+
+// loadSourceLeaseStatus reads the stored ownership and position for lease
+// operations, which need the original owner even when its lease has expired.
+func (s *Service) loadSourceLeaseStatus(ctx context.Context, branchID string) (*Status, error) {
+	var doc struct {
+		Status      Status   `bson:"capture_status"`
+		ResumeToken bson.Raw `bson:"resume_token"`
+	}
+	err := s.state.FindOne(ctx, bson.M{"_id": branchID}).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	doc.Status.hasResumeToken = len(doc.ResumeToken) > 0
+	return &doc.Status, nil
 }
 
 func (s *Service) sourceLeaseMiss(ctx context.Context, lease *sourceLease) error {
@@ -144,17 +228,23 @@ func (s *Service) sourceLeaseMiss(ctx context.Context, lease *sourceLease) error
 	}
 	// A legacy checkout replaces the position before publishing the physical
 	// database. This is observable even while that checkout is still running.
-	status, err := s.SourceStatusFor(ctx, branch.ID)
+	status, err := s.loadSourceLeaseStatus(ctx, branch.ID)
 	if err != nil {
 		return err
 	}
 	if status != nil && status.Owner == nil && !status.hasSavedSourcePosition(branch.Follows) {
 		return sourcePositionError(branch.Name)
 	}
+	if status != nil && status.Owner != nil && status.Owner.ID == lease.id {
+		return lease.revoke(&ConfigurationError{fmt.Sprintf("the source lease for branch %s expired; run `argon source follow` again", branch.Name)})
+	}
 	return &ConfigurationError{fmt.Sprintf("another process took over following branch %s for project %s", branch.Name, branch.ProjectID)}
 }
 
 func (s *Service) updateSourceLease(ctx context.Context, lease *sourceLease, update bson.M) error {
+	if _, err := lease.renewal(); err != nil {
+		return err
+	}
 	result, err := s.state.UpdateOne(ctx, lease.filter(), update)
 	if err != nil {
 		return err
@@ -169,7 +259,19 @@ func (s *Service) renewSourceLease(ctx context.Context, lease *sourceLease) erro
 	return s.updateSourceLease(ctx, lease, bson.M{"$currentDate": bson.M{sourceOwnerPath + ".heartbeat_at": true}})
 }
 
+func (s *Service) refreshSourceLease(ctx context.Context, lease *sourceLease) error {
+	if err := s.renewSourceLease(ctx, lease); err != nil {
+		return err
+	}
+	lease.recordRenewal()
+	return nil
+}
+
 func (s *Service) releaseSourceLease(lease *sourceLease) {
+	defer lease.cancel()
+	if _, err := lease.renewal(); err != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if lease.initialized {
@@ -188,23 +290,50 @@ func (s *Service) keepSourceLease(ctx context.Context, run *running) <-chan erro
 	done := make(chan error, 1)
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(SourceHeartbeatInterval)
-		defer ticker.Stop()
+		timer := time.NewTimer(SourceHeartbeatInterval)
+		defer timer.Stop()
+		var renewalFailure error
+		stop := func(err error) {
+			done <- run.lease.revoke(err)
+			run.cancel()
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				beatCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				err := s.renewSourceLease(beatCtx, run.lease)
+			case <-timer.C:
+				last, _ := run.lease.renewal()
+				remaining := time.Until(last.Add(SourceLeasePeriod))
+				if renewalFailure != nil && remaining <= 0 {
+					stop(&ConfigurationError{fmt.Sprintf("could not renew the source lease on the metadata deployment for %s; run `argon source follow` again: %v", SourceLeasePeriod, renewalFailure)})
+					return
+				}
+				timeout := min(5*time.Second, remaining)
+				if timeout <= 0 {
+					// A suspended process must ask the metadata server whether
+					// its owner is still current before it can renew.
+					timeout = min(5*time.Second, SourceHeartbeatInterval)
+				}
+				beatCtx, cancel := context.WithTimeout(ctx, timeout)
+				err := s.refreshSourceLease(beatCtx, run.lease)
 				cancel()
+				if ctx.Err() != nil {
+					return
+				}
+				if err == nil {
+					renewalFailure = nil
+					timer.Reset(SourceHeartbeatInterval)
+					continue
+				}
 				var lost *ConfigurationError
 				var gap *CaptureError
 				if errors.As(err, &lost) || errors.As(err, &gap) {
-					done <- err
-					run.cancel()
+					stop(err)
 					return
 				}
+				renewalFailure = err
+				last, _ = run.lease.renewal()
+				timer.Reset(min(SourceHeartbeatInterval, time.Until(last.Add(SourceLeasePeriod))))
 			}
 		}
 	}()
@@ -212,6 +341,9 @@ func (s *Service) keepSourceLease(ctx context.Context, run *running) <-chan erro
 }
 
 func (s *Service) reportSource(ctx context.Context, lease *sourceLease, fields bson.M, state string, stored *Status) error {
+	if _, err := lease.renewal(); err != nil {
+		return err
+	}
 	for field, value := range fields {
 		literal := bson.M{"$literal": value}
 		fields[field] = literal

@@ -209,12 +209,9 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 	// Only now, with the project reserved and bound, is the source altered,
 	// and only because the operator asked for it by name.
 	if opts.EnableSourceImages {
-		imagesEnabled, err = source.EnableImages(ctx, sourceDB, collections)
+		imagesEnabled, err = source.EnableImages(ctx, sourceDB, collections, nil)
 		if err != nil {
-			// EnableImages has already named what it changed.
-			failed := err
-			imagesEnabled = nil
-			return nil, failed
+			return nil, err
 		}
 		result.ImagesEnabled = imagesEnabled
 	}
@@ -291,9 +288,9 @@ func (s *ImportService) copyCollection(ctx context.Context, collection *mongo.Co
 		return nil
 	}
 	for cursor.Next(ctx) {
-		var id interface{}
-		if err := cursor.Current.Lookup("_id").Unmarshal(&id); err != nil || id == nil {
-			return copied, fmt.Errorf("imported document in %s has no _id", collection.Name())
+		id, err := wal.DocumentIDFromImage(cursor.Current)
+		if err != nil {
+			return copied, fmt.Errorf("invalid _id on imported document in %s: %w", collection.Name(), err)
 		}
 		entries = append(entries, &wal.Entry{
 			ProjectID: branch.ProjectID, BranchID: branch.ID,

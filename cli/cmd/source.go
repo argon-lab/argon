@@ -57,7 +57,9 @@ skips nor repeats a change, as long as the source's oplog still holds that
 position.
 
 Only one follower or resync can run for a project at a time. "argon source
-status" shows the owner and its last heartbeat.
+status" shows the owner and its last heartbeat. An expired lease revokes
+ownership and the follower stops with an error. Restart following to resume
+from the saved position.
 
 Following reads the source. MongoDB serves an update's document as of its
 cluster time for a limited time (five minutes by default). If
@@ -73,6 +75,8 @@ following stops as degraded. Two things avoid that:
                           Argon verifies the saved position and opens the
                           stream first. A degraded position must recover or
                           be resynced before the collections are altered.
+                          Before each alteration the follower checks the
+                          lease. A failure lists the collections it changed.
   --allow-inexact         lets following continue: such updates are applied
                           with the document's current state, main converges
                           on the source again, and the range in between is
@@ -129,8 +133,8 @@ var sourceStatusCmd = &cobra.Command{
 	Long: experimentalSourceHelp + `
 
 Show the source binding, saved position and lease owner. An unfinished
-resync or degraded following exits with an error. This includes a followed
-main that an older Argon process checked out.`,
+resync, an expired lease or degraded following exits with an error. An
+unexpected branch head change or checkout makes following degraded.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		if projectName == "" {
@@ -151,14 +155,7 @@ main that an older Argon process checked out.`,
 		} else {
 			printSourceStatus(cmd, info)
 		}
-		if info.ResyncUnfinished {
-			return fmt.Errorf("a resync of main has not finished. If it was interrupted, run `argon source resync -p %s` again", info.Project)
-		}
-		if info.State == "degraded" {
-			// Scripts must not read a gap as success.
-			return fmt.Errorf("following is degraded: %s", info.Error)
-		}
-		return nil
+		return info.HealthError()
 	},
 }
 
@@ -172,7 +169,7 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 	}
 	fmt.Fprintf(out, "  State:       %s", info.State)
 	if !info.UpdatedAt.IsZero() {
-		fmt.Fprintf(out, " (reported %s; not proof a follower is running now)", info.UpdatedAt.Format(time.RFC3339))
+		fmt.Fprintf(out, " (last report %s)", info.UpdatedAt.Format(time.RFC3339))
 	}
 	fmt.Fprintln(out)
 	if info.Error != "" {
@@ -218,8 +215,8 @@ var sourceResyncCmd = &cobra.Command{
 
 Resync repairs degraded following without importing the database again.
 Typical causes are a source collection that was dropped or renamed, a
-dropped source database, or a saved position the source's oplog no longer
-holds.
+dropped source database, a saved position the source's oplog no longer
+holds, or another process moving main's head.
 
 It takes a stream position on the source, then compares the source with main
 in batches: every source document that main does not already hold is stored,
@@ -240,8 +237,8 @@ renamed another collection while it ran, leaves main marked as unfinished.
 Restart it with "argon source resync" or "argon source follow --auto-resync".
 Only one follower or resync can run for a project at a time.
 
-By default resync refuses unless following is degraded or an earlier
-resync is unfinished. --force permits resyncing a healthy branch once the
+By default resync requires degraded following, an unfinished resync or an
+expired run. --force permits resyncing a healthy branch once the
 lease is available. If an older Argon process checked out main, upgrade it,
 stop writes to the checkout, and release the checkout before resyncing.`,
 	RunE: func(cmd *cobra.Command, args []string) error {

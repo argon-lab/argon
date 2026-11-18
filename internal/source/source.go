@@ -423,16 +423,22 @@ func SkipCollection(name string) bool {
 // of every updated or deleted document), so it runs only when the operator
 // asked for it by name. It uses collMod alone: a collection that disappeared
 // in the meantime is reported, never created. Argon does not turn the
-// setting off again.
-func EnableImages(ctx context.Context, db *mongo.Database, collections []string) ([]string, error) {
+// setting off again. If supplied, checkLease confirms ownership immediately
+// before each collMod. The collMod itself is on a separate connection.
+func EnableImages(ctx context.Context, db *mongo.Database, collections []string, checkLease func(context.Context) error) ([]string, error) {
 	var changed []string
 	for _, name := range collections {
+		if checkLease != nil {
+			if err := checkLease(ctx); err != nil {
+				return changed, err
+			}
+		}
 		if err := db.RunCommand(ctx, bson.D{
 			{Key: "collMod", Value: name},
 			{Key: "changeStreamPreAndPostImages", Value: bson.M{"enabled": true}},
 		}).Err(); err != nil {
 			// A collMod that was interrupted may still have taken effect.
-			return changed, ImagesLeftEnabled(fmt.Errorf("enabling change-stream pre- and post-images on source collection %s did not report success (%w); check that collection, the change may have been made", name, err), changed)
+			return changed, fmt.Errorf("enabling change-stream pre- and post-images on source collection %s did not report success (%w); check that collection, the change may have been made", name, err)
 		}
 		changed = append(changed, name)
 	}

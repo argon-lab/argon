@@ -90,6 +90,8 @@ are recorded as an inexact range and are not states the source was in.
 
 By default, the import reads from the source and opens its change stream for
 preflight and replay. Writes made during the import continue as usual.
+Online import, following and resync preserve documents with a BSON null
+`_id`.
 
 What can make it fail, in which case nothing is published and the reserved
 project is removed:
@@ -189,10 +191,17 @@ source online into a new project. Use a source user allowed to run
 
 - **One owner per followed branch.** A follower or resync holds a lease on
   the metadata deployment. An overlapping run is refused while that lease
-  is fresh, without changing the branch's status. `argon source status`
-  shows the owner, its host, process ID and last heartbeat. A clean stop
-  releases the lease. After a crash, another run can take over when the
-  lease expires (60 seconds after the last heartbeat).
+  is fresh, without changing the branch's status. The metadata server's
+  clock determines when a lease expires, 60 seconds after the last
+  heartbeat. Expiry revokes ownership immediately. The run cannot renew
+  the lease, update status or advance the branch. A clean stop releases the
+  lease. A follower that cannot renew against the metadata deployment for a
+  full lease period stops with an error. Configure its supervisor to restart
+  `argon source follow` after failures so it resumes from the saved position.
+  `argon source status` reports an expired run as stopped and exits nonzero
+  in table and JSON output. It shows the owner's host, process ID and last
+  heartbeat, and keeps the position and last consistent point. A replacement
+  follower or resync can take over.
 - **No change is skipped or repeated across restarts.** The entries, the
   branch head and the stream's resume token commit in one transaction on the
   metadata deployment. This holds whether or not the source is the same
@@ -253,6 +262,10 @@ before the problem:
     the project and binds the source. Before enabling images, `source follow`
     checks the binding, saved position and lease and opens the stream. If
     following was degraded, it waits for replay or a resync to clear the gap.
+    It checks the lease before each collection and stops altering collections
+    if it loses ownership. The `collMod` itself runs on the source.
+    With separate deployments it can finish after a lease expires or
+    another run takes over.
     Collections created later are not covered until the flag is given again.
     The setting applies to updates made after it is enabled.
 
@@ -281,8 +294,10 @@ images), a privilege the user lacks, a transaction too large to store in the
 time allowed. An import in that situation fails with the error instead of
 hanging. And it ends as `degraded` when something else has written to `main`
 (a process from before following existed does not know the branch is
-read-only) or has replaced its saved position: the head on record no longer
-being the branch's head is checked on every start and on every write.
+read-only) or has replaced its saved position. The follower checks the
+saved head on every start and on every write. Source status, deployment
+status, resync admission and write-back check the saved head and branch
+head from one metadata snapshot.
 When either happens, make sure every process that uses this metadata
 database is current, then run `argon source resync` explicitly.
 
@@ -355,11 +370,12 @@ What it guarantees, and what it cannot:
   individual changes, their order or their times. A write-back whose
   transaction fell into that gap is not attributed to its merge. If the
   writer had not marked the plan applied, it stays `writing_back`.
-- **An unfinished resync is never reported as healthy.** The status is
+- **An unfinished resync is reported as unhealthy.** The status is
   marked before the first write to `main`. If the resync is interrupted or
   fails after that, the status keeps `resync_unfinished`, mode `catch_up`
-  and the old consistent point; `source status` exits nonzero and
-  plain `source follow` refuses to start. Running `source resync` again or
+  and the old consistent point. `source status`, `argon status` and
+  `argon doctor` exit nonzero, and plain `source follow` refuses to start.
+  Running `source resync` again or
   starting `source follow --auto-resync` completes it, comparing whatever
   `main` holds by then. The recorded range covers every attempt. A sandbox
   forked from `main` in that state starts from the mixture, as it does during
@@ -371,7 +387,9 @@ What it guarantees, and what it cannot:
   resyncs.
 
 The comparison batches hold at most 500 documents by default and flush at
-around 16 MiB of raw BSON. The prune pass works in batches of document keys.
+a 15 MiB budget for raw BSON and for the encoded metadata lookup keys.
+Prune also bounds both the metadata key lookup and the source `_id` lookup
+by encoded size to leave room for command overhead.
 If garbage collection has partly reclaimed a collection's history on `main`,
 prune lists its documents from the full snapshot, which is loaded into memory.
 The source's oplog has to cover the duration of the resync, as for the import.
@@ -381,8 +399,9 @@ or repairs a gap in the source stream, then continues following. It is off
 by default because each resync reads the whole source and leaves an inexact
 range. It stops if another automatic resync would be needed within a minute.
 
-Resync refuses a healthy project unless `--force` is given. It always needs
-the branch's lease, so stop any current follower first.
+Resync without `--force` requires degradation, an unfinished resync or an
+expired run. It always needs the branch's lease, so stop any live follower
+first.
 
 ### Writing a plan back to the source
 
@@ -412,25 +431,28 @@ argon merge apply <plan-id> --write-back
   would be created again by an insert.
 - A replacement keeps production's layout. Fields the document already had
   stay in the order production has them, at every level of nesting, and
-  fields the plan adds follow. Within an array, a subdocument takes its field
-  order from the matching source element, by `_id` when both elements have
-  one and otherwise by value. Unmatched elements keep the plan's field
-  order. An inserted document has the order the sandbox stored, or sorted
-  fields when the sandbox was written through the SDK.
+  fields the plan adds follow. Within an array, exact BSON matches are
+  reserved first. Remaining subdocuments take their field order from
+  an unambiguous source match by `_id` or value. Unmatched and ambiguous
+  elements keep the plan's field order. An inserted document has the order
+  the sandbox stored, or sorted fields when it was written through the SDK.
 - The comparison with the before-image is byte for byte when `main` holds the
   source's own bytes for that document, which it does for everything the
   import copied or following stored: a document whose fields production
-  reordered since the review is a conflict. When those bytes are not
-  available (reclaimed by GC, or stored from an image MongoDB attached with a
-  repeated field) values are compared and field order is not.
-- Write-back is refused while following is `degraded` or a resync is
-  unfinished: the plan was reviewed against a `main` known not to be the
-  source. Resync, then preview again.
+  reordered after preview is a conflict. Write-back compares values when
+  no exact bytes were recorded for the state in the plan. A failed history
+  read or an exact before-image possibly lost to garbage collection aborts
+  before claiming the plan. If garbage collection reclaimed the image,
+  force a resync to capture the source's bytes again, then preview again.
+- Write-back refuses degraded following, an unfinished resync and an
+  expired lease. Resume following after expiry. For degradation or an
+  unfinished resync, complete the resync and then preview again.
 - `main` is not written by the write-back. It receives the change through
   following, like any other change to the source, attributed to the merge
   (`actor: merge:<sandbox>`) with a `merge` record carrying the plan ID.
-- The writer claims the plan before starting the source transaction. It
-  marks the plan applied after an acknowledged commit and returns it to
+- The writer must receive a majority acknowledgment of the plan claim
+  before starting the source transaction. It uses majority write concern to
+  mark the plan applied after an acknowledged commit or return it to
   pending if it knows the transaction aborted or the commit was never sent.
   The follower marks it applied if it sees the transaction in the change
   stream. Otherwise, the plan stays `writing_back` with an unknown outcome.

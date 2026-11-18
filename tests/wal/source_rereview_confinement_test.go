@@ -63,6 +63,25 @@ func ApplyToSource(target WriteBackTarget) {
 			extraSite:  "internal/ingest/resync.go:resync DropOneWithKey",
 		},
 		{
+			name:       "literal aggregation with read stages",
+			resyncCall: `state.Collection("users").Aggregate(ctx, mongo.Pipeline{{{Key: "$match", Value: filter}}, {{"$lookup", join}}})`,
+		},
+		{
+			name:       "aggregation writing new collection",
+			resyncCall: `src.Collection("users").Aggregate(ctx, mongo.Pipeline{{{"$out", "output"}}})`,
+			extraSite:  "internal/ingest/resync.go:resync Aggregate",
+		},
+		{
+			name:       "aggregation merging into collection",
+			resyncCall: `src.Collection("users").Aggregate(ctx, mongo.Pipeline{{{Key: "$merge", Value: "output"}}})`,
+			extraSite:  "internal/ingest/resync.go:resync Aggregate",
+		},
+		{
+			name:       "aggregation with unknown pipeline",
+			resyncCall: `src.Collection("users").Aggregate(ctx, pipeline)`,
+			extraSite:  "internal/ingest/resync.go:resync Aggregate",
+		},
+		{
 			name:      "second update in write-back",
 			applyCall: `target.Database.Collection("audit").UpdateOne()`,
 			extraSite: "internal/merge/writeback.go:ApplyToSource UpdateOne",

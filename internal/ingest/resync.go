@@ -151,13 +151,8 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 	if stored == nil {
 		return nil, s.sourceLeaseMiss(ctx, lease)
 	}
-	unfinished := stored.Source != nil && stored.Source.Resync != nil
-	reason := stored.SourceDegradation(lease.branch)
-	if reason == "" && !unfinished && !opts.Force {
+	if stored.State != "degraded" && !stored.ResyncUnfinished() && !lease.replacedExpiredRun && !opts.Force {
 		return nil, &ConfigurationError{"following has not ended as degraded, so there is nothing a resync has to repair; `argon source follow` continues from the saved position. A resync compares the whole source with the branch and records the range it writes as inexact history; pass --force to run one anyway"}
-	}
-	if reason != "" {
-		stored.State, stored.Error = "degraded", reason
 	}
 
 	cfg := runConfig{actor: sourceActor, redact: opts.Redact, lease: lease, resync: true}
@@ -361,6 +356,14 @@ func (r *resyncer) progress(phase, collection string) {
 	}
 }
 
+const (
+	// Leave room below MongoDB's 16 MiB limit for the selector and command
+	// envelope. Count encoded keys separately because typed keys expand.
+	resyncBatchBytes = 15 * 1024 * 1024
+	// Covers the BSON type, array index as a cstring, and string framing.
+	resyncSelectorElementOverhead = 32
+)
+
 // compare stores every document of one source collection that the branch
 // does not already hold byte for byte.
 func (r *resyncer) compare(ctx context.Context, name string) error {
@@ -374,8 +377,7 @@ func (r *resyncer) compare(ctx context.Context, name string) error {
 		doc bson.Raw
 	}
 	batch := make([]read, 0, r.opts.BatchSize)
-	const maxBatchBytes = 16 * 1024 * 1024
-	batchBytes := 0
+	var documentBytes, keyBytes int
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
@@ -399,7 +401,7 @@ func (r *resyncer) compare(ctx context.Context, name string) error {
 		r.result.Compared += int64(len(batch))
 		clear(batch)
 		batch = batch[:0]
-		batchBytes = 0
+		documentBytes, keyBytes = 0, 0
 		if err := r.commit(); err != nil {
 			return err
 		}
@@ -407,17 +409,20 @@ func (r *resyncer) compare(ctx context.Context, name string) error {
 		return ctx.Err()
 	}
 	for cursor.Next(r.reads) {
-		if len(batch) > 0 && batchBytes+len(cursor.Current) > maxBatchBytes {
+		id, err := wal.DocumentIDFromImage(cursor.Current)
+		if err != nil {
+			return fmt.Errorf("invalid _id on a document in %s: %w", name, err)
+		}
+		key := wal.DocumentIDString(id)
+		keySize := len(key) + resyncSelectorElementOverhead
+		if len(batch) > 0 && (documentBytes+len(cursor.Current) > resyncBatchBytes || keyBytes+keySize > resyncBatchBytes) {
 			if err := flush(); err != nil {
 				return err
 			}
 		}
-		var id interface{}
-		if err := cursor.Current.Lookup("_id").Unmarshal(&id); err != nil || id == nil {
-			return fmt.Errorf("a document in %s has no _id", name)
-		}
-		batch = append(batch, read{key: wal.DocumentIDString(id), doc: append(bson.Raw(nil), cursor.Current...)})
-		batchBytes += len(cursor.Current)
+		batch = append(batch, read{key: key, doc: append(bson.Raw(nil), cursor.Current...)})
+		documentBytes += len(cursor.Current)
+		keyBytes += keySize
 		if len(batch) >= r.opts.BatchSize {
 			if err := flush(); err != nil {
 				return err
@@ -461,6 +466,60 @@ func (r *resyncer) unchanged(collection string, keys []string) (map[string]bson.
 	return held, nil
 }
 
+// pruneSourceKeys checks the source's ordinary collections in batches of
+// encoded BSON IDs. Replay covers catalog changes after the collection list.
+func (r *resyncer) pruneSourceKeys(name string, keys []string, live map[string]bson.M) (map[string]bool, error) {
+	found := make(map[string]bool, len(keys))
+	ids := make(bson.A, 0, len(keys))
+	idBytes := 0
+	flush := func() error {
+		if len(ids) == 0 {
+			return nil
+		}
+		cursor, err := r.collection(name).Find(r.reads, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}},
+			options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}}))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = cursor.Close(context.Background()) }()
+		// MongoDB matches 1 and 1.0 as the same _id, so compare the
+		// branch's document keys to keep them apart.
+		for cursor.Next(r.reads) {
+			id, err := wal.DocumentIDFromImage(cursor.Current)
+			if err != nil {
+				return err
+			}
+			found[wal.DocumentIDString(id)] = true
+		}
+		clear(ids)
+		ids, idBytes = ids[:0], 0
+		return cursor.Err()
+	}
+	for _, key := range keys {
+		doc, ok := live[key]
+		if !ok {
+			continue
+		}
+		id := bson.RawValue{Type: bson.TypeNull}
+		if value := doc["_id"]; value != nil {
+			kind, data, err := bson.MarshalValue(value)
+			if err != nil {
+				return nil, err
+			}
+			id = bson.RawValue{Type: kind, Value: data}
+		}
+		idSize := len(id.Value) + resyncSelectorElementOverhead
+		if len(ids) > 0 && idBytes+idSize > resyncBatchBytes {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		}
+		ids = append(ids, id)
+		idBytes += idSize
+	}
+	return found, flush()
+}
+
 // prune deletes from the branch every document of one collection that the
 // source no longer has, and returns how many that were.
 func (r *resyncer) prune(ctx context.Context, name string, onSource bool) (int64, error) {
@@ -469,8 +528,12 @@ func (r *resyncer) prune(ctx context.Context, name string, onSource bool) (int64
 	// A point read can refuse where a replay of the collection still works
 	// (entries that name no document, history reclaimed meanwhile).
 	replay := false
-	// check takes a batch of the branch's document keys.
-	check := func(keys []string, live map[string]bson.M) error {
+	keys := make([]string, 0, r.opts.BatchSize)
+	keyBytes := 0
+	flush := func(live map[string]bson.M) error {
+		if len(keys) == 0 {
+			return ctx.Err()
+		}
 		if live == nil {
 			var err error
 			if live, err = r.opts.State.MaterializeDocumentsAtLSN(branch, name, keys, branch.HeadLSN); err != nil {
@@ -478,36 +541,16 @@ func (r *resyncer) prune(ctx context.Context, name string, onSource bool) (int64
 				return err
 			}
 		}
-		ids := make(bson.A, 0, len(keys))
-		for _, key := range keys {
-			if doc, ok := live[key]; ok {
-				ids = append(ids, doc["_id"])
-			}
-		}
-		if len(ids) == 0 {
+		if len(live) == 0 {
+			clear(keys)
+			keys, keyBytes = keys[:0], 0
 			return ctx.Err()
 		}
 		var found map[string]bool
 		if onSource {
-			// Only query names listed as ordinary collections before compare.
-			// Replay covers changes after that list, including new collections.
-			cursor, err := r.collection(name).Find(r.reads, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}},
-				options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}}))
+			var err error
+			found, err = r.pruneSourceKeys(name, keys, live)
 			if err != nil {
-				return err
-			}
-			defer func() { _ = cursor.Close(context.Background()) }()
-			// MongoDB matches 1 and 1.0 as the same _id, so compare the
-			// branch's document keys to keep them apart.
-			found = make(map[string]bool, len(ids))
-			for cursor.Next(r.reads) {
-				var id interface{}
-				if err := cursor.Current.Lookup("_id").Unmarshal(&id); err != nil {
-					return err
-				}
-				found[wal.DocumentIDString(id)] = true
-			}
-			if err := cursor.Err(); err != nil {
 				return err
 			}
 		}
@@ -518,11 +561,24 @@ func (r *resyncer) prune(ctx context.Context, name string, onSource bool) (int64
 				deleted++
 			}
 		}
+		clear(keys)
+		keys, keyBytes = keys[:0], 0
 		if err := r.commit(); err != nil {
 			return err
 		}
 		r.progress("prune", name)
 		return ctx.Err()
+	}
+	addKey := func(key string, live map[string]bson.M) error {
+		size := len(key) + resyncSelectorElementOverhead
+		if len(keys) == r.opts.BatchSize || (len(keys) > 0 && keyBytes+size > resyncBatchBytes) {
+			if err := flush(live); err != nil {
+				return err
+			}
+		}
+		keys = append(keys, key)
+		keyBytes += size
+		return nil
 	}
 
 	floor, err := r.s.wal.ReclaimFloor(branch.ID, name)
@@ -532,38 +588,28 @@ func (r *resyncer) prune(ctx context.Context, name string, onSource bool) (int64
 	if floor == 0 && branch.ParentID == "" {
 		// The log names every document the branch has ever held here.
 		upTo := branch.HeadLSN
-		keys := make([]string, 0, r.opts.BatchSize)
 		err := r.s.wal.ScanDocumentKeys(ctx, branch.ID, name, branch.BaseLSN+1, upTo, func(key string) error {
-			keys = append(keys, key)
-			if len(keys) < r.opts.BatchSize {
-				return nil
-			}
-			err := check(keys, nil)
-			keys = keys[:0]
-			return err
+			return addKey(key, nil)
 		})
 		if err == nil {
-			err = check(keys, nil)
+			err = flush(nil)
 		}
 		if err == nil || !replay {
 			return deleted, err
 		}
 	}
+	clear(keys)
+	keys, keyBytes = keys[:0], 0
 	state, err := r.opts.State.MaterializeCollectionAtLSN(branch, name, branch.HeadLSN)
 	if err != nil {
 		return deleted, err
 	}
-	keys := make([]string, 0, r.opts.BatchSize)
 	for key := range state {
-		keys = append(keys, key)
-		if len(keys) == r.opts.BatchSize {
-			if err := check(keys, state); err != nil {
-				return deleted, err
-			}
-			keys = keys[:0]
+		if err := addKey(key, state); err != nil {
+			return deleted, err
 		}
 	}
-	return deleted, check(keys, state)
+	return deleted, flush(state)
 }
 
 // commit stores the pending entries, branch head, and progress under the
@@ -573,7 +619,7 @@ func (r *resyncer) commit() error {
 		return nil
 	}
 	s, branch, batch := r.s, r.branch, r.pending
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.lease.ctx, 30*time.Second)
 	defer cancel()
 	at := time.Now()
 	var head int64
@@ -595,6 +641,7 @@ func (r *resyncer) commit() error {
 	}); err != nil {
 		return followerWriteError(branch, err)
 	}
+	r.lease.recordRenewal()
 	branch.HeadLSN = head
 	r.pending = nil
 	if s.autoSnapshot != nil {
