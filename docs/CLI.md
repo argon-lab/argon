@@ -143,13 +143,15 @@ argon source status -p myapp -o json | jq '.health'
 ```
 
 Exit zero means the published branch head is a verified exact checkpoint.
-A clean stop at that checkpoint is healthy. An open catch-up range, a stored
-capture error or an expired owner makes even a stopped branch unhealthy.
+A clean stop at that checkpoint is healthy. Reopening the stream from it
+reports `restarting` and also exits zero. Write-back requires `exact`.
+An open catch-up range, a stored capture error or an expired owner makes
+even a stopped branch unhealthy.
 Canceling a follow attempt before the stream reopens preserves its capture
 error. A successful stream open clears a transient or terminal open error.
 After takeover, the replacement must verify an exact checkpoint at or beyond
 the source time it observed on acquisition, or finish a resync. Deployment
-status, doctor and write-back use the same verdict. See the
+status and doctor report the same health. See the
 [source status reasons and actions](OPERATIONS.md#what-argon-source-status-reports-and-what-to-do).
 
 `source resync` repairs degraded following in place, such as after a

@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"crypto/sha256"
 	"math"
 	"testing"
 
@@ -60,6 +61,12 @@ func TestSourceSnapshotCheckpoint(t *testing.T) {
 		{"position missing", func(e storedSourceExample) { delete(e.source, "position") }, ReasonPositionMissing},
 		{"token missing", func(e storedSourceExample) { delete(e.document, "resume_token") }, ReasonPositionMissing},
 		{"malformed token", func(e storedSourceExample) { e.document["resume_token"] = bson.M{"_data": "bad"} }, ReasonPositionMissing},
+		{"different token at exact head time", func(e storedSourceExample) {
+			sum := sha256.Sum256(mustRaw(e.document["resume_token"].(bson.M)))
+			e.source["position_digest"] = sum[:]
+			e.document["resume_token"] = bson.M{"_data": "820000000a0000000101"}
+		}, ReasonPositionMissing},
+		{"malformed digest", func(e storedSourceExample) { e.source["position_digest"] = "broken" }, ReasonPositionMissing},
 		{"older token", func(e storedSourceExample) { e.document["resume_token"] = bson.M{"_data": "820000000a00000000"} }, ReasonPositionMissing},
 		{"later token without opening boundary", func(e storedSourceExample) {
 			e.document["resume_token"] = bson.M{"_data": "820000000a00000002"}

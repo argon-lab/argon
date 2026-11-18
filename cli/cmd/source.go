@@ -145,11 +145,13 @@ point. Both table and JSON output report health, a stable reason, a message
 and a next action. Use health.reason in JSON for scripts.
 
 Exit zero means main is verified at the reported source cluster time.
-A clean stop at an exact checkpoint is healthy. An open catch-up range,
-a stored capture error or an expired owner exits nonzero even if the last
-report says stopped. After takeover, wait for the replacement to verify an
-exact checkpoint or finish a resync. Deployment status, doctor and write-back
-preflight use the same verdict. See the source status table in docs/OPERATIONS.md.`,
+A clean stop at an exact checkpoint is healthy. Reopening the stream from
+that checkpoint reports restarting and also exits zero. Write-back requires
+exact. An open catch-up range, a stored capture error or an expired owner
+exits nonzero even if the last report says stopped. After takeover, wait for
+the replacement to verify an exact checkpoint or finish a resync. Deployment
+status and doctor report the same health. See the source status table in
+docs/OPERATIONS.md.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		if projectName == "" {

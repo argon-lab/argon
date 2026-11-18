@@ -97,12 +97,21 @@ const (
 	ProjectPublished
 )
 
+type PositionDigest uint8
+
+const (
+	DigestAbsent PositionDigest = iota
+	DigestMatches
+	DigestDiffers
+)
+
 // Facts describe one metadata snapshot. An absent or unfamiliar report
 // cannot be mistaken for an exact checkpoint.
 type Facts struct {
 	Project          ProjectState
 	CheckedOut       bool
 	State            FollowerState
+	CleanStart       bool
 	Mode             CheckpointMode
 	HasError         bool
 	Owner            OwnerState
@@ -110,6 +119,7 @@ type Facts struct {
 	UnfinishedResync bool
 	Head             HeadState
 	PositionPresent  bool
+	PositionDigest   PositionDigest
 	// ExactPointAtHead compares the stored exact point with the head and
 	// source position. A takeover must independently clear Unverified.
 	ExactPointAtHead bool
@@ -152,6 +162,7 @@ const (
 	ReasonCatchUp              Reason = "catch_up"
 	ReasonCheckpointUnverified Reason = "checkpoint_unverified"
 	ReasonStarting             Reason = "starting"
+	ReasonRestarting           Reason = "restarting"
 	ReasonResyncing            Reason = "resyncing"
 	ReasonStateUnknown         Reason = "state_unknown"
 	ReasonExact                Reason = "exact"
@@ -203,7 +214,7 @@ func Evaluate(f Facts) Verdict {
 		v.Reason = ReasonResyncUnfinished
 		v.Message = "A resync of the followed branch has not finished."
 		v.NextAction = "Let the resync finish. If interrupted, run `argon source resync` again."
-	case !f.PositionPresent:
+	case !f.PositionPresent || f.PositionDigest == DigestDiffers:
 		v.Reason = ReasonPositionMissing
 		v.Message = fmt.Sprintf("Following cannot resume because the saved source position of branch %s is missing or was replaced by another process.", f.BranchName)
 		v.NextAction = "Upgrade every process using this metadata, then run `argon source resync`."
@@ -247,6 +258,9 @@ func Evaluate(f Facts) Verdict {
 	case f.Mode == CheckpointModeCatchUp || f.State == FollowerCatchingUp:
 		v.Reason = ReasonCatchUp
 		v.Message, v.NextAction = "The branch is catching up and has no exact checkpoint for its current head.", resume
+	case f.State == FollowerStarting && f.CleanStart && f.Owner == OwnerLive:
+		v.Kind, v.Reason = SourceHealthy, ReasonRestarting
+		v.Message, v.NextAction = "A live owner is reopening the stream from a verified exact checkpoint.", "Wait for the follower to be ready before write-back."
 	case f.State == FollowerStarting:
 		v.Reason = ReasonStarting
 		v.Message, v.NextAction = "The follower is opening its source stream.", resume
@@ -303,7 +317,7 @@ func (v Verdict) DisplayState(stored string) string {
 func (v Verdict) FollowAdmission() error {
 	switch v.Reason {
 	case ReasonExact, ReasonOwnerExpired, ReasonOwnerMissing, ReasonUnverified, ReasonDegraded,
-		ReasonRetrying, ReasonCaptureError, ReasonCatchUp, ReasonStarting, ReasonResyncing:
+		ReasonRetrying, ReasonCaptureError, ReasonCatchUp, ReasonStarting, ReasonRestarting, ReasonResyncing:
 		return nil
 	case ReasonResyncUnfinished:
 		return unfinishedResyncError{&ConfigurationError{v.HealthError().Error()}}
@@ -335,8 +349,11 @@ func (v Verdict) ResyncAdmission(force bool) (probeResume bool, err error) {
 }
 
 func (v Verdict) WriteBackAdmission() error {
-	if v.Kind == SourceHealthy {
+	switch v.Reason {
+	case ReasonExact:
 		return nil
+	case ReasonRestarting:
+		return errors.New("write-back refused: wait for the follower to be ready")
 	}
 	prefix := "write-back refused"
 	switch v.Reason {

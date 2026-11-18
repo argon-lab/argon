@@ -201,7 +201,7 @@ func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Datab
 		if !initialized {
 			status := SourceStatus{Database: src.Name(), Mode: ModeCatchUp, Position: startAt, InexactFromLSN: firstLSN, InexactReason: reason}
 			if err := s.updateSourceLease(ctx, run.lease, bson.M{"$set": bson.M{
-				"start_at": startAt, "actor": sourceActor, "capture_status.source": status,
+				"start_at": startAt, "actor": sourceActor, "capture_status.source": sourceCheckpoint{status, positionSHA256(nil, &startAt)},
 			}}); err != nil {
 				return fmt.Errorf("failed to persist the source stream boundary: %w", err)
 			}
@@ -311,7 +311,7 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	status := *saved.Source
 	// Keep reporting a capture error until the source stream opens successfully.
 	if !opts.resync && (saved.facts.State != FollowerRetrying || !saved.facts.HasError) {
-		if err := s.report(branchID, "starting", sourceActor, ""); err != nil {
+		if err := s.report(branchID, "starting", sourceActor, "", saved.Health); err != nil {
 			return nil, err
 		}
 	}
@@ -369,7 +369,7 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 		f.need = now
 	}
 
-	if err := s.report(branchID, f.stateName(), sourceActor, ""); err != nil {
+	if err := s.report(branchID, f.stateName(), sourceActor, "", nil); err != nil {
 		return nil, err
 	}
 	ready := func() {
@@ -455,9 +455,10 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 			f.promote()
 		}
 		if f.pendingOpen {
-			// The open cluster time is complete only once the stream has
-			// moved past it. On an idle deployment that takes until its next
-			// oplog entry (MongoDB writes one every ten seconds).
+			// Any later write on the deployment closes this cluster time.
+			// On an idle source the next oplog entry takes one to two idle
+			// check intervals (ten to twenty seconds by default). The
+			// reported time to store the change includes this wait.
 			if len(f.ready) > 0 {
 				if point, err := f.commitAndCheck(ctx, f.readyToken, f.readyAt); err != nil {
 					return nil, err
@@ -904,7 +905,7 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 		fields := bson.M{
 			"resume_token": token, "updated_at": capturedAt,
 			"capture_status.last_captured_at": capturedAt, "capture_status.head_lsn": head,
-			"capture_status.source": status,
+			"capture_status.source": sourceCheckpoint{status, positionSHA256(token, nil)},
 		}
 		if recovered {
 			fields["capture_status.state"] = f.stateName()
@@ -914,10 +915,11 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 			fields["capture_status.last_event_at"] = eventAt
 			fields["capture_status.last_event_lag_ms"] = lagMS
 		}
-		update := bson.M{"$set": fields}
+		unset := bson.M{sourceCleanStartPath: ""}
 		if verified {
-			update["$unset"] = bson.M{sourceUnverifiedPath: ""}
+			unset[sourceUnverifiedPath] = ""
 		}
+		update := bson.M{"$set": fields, "$unset": unset}
 		if err := s.updateSourceLease(sc, f.run.lease, update); err != nil {
 			return nil, fmt.Errorf("failed to persist the source position: %w", err)
 		}

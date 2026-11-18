@@ -128,11 +128,12 @@ If a plan stays `writing_back`, check the affected documents on the source,
 let following catch up, and run `argon merge preview` again for the sandbox.
 
 Run `argon source status -p myapp` to see whether `main` is verified at its
-saved source cluster time. A clean stop at an exact checkpoint exits zero.
+saved source cluster time. A clean stop at an exact checkpoint exits zero,
+as does `restarting` while a live follower reopens its stream from that checkpoint.
 An open catch-up range, a stored capture error or an expired owner exits
 nonzero even when the state says `stopped`. Table and JSON output give the
-reason and next action. `argon status`, `argon doctor` and write-back
-preflight use the same result. See the
+reason and next action. `argon status` and `argon doctor` report the same
+health. Write-back preflight requires `exact`. See the
 [source status table](docs/OPERATIONS.md#what-argon-source-status-reports-and-what-to-do).
 
 Each project can run one follower or resync at a time. Restart following

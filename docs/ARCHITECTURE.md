@@ -525,24 +525,35 @@ the source primary's cluster time observed after acquisition. Resync clears
 it in the transaction that completes replay.
 
 A single metadata snapshot joins the branch, project and saved checkpoint,
-with lease freshness evaluated by the metadata server's `$$NOW`. The loader
-in `internal/ingest/source_status.go` derives the stored follower state,
+with lease freshness evaluated by the metadata server's `$$NOW`. Outside a
+transaction, an expired heartbeat triggers one reread of the whole result
+in a fresh snapshot independent of the caller's session. Lease acquisition
+and resync admission use the transaction's own snapshot. Deployment status
+filters out importing projects after the project join, before loading their
+checkpoints.
+
+The loader in `internal/ingest/source_status.go` derives the stored follower state,
 source mode, capture error, owner freshness, takeover and unfinished-resync
 markers, checkout, publication, saved head, source position and evidence
 for an exact checkpoint at the current branch head. It also checks the
 stored beginning and reason of any open inexact range. Head comparisons
 distinguish a missing LSN from an explicit zero. The token time must match
 the saved source time, except when an idle stream returns its stored opening
-boundary one tick ahead of the time the primary has confirmed.
+boundary one tick ahead of the time the primary has confirmed. Each position
+write stores a SHA-256 digest of the raw resume token or, when there is no
+token, the BSON timestamp value of `start_at`. The digest is part of
+`capture_status.source`, which older position writers replace in full.
 
 `ingest.Evaluate` returns the verdict kind, stable reason, message and next
 action. Only a published, released branch at a verified exact checkpoint
 with a usable position, a live owner or a clean stop, and no outstanding
-error, marker or inexact range can be healthy. An importing project gets
-its own verdict and is omitted from deployment health. Source status,
-deployment status, doctor and write-back preflight share this result.
-Follow and resync admission map the same reasons to the work each command
-can perform. The operator table documents their order of precedence in
+error, marker or inexact range can be healthy. A live follower opening its
+stream from a checkpoint admitted as healthy reports `restarting` until the
+stream opens. Source status and deployment health accept this verdict.
+Write-back preflight requires `exact`. A single-branch read of an unpublished
+project reports `importing`. Follow and resync admission map the same reasons
+to the work each command can perform. The operator table documents their
+order of precedence in
 [the operations guide](OPERATIONS.md#what-argon-source-status-reports-and-what-to-do).
 
 A subsequent ordinary resync uses its stream preflight to check whether

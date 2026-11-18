@@ -168,7 +168,7 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 	if err := s.flush(branch, nil, stream.ResumeToken()); err != nil {
 		return err
 	}
-	if err := s.report(branchID, "running", cfg.actor, ""); err != nil {
+	if err := s.report(branchID, "running", cfg.actor, "", nil); err != nil {
 		return err
 	}
 	run.readyOnce.Do(func() {
