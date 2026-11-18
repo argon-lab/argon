@@ -273,6 +273,10 @@ changes since 2.4.0.
   and writes to an Argon sandbox through a MongoDB user restricted to that
   sandbox's database; the host prints the diff and discards the sandbox, or
   merges it with `--apply`.
+- `examples/openai_agents_sandbox.py`: an OpenAI Agents SDK agent changes one
+  account in an Argon sandbox through `argon-agents`; the script prints the diff
+  and discards the sandbox, or merges it with `--apply`. `--no-llm` runs it
+  without an API key.
 
 ### Changed
 
