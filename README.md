@@ -187,8 +187,8 @@ model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Thank you to everyone who has made Argon better.
 
-<a href="https://github.com/argon-lab/argon/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=argon-lab/argon" alt="Argon contributors">
+<a href="https://argonlabs.tech/about#contributors">
+  <img src="https://argonlabs.tech/contributors.svg" alt="Argon contributors" height="64">
 </a>
 
 What each person shipped, and the release it shipped in, is listed at
