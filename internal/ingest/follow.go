@@ -323,12 +323,7 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	}
 	status.Database = src.Name()
 
-	csOpts := options.ChangeStream().
-		SetBatchSize(maxBatch).
-		SetFullDocument(options.WhenAvailable).
-		SetFullDocumentBeforeChange(options.WhenAvailable).
-		SetShowExpandedEvents(true).
-		SetMaxAwaitTime(500 * time.Millisecond)
+	csOpts := sourceStreamOptions()
 	// opened is the position the stream starts from.
 	var opened primitive.Timestamp
 	if token != nil {
@@ -340,12 +335,13 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	}
 	watch := opts.Watch
 	if watch == nil {
-		watch = func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
-			return src.Watch(ctx, mongo.Pipeline{}, opts)
-		}
+		watch = watchSource
 	}
 	stream, err := watch(ctx, src, csOpts)
 	if err != nil {
+		if unsupportedSourceStreamOptions(err) {
+			return nil, &ConfigurationError{fmt.Sprintf("the source's MongoDB version does not support the change-stream options Argon follows with: %v", err)}
+		}
 		return nil, streamCaptureError(fmt.Errorf("failed to open the change stream on source database %s: %w", src.Name(), err), true)
 	}
 	defer func() { _ = stream.Close(context.Background()) }()
@@ -354,10 +350,8 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	if err != nil {
 		return nil, err
 	}
-	// The stream's position is read from its resume tokens. Check once that
-	// this server's tokens say what is expected of them before relying on it.
-	if at, ok := tokenTime(stream.ResumeToken()); len(stream.ResumeToken()) > 0 && (!ok || at.T < 1_000_000_000 || at.T > now.T+600) {
-		return nil, &ConfigurationError{"this MongoDB version's change-stream resume token is not in the format Argon reads the stream position from; following is not supported on it"}
+	if err := validateSourceStreamToken(stream, now); err != nil {
+		return nil, err
 	}
 
 	session, err := src.Client().StartSession()
@@ -821,16 +815,24 @@ func (f *follower) commitAndCheck(ctx context.Context, token bson.Raw, at primit
 	if finished.ToLSN >= finished.FromLSN {
 		ranges := append([]InexactRange(nil), f.status.InexactRanges...)
 		if n := len(ranges); n > 0 && ranges[n-1].Reason == finished.Reason && ranges[n-1].ToLSN+1 >= finished.FromLSN {
-			// One cause, one range: a collection whose every update is
-			// inexact would otherwise add a range per update.
+			// Adjacent ranges with the same reason can share one entry.
 			finished.FromLSN = ranges[n-1].FromLSN
 			ranges = ranges[:n-1]
 		}
-		f.status.InexactRanges = append(ranges, finished)
-		if extra := len(f.status.InexactRanges) - maxInexactRanges; extra > 0 {
-			f.status.InexactRanges = f.status.InexactRanges[extra:]
-			f.status.InexactRangesDropped += extra
+		// A recurring reason should displace its own older ranges first.
+		for len(ranges) >= maxInexactRanges {
+			drop := 0
+			for i, older := range ranges {
+				if older.Reason == finished.Reason {
+					drop = i
+					break
+				}
+			}
+			copy(ranges[drop:], ranges[drop+1:])
+			ranges = ranges[:len(ranges)-1]
+			f.status.InexactRangesDropped++
 		}
+		f.status.InexactRanges = append(ranges, finished)
 	}
 	if err := f.commit(token, at); err != nil {
 		f.status = previous

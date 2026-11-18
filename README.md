@@ -96,6 +96,7 @@ back to it:
 
 ```bash
 export ARGON_SOURCE_URI="mongodb://…"     # read per command, never stored
+argon import preview --database myapp --online
 argon import database --database myapp --project myapp --online
 argon source follow -p myapp              # main tracks the source; leave it running
 
@@ -105,6 +106,8 @@ argon merge apply <plan-id> --write-back  # one transaction on the source
 ```
 
 The import copies ordinary collections at one cluster time, which it prints.
+Add `--dry-run` to the import command to check the source and its change stream
+and see the estimated copy without writing anything.
 Following ignores changes to views. `--write-back`
 checks every document against the plan's before-image and aborts the
 transaction if one has changed. Write-back and `--enable-source-images`

@@ -34,8 +34,7 @@ func TestWriteBack_DoesNotCreateACollection(t *testing.T) {
 	require.NotContains(t, after, "brand_new", "write-back must not create a collection in the source")
 }
 
-// (a) Production drops a collection; the follower is degraded; a sandbox
-// forked from the stale main inserts into it; write-back re-creates it.
+// A sandbox forked from degraded main still has a collection production dropped.
 func TestWriteBack_RefusedWhileFollowingIsDegraded(t *testing.T) {
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
@@ -64,11 +63,9 @@ func TestWriteBack_RefusedWhileFollowingIsDegraded(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, before, "orders")
 
-	result, werr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, werr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	require.ErrorContains(t, werr, "degraded")
 	after, err := f.source.ListCollectionNames(ctx, bson.D{})
 	require.NoError(t, err)
-	count, _ := f.source.Collection("orders").CountDocuments(ctx, bson.D{})
-	t.Logf("follower=%s (%s); write-back result=%+v err=%v; source collections before=%v after=%v; orders docs in source=%d",
-		status.State, status.Error, result, werr, before, after, count)
 	require.NotContains(t, after, "orders", "write-back must not re-create a collection production dropped")
 }

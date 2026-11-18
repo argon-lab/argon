@@ -11,7 +11,6 @@ import (
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
@@ -248,7 +247,10 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	// privilege should learn that now, with the branch untouched and no
 	// unfinished resync on record.
 	if err := probeStream(ctx, src, startAt, opts.Watch); err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return &ConfigurationError{fmt.Sprintf("%v. Nothing was written to the branch history", err)}
 	}
 	stored.BranchID, stored.State, stored.Actor, stored.Error = branchID, "resyncing", sourceActor, ""
 	stored.UpdatedAt, stored.Source = time.Now(), &status
@@ -599,24 +601,4 @@ func (r *resyncer) commit() error {
 		}
 	}
 	return nil
-}
-
-// probeStream opens and closes the source's change stream at a position.
-func probeStream(ctx context.Context, src *mongo.Database, startAt primitive.Timestamp, watch func(context.Context, *mongo.Database, *options.ChangeStreamOptions) (*mongo.ChangeStream, error)) error {
-	if watch == nil {
-		watch = func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
-			return src.Watch(ctx, mongo.Pipeline{}, opts)
-		}
-	}
-	stream, err := watch(ctx, src, options.ChangeStream().SetStartAtOperationTime(&startAt).SetMaxAwaitTime(100*time.Millisecond))
-	if err != nil {
-		return &ConfigurationError{fmt.Sprintf("the source's change stream cannot be opened, so the changes made during the comparison could not be replayed (the source user needs the changeStream action on database %s): %v. Nothing was written to the branch history", src.Name(), err)}
-	}
-	stream.TryNext(ctx)
-	err = stream.Err()
-	_ = stream.Close(context.Background())
-	if err != nil && ctx.Err() == nil {
-		return &ConfigurationError{fmt.Sprintf("the source's change stream cannot be read: %v. Nothing was written to the branch history", err)}
-	}
-	return ctx.Err()
 }

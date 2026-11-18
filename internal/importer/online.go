@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 
 	"github.com/argon-lab/argon/v2/internal/ingest"
+	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 )
@@ -25,8 +26,98 @@ type Follower interface {
 }
 
 // EnableOnline wires what an online import needs beyond a quiesced one.
-func (s *ImportService) EnableOnline(sources *source.Registry, follower Follower) {
-	s.sources, s.follower = sources, follower
+func (s *ImportService) EnableOnline(metadata *mongo.Database, sources *source.Registry, follower Follower) {
+	s.onlineMetadata, s.sources, s.follower = metadata, sources, follower
+}
+
+type onlineSource struct {
+	database    *mongo.Database
+	identity    source.Identity
+	boundary    primitive.Timestamp
+	replayAt    primitive.Timestamp
+	collections []string
+}
+
+func disconnectSource(client *mongo.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = client.Disconnect(ctx)
+}
+
+func prepareOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Database) (_ *onlineSource, err error) {
+	if metadata == nil {
+		return nil, errors.New("online import is not available in this process")
+	}
+	if err := source.ValidateDatabase(opts.DatabaseName, metadata.Name()); err != nil {
+		return nil, err
+	}
+	if err := projectwal.CheckImportTarget(ctx, metadata, opts.ProjectName); err != nil {
+		return nil, err
+	}
+	client, err := source.Connect(ctx, opts.MongoURI)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			disconnectSource(client)
+		}
+	}()
+	identity, err := source.Identify(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	if opts.EnableSourceImages {
+		if err := identity.RequireReplicaSetID(); err != nil {
+			return nil, fmt.Errorf("--enable-source-images refused: %w", err)
+		}
+	}
+	db := client.Database(opts.DatabaseName)
+
+	// Read the collection list from the primary after the boundary. Collections
+	// created before it are in the list, and later ones arrive through the stream.
+	boundary, err := ingest.PrimaryTime(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	collections, err := importCollections(ctx, client.Database(opts.DatabaseName, options.Database().SetReadPreference(readpref.Primary())), source.SkipCollection, true)
+	if err != nil {
+		return nil, err
+	}
+	// The copy reads at or after boundary, so replay starts at the next tick.
+	replayAt := boundary
+	if replayAt.I++; replayAt.I == 0 {
+		replayAt.T++
+	}
+	// Verify the stream can open before the copy, which can take hours.
+	if err := ingest.ProbeStream(ctx, db, replayAt); err != nil {
+		return nil, err
+	}
+	return &onlineSource{database: db, identity: identity, boundary: boundary, replayAt: replayAt, collections: collections}, nil
+}
+
+// DryRunOnline checks the same source preconditions as an online import and estimates its copy size.
+func DryRunOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Database) (_ *ImportResult, err error) {
+	started := time.Now()
+	defer func() { err = source.RedactError(err, opts.MongoURI) }()
+	if err := validateImportOptions(opts); err != nil {
+		return nil, fmt.Errorf("invalid import options: %w", err)
+	}
+	prepared, err := prepareOnline(ctx, opts, metadata)
+	if err != nil {
+		return nil, err
+	}
+	defer disconnectSource(prepared.database.Client())
+	result := &ImportResult{Online: true, Collections: prepared.collections}
+	for _, name := range prepared.collections {
+		count, err := prepared.database.Collection(name).EstimatedDocumentCount(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to count documents in collection %s: %w", name, err)
+		}
+		result.ImportedDocs += count
+	}
+	result.Duration = time.Since(started)
+	return result, nil
 }
 
 // importOnline imports a database that keeps being written.
@@ -62,52 +153,13 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 	if s.sources == nil || s.follower == nil {
 		return nil, errors.New("online import is not available in this process")
 	}
-	if err := s.sources.ValidateDatabase(opts.DatabaseName); err != nil {
-		return nil, err
-	}
-	if existing, lookupErr := s.projectService.GetProjectByName(opts.ProjectName); lookupErr == nil && existing != nil {
-		return nil, fmt.Errorf("project '%s' already exists", opts.ProjectName)
-	}
-
-	client, err := source.Connect(ctx, opts.MongoURI)
+	prepared, err := prepareOnline(ctx, opts, s.onlineMetadata)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		disconnect, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = client.Disconnect(disconnect)
-	}()
-	identity, err := source.Identify(ctx, client)
-	if err != nil {
-		return nil, err
-	}
-	if opts.EnableSourceImages {
-		if err := identity.RequireReplicaSetID(); err != nil {
-			return nil, fmt.Errorf("--enable-source-images refused: %w", err)
-		}
-	}
-	sourceDB := client.Database(opts.DatabaseName)
-
-	// The stream boundary comes first, and the list of collections to copy
-	// is read from the primary after it. A collection created before the
-	// boundary is then in the list; one created after it arrives through the
-	// stream. Taking the list first would leave a moment in which a new
-	// collection is in neither.
-	startAt, err := ingest.PrimaryTime(ctx, sourceDB)
-	if err != nil {
-		return nil, err
-	}
-	collections, err := importCollections(ctx, client.Database(opts.DatabaseName, options.Database().SetReadPreference(readpref.Primary())), source.SkipCollection, true)
-	if err != nil {
-		return nil, err
-	}
-	// Open the change stream once now. The replay only starts after the
-	// copy, which can take hours; a user without the changeStream privilege,
-	// or a source that cannot serve the boundary, should fail here.
-	if err := probeStream(ctx, sourceDB, startAt); err != nil {
-		return nil, err
-	}
+	sourceDB, identity, collections := prepared.database, prepared.identity, prepared.collections
+	client := sourceDB.Client()
+	defer disconnectSource(client)
 
 	result := &ImportResult{Online: true, Follows: opts.DatabaseName, Collections: make([]string, 0, len(collections))}
 	// Collections whose images this import switched on. Any failure from
@@ -175,15 +227,9 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 	}
 	defer session.EndSession(context.Background())
 	// The session keeps the pointer it is given, so it gets its own copy.
-	readsFrom := startAt
+	readsFrom := prepared.boundary
 	if err := session.AdvanceOperationTime(&readsFrom); err != nil {
 		return nil, err
-	}
-	// Every read below is causally at or after startAt, so the copy already
-	// contains whatever committed at that cluster time; the stream starts
-	// with the next one.
-	if startAt.I++; startAt.I == 0 {
-		startAt.T++
 	}
 	reads := mongo.NewSessionContext(ctx, session)
 	for _, name := range collections {
@@ -197,7 +243,7 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 		result.Collections = append(result.Collections, name)
 	}
 
-	point, err := s.follower.CatchUp(ctx, branch.ID, sourceDB, startAt, result.StartLSN+1,
+	point, err := s.follower.CatchUp(ctx, branch.ID, sourceDB, prepared.replayAt, result.StartLSN+1,
 		"online import: the source was written while it was copied", redact)
 	if err != nil {
 		return nil, fmt.Errorf("the copy finished, but catching up with the changes made during it did not: %w. Nothing was published. If the source's oplog no longer reaches back to the start of the copy, the copy took longer than the oplog window; retry when the source is quieter or give it a larger oplog", err)
@@ -217,22 +263,6 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 	}
 	result.Duration = time.Since(started)
 	return result, nil
-}
-
-// probeStream opens and closes the source's change stream at the boundary.
-func probeStream(ctx context.Context, db *mongo.Database, startAt primitive.Timestamp) error {
-	stream, err := db.Watch(ctx, mongo.Pipeline{}, options.ChangeStream().
-		SetStartAtOperationTime(&startAt).SetMaxAwaitTime(100*time.Millisecond))
-	if err != nil {
-		return fmt.Errorf("the source's change stream cannot be opened, so the changes made during the copy could not be replayed (the source user needs the changeStream action on database %s): %w", db.Name(), err)
-	}
-	stream.TryNext(ctx)
-	err = stream.Err()
-	_ = stream.Close(context.Background())
-	if err != nil {
-		return fmt.Errorf("the source's change stream cannot be read: %w", err)
-	}
-	return nil
 }
 
 // copyCollection appends every document of one source collection as a put,

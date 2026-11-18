@@ -44,8 +44,8 @@ branch's own physical database.
 ## Import ("git clone")
 
 ```
-argon import preview  --uri U --database D
-argon import database --uri U --database D --project P --online [--follow [--allow-inexact]] [--enable-source-images] [--yes]
+argon import preview  --uri U --database D [--online]
+argon import database --uri U --database D --project P --online [--follow [--allow-inexact]] [--enable-source-images] [--yes] [--dry-run]
 argon import database --uri U --database D --project P --source-quiesced [--yes]
 argon import database --uri U --database D --project P --dry-run
 argon import cleanup --project P --yes   # only after stopping a crashed importer
@@ -67,9 +67,17 @@ needs one of two flags, and `--yes` replaces neither:
 - `--source-quiesced` is for a database nobody is writing to: pause its
   writers and DDL for the whole import. The result is a one-time copy.
 
+Both preview modes skip views and estimate copy size. `import preview --online`
+also includes ordinary collections whose names start with `admin.`, `config.`
+or `local.`. `import database --online --dry-run` checks whether an online
+import can start and reports its collections and estimated document count
+without writing anything.
+
 `--uri` can be left out when `ARGON_SOURCE_URI` is set. Source preflight
-checks collection types/readability. The target stays unpublished until the
-import succeeds; ordinary failures clean up the reserved project and history.
+checks collection types and readability. Online preflight opens and reads the
+stream with the replay's options and start position. The target stays unpublished
+until the import succeeds. Ordinary failures clean up the reserved project and
+history.
 After a hard kill, stop the old process and use `import cleanup` before
 retrying the same name. Completed projects cannot be removed by cleanup. See
 [the import contract](OPERATIONS.md#importing-existing-data).

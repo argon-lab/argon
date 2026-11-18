@@ -445,9 +445,12 @@ source's own change stream:
 
 1. Take the primary's cluster time `T0`, and only then list the collections.
    A collection created before `T0` is in the list; one created later
-   arrives through the stream. Start a causally consistent session at `T0`
-   and read everything in it with majority read concern.
-2. Copy every listed collection into put entries.
+   arrives through the stream. Open and read a change stream with the replay's
+   options and start position to check that the source can serve it. Online
+   dry-run stops after preflight and estimates document counts without
+   reserving a project.
+2. Start a causally consistent session at `T0` and copy every listed collection
+   into put entries with majority read concern.
 3. Replay the change stream from just after `T0` on top of the copy. Each
    entry is a whole document, so applying a change the copy already contained
    leaves the same document.
@@ -508,7 +511,8 @@ connection to an ID-bound source must prove the same replica-set ID. A
 binding by set name and member hosts supports following and resync when
 the set name and at least one recorded member still match. Write-back and
 enabling source images require a recorded ID, since distinct deployments
-can report the same name and hosts.
+can report the same name and hosts. A network failure during
+`replSetGetConfig` stops the identity check with an error.
 
 A snapshot read at a cluster time shows a document after everything that
 committed at that time. Within a multi-document transaction an earlier change
@@ -537,7 +541,8 @@ with the copy replaced by a comparison, because the branch already has
 documents:
 
 1. Acquire the branch's lease, take the source primary's cluster time `T0`,
-   list its collections and check that the change stream can open.
+   list its collections and probe the change stream with the replay's options
+   and start position.
 2. Record mode `catch_up`, the LSN the inexact range starts at, the resync
    marker and the stream's start position before writing any branch entries.
    Clear the previous resume token in the same transaction. If a preflight

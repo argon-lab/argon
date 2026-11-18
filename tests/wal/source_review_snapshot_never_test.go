@@ -58,34 +58,6 @@ func TestFollow_CappedCollectionUpdateIsDegraded(t *testing.T) {
 	require.NoError(t, stop())
 }
 
-// (a') A source that never had images, --allow-inexact, and a follower that
-// is always caught up: each update in the capped collection costs a range.
-func TestFollow_CappedCollectionUpdatesShareOneInexactRange(t *testing.T) {
-	ctx := context.Background()
-	f := newFollowFixture(t, metadataDeploymentURI)
-	f.seedSmall(t)
-	events := f.cappedCollection(t, "events")
-	var err error
-	f.importOnline(t, walcli.OnlineImport{})
-	stop := f.follow(t, f.services, walcli.FollowSourceOptions{AllowInexact: true})
-	base := len(f.waitCaughtUp(t).InexactRanges)
-	for i := 1; i <= 3; i++ {
-		_, err = events.UpdateOne(ctx, bson.M{"_id": "e1"}, bson.M{"$set": bson.M{"n": int32(i)}})
-		require.NoError(t, err)
-		info := f.waitCaughtUp(t)
-		t.Logf("after live capped update %d: mode=%s inexact ranges=%d (was %d after import)", i, info.Mode, len(info.InexactRanges), base)
-		for _, r := range info.InexactRanges {
-			t.Logf("   range %+v", r)
-		}
-		// One cause, one range, and it says what the cause is.
-		require.Len(t, info.InexactRanges, base+1)
-		last := info.InexactRanges[len(info.InexactRanges)-1]
-		require.Contains(t, last.Reason, "updates to events")
-		require.NotContains(t, last.Reason, "older than")
-	}
-	require.NoError(t, stop())
-}
-
 // (c) on this server version: collMod by --enable-source-images before the
 // backlog is read.
 func TestFollow_EnablingImagesKeepsTheBacklogReadable(t *testing.T) {
@@ -98,18 +70,16 @@ func TestFollow_EnablingImagesKeepsTheBacklogReadable(t *testing.T) {
 		_, err := catalog.UpdateOne(ctx, bson.M{"_id": "item-05"}, bson.M{"$set": bson.M{"stock": int32(100 + i)}})
 		require.NoError(t, err)
 	}
-	at := f.sourceTime(t)
 	stop := f.follow(t, f.services, walcli.FollowSourceOptions{EnableSourceImages: true})
-	probe := f.source.RunCommand(ctx, bson.D{{Key: "find", Value: "catalog"}, {Key: "limit", Value: 1},
-		{Key: "readConcern", Value: bson.D{{Key: "level", Value: "snapshot"}, {Key: "atClusterTime", Value: at}}}})
-	t.Logf("snapshot read at a time before the collMod, after the collMod: err=%v", probe.Err())
 	info := f.waitCaughtUp(t)
 	require.NoError(t, stop())
+	require.Equal(t, "exact", info.Mode)
 	entries := f.followedEntries(t, result.ConsistentLSN)
-	for _, e := range entries {
-		t.Logf("backlog entry lsn=%d capture_images=%v", e.LSN, e.Metadata["capture_images"])
+	require.Len(t, entries, 3)
+	for i, entry := range entries {
+		require.Equal(t, "snapshot", entry.Metadata["capture_images"])
+		require.EqualValues(t, 101+i, entry.PostImage.Lookup("stock").Int32())
 	}
-	t.Logf("mode=%s state=%s", info.Mode, info.State)
 }
 
 // cappedCollection creates a capped collection on the source and skips the

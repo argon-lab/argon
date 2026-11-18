@@ -58,3 +58,13 @@ func TestCLISourceStatusShowsWeakIdentityWriteBackRestriction(t *testing.T) {
 		}
 	}
 }
+
+func TestCLISourceStatusShowsOmittedInexactRanges(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	printSourceStatus(cmd, &walcli.SourceInfo{Mode: "exact", InexactRangesDropped: 3})
+	if !strings.Contains(out.String(), "3 inexact range(s) omitted") || strings.Contains(out.String(), "exact outside the ranges below") {
+		t.Fatalf("table output should acknowledge omitted ranges:\n%s", out.String())
+	}
+}

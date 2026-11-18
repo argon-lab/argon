@@ -78,13 +78,13 @@ func NewRegistry(metaDB *mongo.Database) (*Registry, error) {
 // ValidateDatabase refuses source names that Argon itself owns. Because a
 // bound source can never be named like a physical branch database or like
 // the metadata database, the paths that drop those can never reach it.
-func (r *Registry) ValidateDatabase(name string) error {
+func ValidateDatabase(name, metadataDB string) error {
 	switch {
 	case name == "":
 		return errors.New("source database name is required")
 	case strings.HasPrefix(name, ManagedPrefix):
 		return fmt.Errorf("database %q is an Argon branch database (prefix %s): Argon creates and drops those itself, so it cannot be followed as a source", name, ManagedPrefix)
-	case name == r.metadataDB:
+	case name == metadataDB:
 		return fmt.Errorf("database %q is Argon's metadata database and cannot be followed as a source", name)
 	case name == "admin" || name == "local" || name == "config":
 		return fmt.Errorf("database %q is a MongoDB system database and cannot be followed as a source", name)
@@ -94,7 +94,7 @@ func (r *Registry) ValidateDatabase(name string) error {
 
 // Bind records a binding. It runs inside the caller's session when ctx is one.
 func (r *Registry) Bind(ctx context.Context, binding *Binding) error {
-	if err := r.ValidateDatabase(binding.Database); err != nil {
+	if err := ValidateDatabase(binding.Database, r.metadataDB); err != nil {
 		return err
 	}
 	if binding.CreatedAt.IsZero() {
@@ -241,8 +241,9 @@ func Identify(ctx context.Context, client *mongo.Client) (Identity, error) {
 		if !config.Config.Settings.ReplicaSetID.IsZero() {
 			id.ReplicaSetID = config.Config.Settings.ReplicaSetID.Hex()
 		}
-	case errors.As(err, &refused):
-		// Not permitted, or not offered by this deployment.
+	case errors.As(err, &refused) && !mongo.IsNetworkError(err):
+		// The server refused the command. Driver network failures can also
+		// arrive as CommandError, with the NetworkError label.
 	default:
 		return id, fmt.Errorf("failed to read the source's replica-set configuration: %w", err)
 	}

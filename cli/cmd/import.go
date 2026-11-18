@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -86,15 +85,20 @@ This command analyzes the source database and shows:
 - Document counts and estimated sizes
 - Estimated WAL entries that would be created
 
+Views are skipped. Pass --online to use the online import's collection rules.
+Use "argon import database --online --dry-run" to check the source deployment
+and change stream as well.
+
 Example:
-  argon import preview --uri "mongodb://localhost:27017" --database "myapp"`,
+  argon import preview --uri "mongodb://localhost:27017" --database "myapp" --online`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx := cmd.Context()
 
 		// Get flags
 		mongoURI, _ := cmd.Flags().GetString("uri")
 		mongoURI = walcli.SourceURI(mongoURI)
 		databaseName, _ := cmd.Flags().GetString("database")
+		online, _ := cmd.Flags().GetBool("online")
 		outputFormat, _ := cmd.Flags().GetString("output")
 
 		if mongoURI == "" {
@@ -104,14 +108,8 @@ Example:
 			return fmt.Errorf("--database flag is required")
 		}
 
-		// Initialize services
-		services, err := newCommandServices(cmd)
-		if err != nil {
-			return fmt.Errorf("failed to initialize services: %w", err)
-		}
-
 		// Preview the import
-		previewData, err := services.ImportPreview(ctx, mongoURI, databaseName)
+		previewData, err := walcli.ImportPreview(ctx, mongoURI, databaseName, online)
 		if err != nil {
 			return fmt.Errorf("failed to preview import: %w", err)
 		}
@@ -145,7 +143,11 @@ by the source's own change stream until the project equals the source at one
 cluster time; no write made during the import is lost. The source must be a
 replica set. The new project's main branch then follows that database: keep
 it current with "argon source follow" (or pass --follow here), and it accepts
-no other writes. --enable-source-images changes the source's collections.
+no other writes. Before copying, Argon opens the change stream with the options
+it will use for replay. With --online --dry-run, Argon runs these preflight
+checks and estimates document counts without making changes.
+
+--enable-source-images changes the source's collections during an import.
 It requires a user allowed to run replSetGetConfig, for example one with the
 clusterMonitor role. This lets Argon record the replica-set ID at import,
 which is also required for write-back.
@@ -204,10 +206,13 @@ Examples:
 			return fmt.Errorf("pass --online to import a database that is being written (replica set required), or pause its writes and DDL and pass --source-quiesced; --yes only confirms creating the target project")
 		}
 
-		// Initialize services
-		services, err := newCommandServices(cmd)
-		if err != nil {
-			return fmt.Errorf("failed to initialize services: %w", err)
+		var services *walcli.Services
+		if !online || !dryRun {
+			var err error
+			services, err = newCommandServices(cmd)
+			if err != nil {
+				return fmt.Errorf("failed to initialize services: %w", err)
+			}
 		}
 
 		// Configure import options
@@ -249,11 +254,17 @@ Examples:
 		}
 
 		var resultData interface{}
-		if online && !dryRun {
-			resultData, err = services.ImportDatabaseOnline(ctx, walcli.OnlineImport{
+		var err error
+		if online {
+			onlineOpts := walcli.OnlineImport{
 				URI: opts.MongoURI, Database: opts.DatabaseName, Project: opts.ProjectName,
-				BatchSize: opts.BatchSize, EnableSourceImages: enableImages,
-			})
+				DryRun: opts.DryRun, BatchSize: opts.BatchSize, EnableSourceImages: enableImages,
+			}
+			if dryRun {
+				resultData, err = walcli.DryRunOnlineImport(ctx, onlineOpts)
+			} else {
+				resultData, err = services.ImportDatabaseOnline(ctx, onlineOpts)
+			}
 		} else {
 			resultData, err = services.ImportDatabase(ctx, opts.MongoURI, opts.DatabaseName, opts.ProjectName, opts.DryRun, opts.BatchSize, sourceQuiesced)
 		}
@@ -376,6 +387,7 @@ func init() {
 	// Preview command flags
 	importPreviewCmd.Flags().StringP("uri", "u", "", "Source connection URI (default $ARGON_SOURCE_URI); never stored")
 	importPreviewCmd.Flags().StringP("database", "d", "", "Database name to preview (required)")
+	importPreviewCmd.Flags().Bool("online", false, "Preview the collections an online import would copy")
 	importPreviewCmd.Flags().StringP("output", "o", "table", "Output format: table, json")
 	_ = importPreviewCmd.MarkFlagRequired("database")
 
@@ -383,7 +395,7 @@ func init() {
 	importDatabaseCmd.Flags().StringP("uri", "u", "", "Source connection URI (default $ARGON_SOURCE_URI); never stored")
 	importDatabaseCmd.Flags().StringP("database", "d", "", "Database name to import (required)")
 	importDatabaseCmd.Flags().StringP("project", "p", "", "Argon project name to create (required)")
-	importDatabaseCmd.Flags().Bool("dry-run", false, "Preview import without making changes")
+	importDatabaseCmd.Flags().Bool("dry-run", false, "Preview import without making changes (with --online, run the online preflight)")
 	importDatabaseCmd.Flags().Bool("source-quiesced", false, "Confirm source writers and DDL are paused until the import finishes")
 	importDatabaseCmd.Flags().Bool("online", false, "Import a replica-set database that is being written; main then follows it")
 	importDatabaseCmd.Flags().Bool("follow", false, "With --online: keep following the source in the foreground after the import")

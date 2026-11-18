@@ -183,7 +183,7 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 	// this is the second, independent check behind checkout's own.
 	checkoutService.SetDropGuard(sourceRegistry.GuardDrop)
 	ingestService := ingest.NewService(client, db, walService, branchService)
-	importerService.EnableOnline(sourceRegistry, ingestService)
+	importerService.EnableOnline(db, sourceRegistry, ingestService)
 	// A removed import leaves no snapshot of the data it copied.
 	projectService.SetImportAbortHook(func(ctx context.Context, branchIDs []string) error {
 		for _, branchID := range branchIDs {
@@ -463,9 +463,14 @@ func (s *Services) RunGC(ctx context.Context, projectID string, retention time.D
 	return s.GC.RunProject(ctx, projectID, gc.Config{RetentionWindow: retention, DryRun: dryRun})
 }
 
-// ImportPreview wraps the importer preview functionality for CLI use
+// ImportPreview estimates what an import would copy without opening metadata services.
+func ImportPreview(ctx context.Context, mongoURI, databaseName string, online bool) (interface{}, error) {
+	return importer.PreviewImport(ctx, mongoURI, databaseName, online)
+}
+
+// ImportPreview wraps the quiesced preview for existing callers.
 func (s *Services) ImportPreview(ctx context.Context, mongoURI, databaseName string) (interface{}, error) {
-	return s.Importer.PreviewImport(ctx, mongoURI, databaseName)
+	return ImportPreview(ctx, mongoURI, databaseName, false)
 }
 
 // ImportDatabase wraps the importer database functionality for CLI use

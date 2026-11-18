@@ -44,6 +44,7 @@ type OnlineImport struct {
 	URI      string
 	Database string
 	Project  string
+	DryRun   bool
 	// BatchSize is the number of documents per copy batch (default 1000).
 	BatchSize int
 	// EnableSourceImages turns on changeStreamPreAndPostImages for the
@@ -54,10 +55,27 @@ type OnlineImport struct {
 // ImportDatabaseOnline imports a database that is being written, without
 // pausing its writers, and leaves the new project's main branch following it.
 func (s *Services) ImportDatabaseOnline(ctx context.Context, opts OnlineImport) (interface{}, error) {
-	return s.Importer.ImportDatabase(ctx, importer.ImportOptions{
+	return s.Importer.ImportDatabase(ctx, opts.importOptions())
+}
+
+// DryRunOnlineImport runs the online preflight without initializing metadata indexes.
+func DryRunOnlineImport(ctx context.Context, opts OnlineImport) (interface{}, error) {
+	mongoURI, metadataDB := deploymentFromEnv()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Argon metadata: %w", source.RedactError(err, mongoURI))
+	}
+	defer disconnect(client)
+	opts.DryRun = true
+	result, err := importer.DryRunOnline(ctx, opts.importOptions(), client.Database(metadataDB))
+	return result, source.RedactError(err, mongoURI)
+}
+
+func (opts OnlineImport) importOptions() importer.ImportOptions {
+	return importer.ImportOptions{
 		MongoURI: opts.URI, DatabaseName: opts.Database, ProjectName: opts.Project,
-		BatchSize: opts.BatchSize, Online: true, EnableSourceImages: opts.EnableSourceImages,
-	})
+		DryRun: opts.DryRun, BatchSize: opts.BatchSize, Online: true, EnableSourceImages: opts.EnableSourceImages,
+	}
 }
 
 // SourceInfo describes the external database a project follows and how far

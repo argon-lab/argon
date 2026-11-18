@@ -59,25 +59,33 @@ target-creation confirmation.
 
 ```sh
 export ARGON_SOURCE_URI="mongodb://…"      # used per command, never stored
-argon import preview  --database myapp
+argon import preview  --database myapp --online
 argon import database --database myapp --project myapp --online --yes
 argon source follow -p myapp               # keep main current from here on
 ```
 
+The preview estimates document counts and sizes using the online collection
+rules. Both preview modes skip views. To check whether the import can start,
+run `argon import database
+--database myapp --project myapp --online --dry-run`. It checks the database
+name, replica-set topology and collection rules, then opens and reads the
+change stream with the replay's options and start position. It reports the
+collections it would copy and estimated document counts without initializing
+metadata, copying data or enabling source images.
+
 `--online` (releases after 2.5.0) needs the source to be a replica set; a
 sharded cluster behind mongos is refused, and a standalone has no change
-stream. The import takes the source's cluster time, copies every collection,
-and then replays the source's change stream from that time on top of the copy
-until the stream has passed everything the copy read. Because entries are
+stream. The import takes the source's cluster time, copies its ordinary
+collections, and replays the source's change stream from just after that
+time until the stream has passed everything the copy read. Because entries are
 whole documents, replaying a change the copy already contained is harmless.
 What is published is the source at one cluster time, and the command prints
 it together with the LSN it corresponds to (`consistent_lsn`,
 `consistent_cluster_time`). LSNs below that are the copy in progress; they
 are recorded as an inexact range and are not states the source was in.
 
-What the import does to the source: majority reads, one change stream, and
-nothing else. It creates nothing there. Writes made during the import are
-neither lost nor blocked.
+By default, the import reads from the source and opens its change stream for
+preflight and replay. Writes made during the import continue as usual.
 
 What can make it fail, in which case nothing is published and the reserved
 project is removed:
@@ -157,6 +165,8 @@ read, and `argon source status` shows which (`identity`):
   names. This check supports following and resync. Write-back and
   `--enable-source-images` require an ID recorded at import, and
   `argon source status` reports when the binding rules out write-back.
+
+A network failure while reading `replSetGetConfig` aborts the preflight.
 
 If all recorded member hosts have changed for a project bound by name and
 hosts, Argon can no longer verify its source. To resume following in that
@@ -246,10 +256,13 @@ before the problem:
 
   A collection MongoDB does not serve at a past cluster time has no exact
   reads at all. A capped collection is one on MongoDB 7.0 and earlier (8.x
-  serves it). Its updates are followed
-  exactly only through attached images; without them every one of them stops
-  following, or with `--allow-inexact` is stored as the document's current
-  state inside one inexact range whose reason names the collection.
+  serves it). Its updates are followed exactly only through attached images.
+  Without images, an update stops following unless `--allow-inexact` is given,
+  in which case Argon stores the document's current state. Adjacent inexact
+  ranges with the same reason share one entry. Exact writes between such
+  ranges keep the entries separate. When the list is full, Argon removes
+  the oldest range with the same reason, or the oldest overall if none
+  match, and counts the removal in `argon source status`.
 
 Following also ends as `degraded`, rather than retrying for ever, when the
 source keeps answering the same position with an error and nothing can be
@@ -296,9 +309,9 @@ Resync brings `main` to the source's current state without a second project.
 It takes a stream position on the source, compares the source with `main`,
 and then replays the source's changes from that position until `main` equals
 the source at one cluster time, which it prints with the LSN.
-Before it writes anything it opens the source's change stream at that
-position: a user who may not read the stream is refused there, with `main`
-untouched and no unfinished resync on record.
+Before it records the resync, it opens and reads the change stream with
+the replay's options and start position. If the source cannot serve that
+stream, `main` stays untouched and no new unfinished resync is recorded.
 
 What it does to `main`:
 

@@ -17,8 +17,10 @@ entry — a synchronization barrier, not in-proxy capture).
   database while it is being written. The copy is followed by the source's
   change stream until the project equals the source at one cluster time,
   which the command reports with the LSN it corresponds to. Writes made
-  during the import are not lost and not blocked. `--source-quiesced`
-  imports are unchanged.
+  during the import are not lost and not blocked. `--online --dry-run` runs
+  the same preflight and estimates the copy without making changes.
+  `argon import preview --online` uses the online collection rules. Both
+  preview modes skip views. `--source-quiesced` imports are unchanged.
 - Following: a project imported online keeps its `main` branch tied to the
   source. `argon source follow` applies the source's changes and resumes from
   its saved position after a restart without skipping or repeating one;
@@ -31,10 +33,11 @@ entry — a synchronization barrier, not in-proxy capture).
   time. A position the oplog no longer holds, a dropped or renamed
   collection, and an update older than MongoDB's snapshot history are
   reported as degraded; `--allow-inexact` converges past the last of these
-  and records the range, and has to be given on each run. The source may be a
-  different deployment from the Argon metadata. Following also ends as
-  degraded, instead of retrying without end or carrying on, when the source
-  keeps answering one position with an error (an event too large to return,
+  and records the range, and has to be given on each run. When the range list
+  is full, a recurring reason displaces its own oldest range first. The
+  source may be a different deployment from the Argon metadata. Following
+  also ends as degraded when the source keeps answering one position with
+  an error (an event too large to return,
   a missing privilege), when a time-series collection is created on the
   source, and when something other than the follower wrote to `main`. A
   follower's writes are conditional on the branch still following its source,
@@ -59,9 +62,10 @@ entry — a synchronization barrier, not in-proxy capture).
   interrupted resync is reported as unfinished and blocks plain `source follow`.
   Running `source resync` again completes it. `argon source follow --auto-resync`
   can also complete it on startup or repair a source stream gap during following.
-  A head moved outside the follower requires an explicit resync. Resync checks
-  that the source's change stream can open before recording its start. A failed
-  check preserves the previous status. A detach at that point leaves no marker.
+  A head moved outside the follower requires an explicit resync. Resync probes
+  the source's change stream with the replay's options and start position before
+  recording its start. A failed check preserves the previous status. A detach
+  at that point leaves no marker.
   The consistent point reported on a source nobody is writing to is now the
   source's current cluster time; it could be one tick later, a time a later
   write might still be given. Dropping a collection Argon does not follow

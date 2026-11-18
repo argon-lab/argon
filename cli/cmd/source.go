@@ -179,6 +179,8 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 	}
 	if info.Mode == "catch_up" {
 		fmt.Fprintf(out, "  History:     CATCHING UP from LSN %d: %s. Until this ends, main is not a state the source was in.\n", info.InexactOpenFromLSN, info.InexactOpenReason)
+	} else if info.InexactRangesDropped > 0 {
+		fmt.Fprintln(out, "  History:     some inexact ranges are no longer listed")
 	} else {
 		fmt.Fprintln(out, "  History:     exact outside the ranges below")
 	}
@@ -186,7 +188,7 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 		fmt.Fprintf(out, "    inexact LSN %d-%d: %s (exact again at LSN %d)\n", r.FromLSN, r.ToLSN, r.Reason, r.ToLSN)
 	}
 	if info.InexactRangesDropped > 0 {
-		fmt.Fprintf(out, "    and %d older inexact range(s) no longer listed\n", info.InexactRangesDropped)
+		fmt.Fprintf(out, "    %d inexact range(s) omitted\n", info.InexactRangesDropped)
 	}
 }
 
