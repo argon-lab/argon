@@ -260,6 +260,8 @@ model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Community
 
+[Jake Wang](https://jakewang.io/about/) maintains Argon.
+
 [Issues](https://github.com/argon-lab/argon/issues) ·
 [Discussions](https://github.com/argon-lab/argon/discussions) ·
 [Contributing](CONTRIBUTING.md) ·
