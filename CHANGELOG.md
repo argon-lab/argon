@@ -26,6 +26,14 @@ entry — a synchronization barrier, not in-proxy capture).
   sandbox's database; the host prints the diff and discards the sandbox, or
   merges it with `--apply`.
 
+### Changed
+
+- CI's audit of the console's dependencies can excuse an advisory by name. The
+  whole tree is still audited, a production install must be clean, and an
+  exception ends as soon as npm offers a compatible fix. One exception is
+  recorded: GHSA-fc5q-39xc-vjpf in picomatch, a build-time dependency of vite
+  for which no patched release exists.
+
 ## [2.4.0] - 2026-11-16
 
 JSON output for `gc` and `restore`, and a restarted MCP server resumes capture.

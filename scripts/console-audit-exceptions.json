@@ -1,0 +1,8 @@
+[
+  {
+    "advisory": "GHSA-fc5q-39xc-vjpf",
+    "package": "picomatch",
+    "reason": "No patched picomatch exists: the advisory covers every release up to 4.0.7, the newest. The console gets it only through vite and tinyglobby, which run when the console is built.",
+    "added": "2026-11-17"
+  }
+]
