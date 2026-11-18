@@ -490,3 +490,63 @@ func TestResync_AfterHistoryWasReclaimed(t *testing.T) {
 	require.NoError(t, stop())
 	f.requireMainEqualsSource(t, 0, nil, "after following again")
 }
+
+// A resync opens the source's change stream before it writes anything. The
+// replay that needs the stream only starts after the whole comparison, so a
+// source user without the changeStream privilege would otherwise be found out
+// last, with the branch already marked as mid-resync.
+func TestResync_StreamThatCannotBeOpenedFailsBeforeAnythingIsWritten(t *testing.T) {
+	ctx := context.Background()
+	f := newFollowFixture(t, metadataDeploymentURI)
+	f.seedSmall(t)
+	f.importOnline(t, walcli.OnlineImport{})
+	_, err := f.source.Collection("catalog").UpdateOne(ctx, bson.M{"_id": "item-00"}, bson.M{"$set": bson.M{"stock": int32(9)}})
+	require.NoError(t, err)
+	head := f.main(t).HeadLSN
+
+	_, err = f.services.ResyncSource(ctx, f.project, walcli.ResyncSourceOptions{URI: f.sourceURI, Force: true,
+		Watch: func(context.Context, *mongo.Database, *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
+			return nil, mongo.CommandError{Code: 13, Name: "Unauthorized", Message: "not authorized on shop to execute command { aggregate: 1, pipeline: [ { $changeStream: {} } ] }"}
+		}})
+	require.ErrorContains(t, err, "change stream cannot be opened")
+	require.ErrorContains(t, err, "Nothing was written")
+	require.Equal(t, head, f.main(t).HeadLSN)
+	status, err := f.services.Ingest.SourceStatusFor(ctx, f.main(t).ID)
+	require.NoError(t, err)
+	require.Nil(t, status.Source.Resync, "no unfinished resync is on record")
+	require.Equal(t, "exact", status.Source.Mode)
+
+	// Following is as it was: it picks up from the saved position.
+	stop := f.follow(t, f.services, walcli.FollowSourceOptions{})
+	f.waitCaughtUp(t)
+	require.NoError(t, stop())
+	f.requireMainEqualsSource(t, 0, nil, "after the refused resync")
+}
+
+// Another process detaches the project just as a resync is about to record
+// that it has started. The resync stops there. It does not write to the
+// branch, and it does not leave a status document behind for a branch that
+// follows nothing.
+func TestResync_DetachedJustBeforeItStartsLeavesNothingBehind(t *testing.T) {
+	ctx := context.Background()
+	f := newFollowFixture(t, metadataDeploymentURI)
+	f.seedSmall(t)
+	f.importOnline(t, walcli.OnlineImport{})
+	branch := f.main(t)
+	other := f.restart(t)
+
+	_, err := f.services.ResyncSource(ctx, f.project, walcli.ResyncSourceOptions{URI: f.sourceURI, Force: true,
+		// The stream check is the last step before the start is recorded.
+		Watch: func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
+			require.NoError(t, other.DetachSource(ctx, f.project))
+			return src.Watch(ctx, mongo.Pipeline{}, opts)
+		}})
+	require.ErrorContains(t, err, "no longer follows")
+
+	after := f.main(t)
+	require.Empty(t, after.Follows)
+	require.Equal(t, branch.HeadLSN, after.HeadLSN, "nothing was written to the detached branch")
+	n, err := f.services.Client.Database(f.metadataName).Collection("wal_ingest_state").CountDocuments(ctx, bson.M{"_id": branch.ID})
+	require.NoError(t, err)
+	require.Zero(t, n, "the status document detach removed was not brought back")
+}

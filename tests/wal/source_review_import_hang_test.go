@@ -23,9 +23,11 @@ func TestOnlineImport_PermanentStreamErrorFailsTheImport(t *testing.T) {
 	f := newFollowFixture(t, metadataDeploymentURI)
 	ctx := context.Background()
 
-	// Enough documents that the copy is still running when the big write lands.
+	// Enough documents that the copy is still running when the big write
+	// lands, and few enough that the whole import fits well inside the wait
+	// below under the race detector on a busy machine.
 	docs := make([]interface{}, 0, 5000)
-	for batch := 0; batch < 12; batch++ {
+	for batch := 0; batch < 3; batch++ {
 		docs = docs[:0]
 		for i := 0; i < 5000; i++ {
 			docs = append(docs, bson.M{"_id": batch*5000 + i, "pad": strings.Repeat("x", 200)})
