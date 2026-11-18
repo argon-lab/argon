@@ -11,6 +11,13 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.7.0] - 2026-11-18
+
+Online import and following a source database are available by default.
+Write-back, automatic resync and enabling images on the source stay
+experimental behind `ARGON_EXPERIMENTAL_SOURCE=1`. Projects that use none of
+them have no data format changes since 2.6.0.
+
 ### Changed
 
 - Online import and following no longer require `ARGON_EXPERIMENTAL_SOURCE=1`
