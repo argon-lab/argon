@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/argon-lab/argon/v2/internal/importer"
+	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/stretchr/testify/require"
@@ -201,7 +202,12 @@ func (f *followFixture) waitCaughtUp(t *testing.T) *walcli.SourceInfo {
 		require.NoError(t, err)
 		last = info
 		if info.State == "degraded" || info.State == "stopped" {
-			t.Fatalf("following is %s: %s", info.State, info.Error)
+			if info.Owner == nil {
+				t.Fatalf("following is %s: %s", info.State, info.Error)
+			}
+			// A restart can still be replaying from a previously degraded position.
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 		if info.Mode == "exact" && info.Position != nil && !(primitive.Timestamp{T: info.Position.T, I: info.Position.I}).Before(target) {
 			return info
@@ -212,13 +218,13 @@ func (f *followFixture) waitCaughtUp(t *testing.T) *walcli.SourceInfo {
 	return nil
 }
 
-// sourceState reads the whole source database, keyed the way the
-// materializer keys a branch. With a cluster time it reads the database as
-// it was then.
+// sourceState reads the source's ordinary user collections, keyed the way the
+// materializer keys a branch. With a cluster time it reads their documents
+// as of that time.
 func (f *followFixture) sourceState(t *testing.T, at *primitive.Timestamp) map[string]map[string]bson.M {
 	t.Helper()
 	ctx := context.Background()
-	names, err := f.source.ListCollectionNames(ctx, bson.D{})
+	names, err := source.Collections(ctx, f.source)
 	require.NoError(t, err)
 	state := make(map[string]map[string]bson.M)
 	for _, name := range names {

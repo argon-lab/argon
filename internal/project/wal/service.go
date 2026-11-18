@@ -37,7 +37,7 @@ func (s *ProjectService) SetImportAbortHook(hook func(ctx context.Context, branc
 func NewProjectService(db *mongo.Database, walService *wal.Service, branchService *branchwal.BranchService) (*ProjectService, error) {
 	s := &ProjectService{
 		db:         db,
-		collection: db.Collection("wal_projects"),
+		collection: db.Collection(projectCollectionName),
 		wal:        walService,
 		branches:   branchService,
 	}

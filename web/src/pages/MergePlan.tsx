@@ -126,7 +126,15 @@ export default function MergePlan() {
             )}
             {(readOnly || !canApply) && !apply.isSuccess && (
               <p className="mt-3 font-mono text-xs text-brand-muted">
-                CLI equivalent: argon merge apply {q.data.id}
+                {q.data.status === "writing_back" ? (
+                  <>
+                    This plan cannot be reused. Check the affected documents on
+                    the source, let following catch up, then run{" "}
+                    <code>argon merge preview</code> again for the sandbox.
+                  </>
+                ) : (
+                  <>CLI equivalent: argon merge apply {q.data.id}</>
+                )}
               </p>
             )}
           </Panel>

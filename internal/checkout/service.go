@@ -43,11 +43,11 @@ type Service struct {
 // requireOwn is the check behind every drop, made before anything else is
 // done on the way to one.
 func requireOwn(branch *wal.Branch, name string) error {
-	if branch.IsFollower() {
-		return fmt.Errorf("refusing to drop %q: branch %s follows an external database and has no physical database of its own", name, branch.Name)
-	}
 	if name != PhysicalDBName(branch.ID) {
 		return fmt.Errorf("refusing to drop %q: it is not the database Argon created for branch %s (%s)", name, branch.Name, PhysicalDBName(branch.ID))
+	}
+	if name == branch.Follows {
+		return fmt.Errorf("refusing to drop %q: branch %s follows that database", name, branch.Name)
 	}
 	return nil
 }
@@ -300,7 +300,15 @@ func (s *Service) Release(ctx context.Context, branchID string) error {
 		if err := requireOwn(branch, branch.PhysicalDB); err != nil {
 			return err
 		}
-		if s.beforeRelease != nil {
+		if branch.IsFollower() {
+			// A legacy checkout cannot be drained into a followed branch.
+			// Stop its local follower without writing a physical barrier.
+			if s.beforeDiscard != nil {
+				if err := s.beforeDiscard(ctx, branchID); err != nil {
+					return fmt.Errorf("could not stop following; database retained: %w", err)
+				}
+			}
+		} else if s.beforeRelease != nil {
 			if err := s.beforeRelease(ctx, branchID); err != nil {
 				return fmt.Errorf("capture drain failed; database retained: %w", err)
 			}

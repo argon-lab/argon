@@ -8,10 +8,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/argon-lab/argon/v2/internal/merge"
+	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -25,6 +28,19 @@ import (
 func startUnprivilegedProxy(t *testing.T, upstream string) (addr string, blocked *atomic.Int64) {
 	t.Helper()
 	blocked = &atomic.Int64{}
+	addr = startSourceCommandProxy(t, upstream, func(message []byte) ([]byte, bool) {
+		if i := bytes.Index(message, []byte("replSetGetConfig\x00")); i >= 0 {
+			copy(message[i:], "replSetGetConfiX")
+			blocked.Add(1)
+		}
+		return nil, false
+	})
+	return addr, blocked
+}
+
+// inspect may modify the request, supply a reply, or close the connection.
+func startSourceCommandProxy(t *testing.T, upstream string, inspect func([]byte) (reply []byte, closeConn bool)) string {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() })
@@ -41,32 +57,79 @@ func startUnprivilegedProxy(t *testing.T, upstream string) (addr string, blocked
 					return
 				}
 				defer func() { _ = server.Close() }()
-				go func() { _, _ = io.Copy(client, server); _ = client.Close() }()
-				header := make([]byte, 4)
+				var mu sync.Mutex
+				writeReply := func(reply []byte) error {
+					mu.Lock()
+					defer mu.Unlock()
+					_, err := client.Write(reply)
+					return err
+				}
+				go func() {
+					defer func() { _ = client.Close() }()
+					for {
+						message, err := readSourceWireMessage(server)
+						if err != nil || writeReply(message) != nil {
+							return
+						}
+					}
+				}()
 				for {
-					if _, err := io.ReadFull(client, header); err != nil {
+					message, err := readSourceWireMessage(client)
+					if err != nil {
 						return
 					}
-					size := int(binary.LittleEndian.Uint32(header))
-					if size < 4 || size > 64<<20 {
+					reply, closeConn := inspect(message)
+					if closeConn {
 						return
 					}
-					body := make([]byte, size-4)
-					if _, err := io.ReadFull(client, body); err != nil {
-						return
+					if reply != nil {
+						err = writeReply(reply)
+					} else {
+						_, err = server.Write(message)
 					}
-					if i := bytes.Index(body, []byte("replSetGetConfig\x00")); i >= 0 {
-						copy(body[i:], "replSetGetConfiX")
-						blocked.Add(1)
-					}
-					if _, err := server.Write(append(append([]byte{}, header...), body...)); err != nil {
+					if err != nil {
 						return
 					}
 				}
 			}(conn)
 		}
 	}()
-	return ln.Addr().String(), blocked
+	return ln.Addr().String()
+}
+
+func readSourceWireMessage(r io.Reader) ([]byte, error) {
+	var header [16]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return nil, err
+	}
+	size := int(binary.LittleEndian.Uint32(header[:]))
+	if size < len(header) || size > 64<<20 {
+		return nil, fmt.Errorf("invalid MongoDB message length %d", size)
+	}
+	message := make([]byte, size)
+	copy(message, header[:])
+	_, err := io.ReadFull(r, message[len(header):])
+	return message, err
+}
+
+func TestSource_IdentifyFailsWhenReplicaSetConfigConnectionDrops(t *testing.T) {
+	var blocked atomic.Int64
+	addr := startSourceCommandProxy(t, "localhost:27017", func(message []byte) ([]byte, bool) {
+		if sourceWireCommand(message).Lookup("replSetGetConfig").Type == 0 {
+			return nil, false
+		}
+		blocked.Add(1)
+		return nil, true
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := source.Connect(ctx, "mongodb://"+addr+"/?directConnection=true")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Disconnect(context.Background()) })
+
+	_, err = source.Identify(ctx, client)
+	require.Positive(t, blocked.Load(), "the proxy closed the connection for replSetGetConfig")
+	require.ErrorContains(t, err, "failed to read the source's replica-set configuration")
 }
 
 // The binding recorded a replica-set ID. A connection that leads to a

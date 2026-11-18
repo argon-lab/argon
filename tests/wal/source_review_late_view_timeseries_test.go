@@ -41,10 +41,9 @@ func TestOnlineImport_ViewsAreSkippedAndTimeSeriesRefused(t *testing.T) {
 	}
 }
 
-// A view created while following changes nothing main could hold, and
-// following goes on. A time-series collection created while following holds
-// measurements main can never receive: following ends as degraded there
-// instead of reporting main as equal to the source.
+// Creating, changing, or dropping a view leaves following exact. A
+// time-series collection holds measurements main can never receive,
+// so following ends as degraded at its creation.
 func TestFollow_ViewIsIgnoredAndTimeSeriesIsDegraded(t *testing.T) {
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
@@ -52,6 +51,10 @@ func TestFollow_ViewIsIgnoredAndTimeSeriesIsDegraded(t *testing.T) {
 	f.importOnline(t, walcli.OnlineImport{})
 	stop := f.follow(t, f.services, walcli.FollowSourceOptions{})
 	require.NoError(t, f.source.CreateView(ctx, "in_stock", "catalog", bson.A{}))
+	require.NoError(t, f.source.RunCommand(ctx, bson.D{
+		{Key: "collMod", Value: "in_stock"}, {Key: "pipeline", Value: bson.A{bson.D{{Key: "$limit", Value: 1}}}},
+	}).Err())
+	require.NoError(t, f.source.Collection("in_stock").Drop(ctx))
 	_, err := f.source.Collection("catalog").UpdateOne(ctx, bson.M{"_id": "item-00"}, bson.M{"$set": bson.M{"stock": int32(77)}})
 	require.NoError(t, err)
 	info := f.waitCaughtUp(t)

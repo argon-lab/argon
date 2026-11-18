@@ -11,6 +11,80 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+The experimental source features (online import, `argon source`, write-back;
+behind `ARGON_EXPERIMENTAL_SOURCE=1`) change as follows. They stay
+experimental and off by default.
+
+### Changed
+
+- One follower or resync per project. A run takes a lease in Argon's
+  metadata, judged by the metadata deployment's clock, and every write it
+  makes is conditional on still holding it. A second `source follow` or
+  `source resync` ends at once and names the run that holds the lease
+  instead of marking the project degraded; a run that was paused past the
+  lease and replaced stops without writing. `argon source status` shows the
+  owner (kind, host, process ID, last heartbeat).
+- A write-back claim is settled only on evidence: the writer knows its
+  transaction's outcome, or following sees the transaction. The follower no
+  longer returns a claimed plan to pending after a waiting time. A plan that
+  stays `writing_back` is not written again; check the source, let following
+  catch up and preview a new plan, which finds nothing left to write if the
+  earlier transaction committed. `merge list` prints this guidance.
+- The source identity recorded at import is kept. A project bound by set name
+  and member hosts is no longer upgraded to a replica-set ID by a later
+  connection. Such a project can be followed and resynced, but write-back
+  and `--enable-source-images` are refused for it: import as a user allowed
+  to run `replSetGetConfig` (for example with the `clusterMonitor` role).
+- `import database --online --dry-run` runs the online import's own checks
+  (replica set, collection rules, the change stream the replay will open) and
+  lists what an online import would copy. `import preview` skips views, and
+  `import preview --online` applies the online collection rules.
+- `source follow --auto-resync` completes an interrupted resync when it
+  starts, and resyncs only when the source's stream can no longer be
+  followed. A head moved by something other than the follower needs an
+  explicit `source resync`.
+- A resync batch is bounded by size (16 MiB of documents) as well as by
+  count.
+- `connect` returns a connection string only for the branch's own physical
+  database, and the console omits it for a sandbox whose record names
+  another database.
+
+### Fixed
+
+- A second resync started while one was running replaced the first one's
+  replay position; the first could then finish as exact with changes
+  missing.
+- A committed write-back whose record was not updated could be returned to
+  pending after a resync or a long pause and applied a second time. A
+  successful write-back that could not mark its plan now returns an error.
+- A deployment presenting the same set name and member host strings as the
+  source could be adopted as the project's identity, after which the real
+  source was refused.
+- Dropping, creating or modifying a view on the source ended following as
+  degraded. Views are ignored. A resync now removes from `main` the
+  documents of a collection the source has replaced by a view of the same
+  name.
+- A second follower left the project reported as degraded while the first
+  kept following correctly. A resync that failed its first checks reset a
+  degraded state to stopped, which allowed write-back again.
+- A followed `main` checked out by Argon 2.5.0 was reported as healthy while
+  following could not continue. It is reported as degraded; release its
+  physical database, then resync.
+- `source follow --enable-source-images` altered the source's collections
+  before refusals it could have known beforehand. It alters nothing until
+  following can start.
+- Write-back reordered the fields of untouched array elements when an element
+  before them was added or removed.
+- The check of the change stream before an online import's copy did not use
+  the replay's options, so a source that rejects them failed only after the
+  copy.
+- Repeated updates to a capped collection pushed the import's and resyncs'
+  inexact ranges off the list `source status` shows. A recurring cause now
+  displaces its own oldest range first.
+- A status write from a follower or resync could recreate the state of a
+  project that had been detached, or change the capture status of a branch
+  checked out afterwards.
+
 ## [2.6.0] - 2026-11-18
 
 The first diff after a checkout no longer scans the copy, and three experimental

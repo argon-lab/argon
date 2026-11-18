@@ -164,19 +164,14 @@ func TestSource_TamperedRecordIsRefusedByEveryWritePath(t *testing.T) {
 		e.intact(t, "wire proxy")
 	})
 
-	// Not one of the five guards: what checkout reports for the same record.
-	t.Run("checkout reports", func(t *testing.T) {
+	t.Run("checkout of a live branch", func(t *testing.T) {
 		ctx := context.Background()
 		e := setup(t)
 		victim, _ := e.f.agentSandbox(t, "tampered")
 		e.claim(victim.BranchID)
 		info, err := e.f.services.Checkout.Checkout(ctx, victim.BranchID)
-		if err != nil {
-			t.Logf("OBSERVED Checkout.Checkout(tampered) error: %v", err)
-		} else {
-			t.Logf("OBSERVED Checkout.Checkout(tampered) returned PhysicalDB=%q (source is %q, own would be %q)",
-				info.PhysicalDB, e.f.source.Name(), "argon_br_"+victim.BranchID)
-		}
+		require.Nil(t, info)
+		require.ErrorContains(t, err, "refusing to use it")
 		e.intact(t, "checkout")
 	})
 }

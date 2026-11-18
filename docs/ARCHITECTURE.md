@@ -450,9 +450,12 @@ source's own change stream:
 
 1. Take the primary's cluster time `T0`, and only then list the collections.
    A collection created before `T0` is in the list; one created later
-   arrives through the stream. Start a causally consistent session at `T0`
-   and read everything in it with majority read concern.
-2. Copy every listed collection into put entries.
+   arrives through the stream. Open and read a change stream with the replay's
+   options and start position to check that the source can serve it. Online
+   dry-run stops after preflight and estimates document counts without
+   reserving a project.
+2. Start a causally consistent session at `T0` and copy every listed collection
+   into put entries with majority read concern.
 3. Replay the change stream from just after `T0` on top of the copy. Each
    entry is a whole document, so applying a change the copy already contained
    leaves the same document.
@@ -497,17 +500,24 @@ physical entry, as capture does, and differs where the source is not Argon's:
   metadata deployment, so exactly-once does not depend on where the source
   is.
 
-The follower's writes are fenced on more than the branch head. Each one
-requires, in its transaction, that the branch still follows this source and
-is not checked out, and that the status document still exists; a detach by
-another process therefore ends the follower at its next write instead of
-being overwritten by it. A head that moved without the follower, or a saved
-position another process replaced, ends it as degraded: the branch no longer
-equals the source at that position, and only a resync can say so again.
+A follower and a resync take the same per-branch lease in `wal_ingest_state`.
+Acquisition and heartbeat timestamps use the metadata primary's clock. The
+owner releases the lease on exit. If the heartbeat expires, another run can
+take over. Only the current owner can update capture status or advance the
+stream position. Transactions that publish the log and branch head also
+check the lease, the branch's source and its checkout state. Detach removes
+the saved state and a previous owner cannot write into a recreated record.
+A head that moved without the follower, or a saved position another process
+replaced, ends following as degraded and requires a manual resync. Automatic
+resync handles gaps in the source stream and unfinished resyncs.
 
-Which deployment a connection leads to is decided by the replica set's ID
-when it can be read and by the set name plus member hosts otherwise, never by
-the name alone.
+The source binding in `wal_sources` keeps the identity from import. Every
+connection to an ID-bound source must prove the same replica-set ID. A
+binding by set name and member hosts supports following and resync when
+the set name and at least one recorded member still match. Write-back and
+enabling source images require a recorded ID, since distinct deployments
+can report the same name and hosts. A network failure during
+`replSetGetConfig` stops the identity check with an error.
 
 A snapshot read at a cluster time shows a document after everything that
 committed at that time. Within a multi-document transaction an earlier change
@@ -535,21 +545,25 @@ degraded back to the source, in place. It is the import's copy-then-replay
 with the copy replaced by a comparison, because the branch already has
 documents:
 
-1. Take the primary's cluster time `T0`, then list the source's collections.
-2. Record in the branch's capture status, before anything is written to the
-   branch: mode `catch_up`, the LSN the inexact range starts at, a resync
-   marker, the stream's start position `T0`, and no resume token.
+1. Acquire the branch's lease, take the source primary's cluster time `T0`,
+   list its collections and probe the change stream with the replay's options
+   and start position.
+2. Record mode `catch_up`, the LSN the inexact range starts at, the resync
+   marker and the stream's start position before writing any branch entries.
+   Clear the previous resume token in the same transaction. If a preflight
+   check fails, the previous capture status is preserved.
 3. Source to branch: read every source document with majority reads in a
    causally consistent session that starts at `T0`; append a put unless the
    branch's newest entry for the document is a put of the same bytes.
+   Flush each batch at the document-count or raw BSON byte limit.
 4. Branch to source: walk the branch's document keys, look each batch up on
    the source by `_id` in the same session, and append a delete for every
    document the source does not have. A dropped collection has none of its
    documents on the source; a renamed one is that plus step 3's puts under
    the new name. Collection-level changes thus become the document-level
    operations the WAL has.
-5. Replay the change stream from `T0` until it has passed every read, exactly
-   as the import does. The transaction that stores the first head proven
+5. Replay the change stream from the `T0` boundary held in memory until it
+   has passed every read. The transaction that stores the first head proven
    equal to the source also clears the marker and records the range.
 
 The deletes are covered by the import's argument. A document found missing in
@@ -560,9 +574,11 @@ after the delete.
 
 Step 4 does not hold a collection in memory. The keys come from the WAL's
 `(branch, collection, document, lsn)` index, read in key order with one key
-at a time; each batch is resolved to the branch's live documents with the
-materializer's point read and checked against the source with one `$in`
-query. Where garbage collection has reclaimed part of a collection's history
+at a time. Each batch is resolved to the branch's live documents with the
+materializer's point read. For an ordinary collection in the source catalog,
+one `$in` query checks the batch against the source. A name outside that
+catalog, including a name now used by a view, is pruned as absent. Where
+garbage collection has reclaimed part of a collection's history
 the log no longer names every document, and the collection is listed from its
 snapshot instead, loaded whole as every reader of reclaimed history does.
 Step 3 treats a document as unchanged only on evidence from the log itself
@@ -573,8 +589,8 @@ The branch is visible throughout, and each batch moves its head. What keeps a
 half-compared branch from passing for a healthy one is the status written in
 step 2: the follower refuses to open a stream while the marker is set, and
 the saved position is only meaningful on top of a finished comparison. A
-resync that dies is run again; it takes a new `T0` and compares whatever the
-branch holds, so no progress record is needed and none can be stale.
+resync that dies is run again by `source resync` or `source follow --auto-resync`.
+It takes a new `T0` and compares whatever the branch holds.
 
 A drop or rename that arrives during step 5 fails the resync as it fails the
 follower, with the marker left in place.
@@ -589,16 +605,18 @@ The write is one source transaction that compares each document with the
 plan's before-image and then inserts, replaces or deletes it, in a collection
 that already exists: it never upserts, so it cannot create one. The
 comparison is on the bytes the followed branch stored for the document when
-it has them, which makes a reordered document a changed one. A replacement is
-sent with its fields in the order the source's document has them, so that
-only what the plan changed changes. Because the source and
-the metadata may be different deployments, the plan's status cannot commit
-with the documents. Instead the plan is claimed first, with the ID of a
-session used for nothing else; the follower recognises change events from
+it has them, which makes a reordered document a changed one. A replacement
+preserves the source's field order, including array elements matched by
+`_id` or value. Elements without a match keep the plan's order. Because the
+source and the metadata may be different deployments, the plan's status
+cannot commit with the documents. The writer claims the plan first with the
+ID of a session used for nothing else. The follower recognises events from
 that session, attributes their entries to the merge, appends the `merge`
 record and marks the plan applied in the same transaction that stores them.
-A crash between the source commit and its bookkeeping therefore leaves a plan
-that cannot be applied again and that the follower closes on its own.
+An acknowledged source commit also lets the writer mark the plan applied.
+The writer returns a claim to pending only when it knows the transaction
+aborted or the commit was never sent. A claim whose outcome remains unknown
+stays `writing_back` and cannot be reused.
 
 ### Limits
 
@@ -609,10 +627,16 @@ that cannot be applied again and that the follower closes on its own.
   temporary collections) needs a resync each time.
 - Following runs through `argon source follow`. The MCP server and the REST
   control plane do not supervise it, and neither offers write-back.
+- To enable source images, the follower first checks the binding, lease and
+  saved position and opens the change stream. If the saved position is
+  degraded, replay must clear the gap or a resync must finish before the
+  follower issues `collMod`. An error after a change lists the collections
+  it altered.
 - A resync restores the source's current state, not its history: the
   changes between the last applied one and the resync are recorded as their
   outcome only, inside a range marked inexact. A write-back that committed in
-  that gap is not attributed to its merge and its plan stays `writing_back`.
+  that gap is not attributed to its merge. If the writer had not marked its
+  plan applied, the plan stays `writing_back`.
 - A resync reads every source document once and needs the oplog to cover its
   duration. It is not incremental.
 - A resync that is interrupted leaves `main` between two states, marked as
@@ -625,7 +649,8 @@ that cannot be applied again and that the follower closes on its own.
 - A source with a time-series collection cannot be followed: its
   measurements never reach a change stream as documents. Importing one is
   refused, and creating one on a followed source ends following as degraded.
-  Views are neither imported nor followed.
+  Online import copies ordinary collections and ignores view creation,
+  modification and removal during replay and following.
 - A collection MongoDB does not serve at a past cluster time (a capped one
   up to 7.0; on 6.0 also any collection altered after the update) can only
   be followed exactly through attached images.
@@ -634,11 +659,12 @@ that cannot be applied again and that the follower closes on its own.
   replica-set ID, with an oplog that still covers the position, is followed
   on from there without the rewind being noticed.
 - Processes older than this feature do not know a followed branch is
-  read-only. The follower detects that the head moved without it and stops
-  as degraded; it cannot stop the older process from writing.
-- Write-back never creates a collection. A replaced document keeps the field
-  order production gave it; fields the plan adds follow in the sandbox's
-  order.
+  read-only. Status reports a legacy checkout of a followed branch as
+  degraded. Following, resync and write-back refuse that state. Release
+  can drop the branch's own physical database through the normal drop
+  guard, after which resync rebuilds the source position. The follower
+  also detects a head moved by another process and stops as degraded.
+- Write-back never creates a collection.
 
 ## Migration from schema v1
 

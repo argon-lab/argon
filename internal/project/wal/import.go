@@ -12,6 +12,21 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+const projectCollectionName = "wal_projects"
+
+// CheckImportTarget checks for a published project without creating any metadata.
+// BeginImport still reserves the name and detects concurrent or unpublished imports.
+func CheckImportTarget(ctx context.Context, db *mongo.Database, name string) error {
+	err := db.Collection(projectCollectionName).FindOne(ctx, bson.M{"name": name, "importing": bson.M{"$ne": true}}).Err()
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to check import project name: %w", err)
+	}
+	return fmt.Errorf("project '%s' already exists", name)
+}
+
 // BeginImport reserves a project name before any copying. Staged imports are
 // hidden from normal project lookup/listing until CompleteImport publishes them.
 func (s *ProjectService) BeginImport(ctx context.Context, name string) (_ *wal.Project, err error) {

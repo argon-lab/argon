@@ -70,8 +70,8 @@ type runConfig struct {
 	stream func(ctx context.Context, run *running) error
 	// redact cleans error text before it is stored in a status report.
 	redact func(string) string
-	// follower: see running.follower.
-	follower bool
+	lease  *sourceLease
+	resync bool
 }
 
 // WithActor labels all native writes captured on this branch/run. MongoDB
@@ -357,7 +357,7 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 		key := documentKey(event.NS.Collection, raw)
 		earlier, changedEarlier := step.earlier(event.ClusterTime, key)
 		if changedEarlier && earlier.readBack {
-			return nil, &CaptureError{fmt.Sprintf("%s on %s follows an update of the same document at the same cluster time, made before exact images were enabled; the state between the two cannot be read back; history is incomplete; enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection)}
+			return nil, &CaptureError{Message: fmt.Sprintf("%s on %s follows an update of the same document at the same cluster time, made before exact images were enabled; the state between the two cannot be read back; history is incomplete; enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection)}
 		}
 		needPost := !deleted && len(event.FullDocument) == 0
 		needPre := event.OperationType != "insert" && len(event.FullDocumentBeforeChange) == 0
@@ -376,7 +376,7 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 			}
 			if needPost {
 				if err != nil {
-					return nil, &CaptureError{fmt.Sprintf("exact post-image unavailable for %s on %s; history is incomplete; %v. Keep capture running while writing, or enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection, err)}
+					return nil, &CaptureError{Message: fmt.Sprintf("exact post-image unavailable for %s on %s; history is incomplete; %v. Keep capture running while writing, or enable changeStreamPreAndPostImages before writing", event.OperationType, event.NS.Collection, err)}
 				}
 				event.FullDocument = images.post
 			}
@@ -432,7 +432,7 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 	case "drop", "dropDatabase", "rename":
 		// Collection-level DDL carries no document images; representing it
 		// needs dedicated WAL operations (roadmap). Loud, not silent:
-		return nil, &CaptureError{fmt.Sprintf("%s on %s is not captured; branch history is incomplete", event.OperationType, event.NS.Collection)}
+		return nil, &CaptureError{Message: fmt.Sprintf("%s on %s is not captured; branch history is incomplete", event.OperationType, event.NS.Collection)}
 	case "create":
 		if err := s.ensurePrePostImages(ctx, physical, event.NS.Collection); err != nil {
 			return nil, imageSetupError(err)
@@ -440,7 +440,7 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 		return nil, nil
 
 	case "invalidate":
-		return nil, &CaptureError{"change stream invalidated (physical database dropped?)"}
+		return nil, &CaptureError{Message: "change stream invalidated (physical database dropped?)"}
 
 	default:
 		return nil, nil
@@ -480,7 +480,7 @@ func imageSetupError(err error) error {
 			return err
 		}
 	}
-	return &CaptureError{err.Error()}
+	return &CaptureError{Message: err.Error()}
 }
 
 // flush atomically appends a batch, advances the head and checkpoints the

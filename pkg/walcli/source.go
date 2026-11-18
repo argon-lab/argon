@@ -49,6 +49,7 @@ type OnlineImport struct {
 	URI      string
 	Database string
 	Project  string
+	DryRun   bool
 	// BatchSize is the number of documents per copy batch (default 1000).
 	BatchSize int
 	// EnableSourceImages turns on changeStreamPreAndPostImages for the
@@ -62,10 +63,30 @@ func (s *Services) ImportDatabaseOnline(ctx context.Context, opts OnlineImport) 
 	if err := source.RequireExperimental(); err != nil {
 		return nil, err
 	}
-	return s.Importer.ImportDatabase(ctx, importer.ImportOptions{
+	return s.Importer.ImportDatabase(ctx, opts.importOptions())
+}
+
+// DryRunOnlineImport runs the online preflight without initializing metadata indexes.
+func DryRunOnlineImport(ctx context.Context, opts OnlineImport) (interface{}, error) {
+	if err := source.RequireExperimental(); err != nil {
+		return nil, err
+	}
+	mongoURI, metadataDB := deploymentFromEnv()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Argon metadata: %w", source.RedactError(err, mongoURI))
+	}
+	defer disconnect(client)
+	opts.DryRun = true
+	result, err := importer.DryRunOnline(ctx, opts.importOptions(), client.Database(metadataDB))
+	return result, source.RedactError(err, mongoURI)
+}
+
+func (opts OnlineImport) importOptions() importer.ImportOptions {
+	return importer.ImportOptions{
 		MongoURI: opts.URI, DatabaseName: opts.Database, ProjectName: opts.Project,
-		BatchSize: opts.BatchSize, Online: true, EnableSourceImages: opts.EnableSourceImages,
-	})
+		DryRun: opts.DryRun, BatchSize: opts.BatchSize, Online: true, EnableSourceImages: opts.EnableSourceImages,
+	}
 }
 
 // SourceInfo describes the external database a project follows and how far
@@ -77,13 +98,14 @@ type SourceInfo struct {
 	Database   string `json:"database"`
 	Location   string `json:"location"`
 	ReplicaSet string `json:"replica_set"`
-	// Identity says what tells this source apart from another deployment:
-	// its replica-set ID, or, when that could not be read, its set name and
-	// member hosts.
+	// Identity is the check recorded at import: a replica-set ID or the set
+	// name and member hosts.
 	Identity string `json:"identity"`
+	// WriteBackUnavailableReason reports the restriction of a name-and-host binding.
+	WriteBackUnavailableReason string `json:"write_back_unavailable_reason,omitempty"`
 
-	// State is the follower's last report: running, catching_up, retrying,
-	// degraded or stopped. It is not proof that a follower is running now.
+	// State comes from the last follower report and the saved branch state.
+	// Owner records the lease separately.
 	State string `json:"state"`
 	Error string `json:"error,omitempty"`
 	// Mode is exact while every stored change is the source's document at
@@ -105,14 +127,26 @@ type SourceInfo struct {
 
 	// ResyncUnfinished is set while a resync has written to main and has not
 	// yet brought it to a state of the source; ResyncStartedAt says since
-	// when. Only `argon source resync` continues from here.
+	// when. `argon source resync` and `argon source follow --auto-resync`
+	// can complete it.
 	ResyncUnfinished bool       `json:"resync_unfinished,omitempty"`
 	ResyncStartedAt  *time.Time `json:"resync_started_at,omitempty"`
+	// Owner records the lease holder and its most recent heartbeat.
+	Owner *SourceOwner `json:"owner,omitempty"`
 
 	UpdatedAt      time.Time `json:"updated_at"`
 	LastCapturedAt time.Time `json:"last_captured_at,omitempty"`
 	LastEventAt    time.Time `json:"last_event_at,omitempty"`
 	LastEventLagMS int64     `json:"last_event_lag_ms,omitempty"`
+}
+
+// SourceOwner describes the run recorded as holding the followed branch's lease.
+type SourceOwner struct {
+	Kind        string    `json:"kind"`
+	Host        string    `json:"host"`
+	PID         int       `json:"pid"`
+	StartedAt   time.Time `json:"started_at"`
+	HeartbeatAt time.Time `json:"heartbeat_at"`
 }
 
 // InexactRange is a span of a followed branch's history that is not exact.
@@ -142,30 +176,24 @@ func (s *Services) followedBranch(ctx context.Context, projectName string) (*wal
 	return project, branch, binding, nil
 }
 
-// openSource connects to the database a project follows and refuses any
-// deployment other than the one the project was imported from.
-func (s *Services) openSource(ctx context.Context, binding *source.Binding, uri string) (*mongo.Client, *mongo.Database, error) {
+// openSource connects to the database and verifies the recorded binding.
+func openSource(ctx context.Context, binding *source.Binding, uri string) (*mongo.Database, error) {
 	client, err := source.Connect(ctx, uri)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	identity, err := source.Identify(ctx, client)
 	if err == nil {
 		err = binding.Verify(identity)
 	}
-	if err == nil {
-		// A binding made by a user who could not read the replica-set ID
-		// takes it from the first verified connection that can.
-		err = s.Sources.AdoptID(ctx, binding, identity)
-	}
 	if err != nil {
 		disconnect(client)
-		return nil, nil, source.RedactError(err, uri)
+		return nil, source.RedactError(err, uri)
 	}
-	return client, client.Database(binding.Database), nil
+	return client.Database(binding.Database), nil
 }
 
-// SourceStatus reports what a project follows and the follower's last state.
+// SourceStatus reports what a project follows and the health of its saved position.
 func (s *Services) SourceStatus(ctx context.Context, projectName string) (*SourceInfo, error) {
 	if err := source.RequireExperimental(); err != nil {
 		return nil, err
@@ -179,16 +207,34 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 		Database: binding.Database, Location: binding.Display, ReplicaSet: binding.SetName, Identity: binding.Strength(),
 		HeadLSN: branch.HeadLSN, State: "stopped", Mode: ingest.ModeExact, InexactRanges: []InexactRange{},
 	}
+	if binding.ReplicaSetID == "" {
+		info.WriteBackUnavailableReason = "requires a replica-set ID recorded at import"
+	}
 	status, err := s.Ingest.SourceStatusFor(ctx, branch.ID)
 	if err != nil {
 		return nil, err
 	}
+	// The position was read after the head above, and the two are stored
+	// together. Read the head again so that it is never behind the position
+	// reported with it.
+	branch, err = s.Branches.GetBranchByID(branch.ID)
+	if err != nil {
+		return nil, err
+	}
+	info.HeadLSN = branch.HeadLSN
+	if reason := status.SourceDegradation(branch); reason != "" {
+		info.State, info.Error = "degraded", reason
+	} else if status != nil {
+		info.State, info.Error = status.State, status.Error
+	}
 	if status == nil {
 		return info, nil
 	}
-	info.State, info.Error = status.State, status.Error
 	info.UpdatedAt, info.LastCapturedAt = status.UpdatedAt, status.LastCapturedAt
 	info.LastEventAt, info.LastEventLagMS = status.LastEventAt, status.LastEventLagMS
+	if owner := status.Owner; owner != nil {
+		info.Owner = &SourceOwner{Kind: owner.Kind, Host: owner.Host, PID: owner.PID, StartedAt: owner.StartedAt, HeartbeatAt: owner.HeartbeatAt}
+	}
 	if src := status.Source; src != nil {
 		info.Mode = src.Mode
 		position := clusterTime(src.Position)
@@ -218,13 +264,12 @@ type FollowSourceOptions struct {
 	// documents the source can no longer serve; see ingest.FollowOptions.
 	AllowInexact bool
 	// EnableSourceImages turns on changeStreamPreAndPostImages for the
-	// source's collections before following.
+	// source's collections once the saved position can be followed.
 	EnableSourceImages bool
-	// Ready is closed once the stream is open.
+	// Ready is closed once the stream is open and any requested images are enabled.
 	Ready chan<- struct{}
-	// AutoResync runs a resync when following ends as degraded and then
-	// follows again, instead of returning. See ResyncSource for what a
-	// resync does to the branch's history.
+	// AutoResync completes an unfinished resync or repairs a source stream
+	// gap before following again. See ResyncSource for the effect on history.
 	AutoResync bool
 	// OnResync is called after each automatic resync. Optional.
 	OnResync func(*ResyncInfo)
@@ -238,63 +283,85 @@ const autoResyncSpacing = time.Minute
 
 // FollowSource keeps a project's main branch up with the database it was
 // imported from until ctx ends, resuming from the saved position.
-func (s *Services) FollowSource(ctx context.Context, projectName string, opts FollowSourceOptions) error {
+func (s *Services) FollowSource(ctx context.Context, projectName string, opts FollowSourceOptions) (err error) {
 	if err := source.RequireExperimental(); err != nil {
 		return err
+	}
+	var preparedCollections []string
+	var attemptedImages bool
+	if opts.EnableSourceImages {
+		defer func() {
+			if err != nil && !attemptedImages {
+				err = fmt.Errorf("%w. The source's collections were not altered", err)
+			}
+			err = source.RedactError(source.ImagesLeftEnabled(err, preparedCollections), opts.URI)
+		}()
 	}
 	_, branch, binding, err := s.followedBranch(ctx, projectName)
 	if err != nil {
 		return err
 	}
-	client, db, err := s.openSource(ctx, binding, opts.URI)
+	if opts.EnableSourceImages {
+		if err := binding.RequireReplicaSetID(); err != nil {
+			return &ingest.ConfigurationError{Message: fmt.Sprintf("--enable-source-images refused: %v", err)}
+		}
+	}
+	db, err := openSource(ctx, binding, opts.URI)
 	if err != nil {
 		return err
 	}
-	defer disconnect(client)
+	defer disconnect(db.Client())
+	var prepareSource func(context.Context) error
 	if opts.EnableSourceImages {
-		// The source is altered only once following can actually start:
-		// nothing else is following in this process and there is a position
-		// to follow from.
-		if s.Ingest.Running(branch.ID) {
-			return fmt.Errorf("the source is already being followed for project %q in this process; its collections were not altered", projectName)
+		prepareSource = func(ctx context.Context) error {
+			collections, err := source.Collections(ctx, db)
+			if err != nil {
+				return source.RedactError(err, opts.URI)
+			}
+			attemptedImages = true
+			changed, err := source.EnableImages(ctx, db, collections)
+			if err != nil {
+				// EnableImages reports any completed changes and the collection in doubt.
+				return source.RedactError(err, opts.URI)
+			}
+			preparedCollections = changed
+			prepareSource = nil
+			return nil
 		}
-		if status, err := s.Ingest.SourceStatusFor(ctx, branch.ID); err != nil {
-			return err
-		} else if status == nil || status.Source == nil {
-			return fmt.Errorf("project %q has no saved source position to follow from; its source's collections were not altered", projectName)
-		}
-		collections, err := source.Collections(ctx, db)
-		if err == nil {
-			_, err = source.EnableImages(ctx, db, collections)
-		}
-		if err != nil {
-			return source.RedactError(err, opts.URI)
+	}
+	var onReady func()
+	if opts.Ready != nil {
+		onReady = func() {
+			close(opts.Ready)
+			onReady = nil
 		}
 	}
 	redact := func(text string) string { return source.Redact(text, opts.URI) }
 	var lastResync time.Time
 	for {
 		err := s.Ingest.Follow(ctx, branch.ID, db, ingest.FollowOptions{
-			AllowInexact: opts.AllowInexact, Ready: opts.Ready,
+			AllowInexact: opts.AllowInexact, OnReady: onReady, PrepareSource: prepareSource,
 			WriteBacks: writeBackLedger{s.Merge}, Redact: redact, Watch: opts.Watch,
 		})
+		if !opts.AutoResync || ctx.Err() != nil {
+			return err
+		}
 		var gap *ingest.CaptureError
-		if !opts.AutoResync || ctx.Err() != nil || !errors.As(err, &gap) {
+		unfinished := errors.Is(err, ingest.ErrUnfinishedResync)
+		if !unfinished && (!errors.As(err, &gap) || !gap.AutoResyncAllowed()) {
 			return err
 		}
 		if !lastResync.IsZero() && time.Since(lastResync) < autoResyncSpacing {
-			return fmt.Errorf("following ended as degraded again within %s of an automatic resync; not resyncing in a loop: %w", autoResyncSpacing, err)
+			return fmt.Errorf("another automatic resync was needed within %s of the previous one: %w", autoResyncSpacing, err)
 		}
 		info, resyncErr := s.resyncSource(ctx, branch, db, ResyncSourceOptions{URI: opts.URI})
 		if resyncErr != nil {
-			return fmt.Errorf("following ended as degraded (%v) and the automatic resync failed: %w", err, resyncErr)
+			return fmt.Errorf("automatic resync failed after following stopped (%v): %w", err, resyncErr)
 		}
 		lastResync = time.Now()
 		if opts.OnResync != nil {
 			opts.OnResync(info)
 		}
-		// The channel was closed when the first stream opened.
-		opts.Ready = nil
 	}
 }
 
@@ -349,11 +416,11 @@ func (s *Services) ResyncSource(ctx context.Context, projectName string, opts Re
 	if err != nil {
 		return nil, err
 	}
-	client, db, err := s.openSource(ctx, binding, opts.URI)
+	db, err := openSource(ctx, binding, opts.URI)
 	if err != nil {
 		return nil, err
 	}
-	defer disconnect(client)
+	defer disconnect(db.Client())
 	info, err := s.resyncSource(ctx, branch, db, opts)
 	if info != nil {
 		info.Project = projectName
@@ -420,6 +487,9 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	if err != nil {
 		return nil, err
 	}
+	if err := plan.RequirePending(); err != nil {
+		return nil, err
+	}
 	binding, err := s.Sources.Get(ctx, plan.TargetBranchID)
 	if err != nil {
 		return nil, err
@@ -427,24 +497,34 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	if binding == nil {
 		return nil, errors.New("this plan's target branch does not follow an external database; apply it without --write-back")
 	}
-	// A plan is reviewed against the followed branch. When following has
-	// ended on a gap, or a resync is under way, that branch is known not to
-	// be the source, and so is what the reviewer saw.
-	if status, err := s.Ingest.SourceStatusFor(ctx, plan.TargetBranchID); err != nil {
-		return nil, err
-	} else if status != nil {
-		if status.State == "degraded" {
-			return nil, fmt.Errorf("write-back refused: following ended as degraded (%s), so the branch this plan was reviewed against no longer matches the source. Run `argon source resync`, then preview again", status.Error)
-		}
-		if status.Source != nil && status.Source.Resync != nil {
-			return nil, errors.New("write-back refused: a resync of the followed branch has not finished. Complete it with `argon source resync`, then preview again")
-		}
+	if err := binding.RequireReplicaSetID(); err != nil {
+		return nil, fmt.Errorf("write-back refused: %w", err)
 	}
-	client, db, err := s.openSource(ctx, binding, uri)
+	branch, err := s.Branches.GetBranchByIDContext(ctx, plan.TargetBranchID)
 	if err != nil {
 		return nil, err
 	}
-	defer disconnect(client)
+	// Write-back requires a valid source position for the branch the plan
+	// was previewed against.
+	status, err := s.Ingest.SourceStatusFor(ctx, branch.ID)
+	if err != nil {
+		return nil, err
+	}
+	if reason := status.SourceDegradation(branch); reason != "" {
+		state := "is degraded"
+		if status != nil && status.State == "degraded" {
+			state = "ended as degraded"
+		}
+		return nil, fmt.Errorf("write-back refused: following %s (%s). After repairing the branch with `argon source resync`, preview again", state, reason)
+	}
+	if status != nil && status.Source != nil && status.Source.Resync != nil {
+		return nil, errors.New("write-back refused: a resync of the followed branch has not finished. Complete it with `argon source resync`, then preview again")
+	}
+	db, err := openSource(ctx, binding, uri)
+	if err != nil {
+		return nil, err
+	}
+	defer disconnect(db.Client())
 	result, err := s.Merge.ApplyToSource(ctx, planID, strategy, merge.WriteBackTarget{
 		Database: db, Display: binding.Display,
 		Redact: func(text string) string { return source.Redact(text, uri) },
@@ -461,10 +541,6 @@ func (l writeBackLedger) Lookup(ctx context.Context, branchID string, session pr
 		return nil, err
 	}
 	return &ingest.WriteBack{PlanID: plan.ID.Hex(), SourceBranchID: plan.SourceBranchID, SourceBranch: plan.SourceBranch}, nil
-}
-
-func (l writeBackLedger) Release(ctx context.Context, branchID string, claimedBefore time.Time) error {
-	return l.merge.ReleaseWriteBacks(ctx, branchID, claimedBefore)
 }
 
 func (l writeBackLedger) Settle(ctx context.Context, planID string) error {

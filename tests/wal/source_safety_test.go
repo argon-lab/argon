@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -191,13 +192,179 @@ func TestSource_ManagedDatabasesCannotBeFollowed(t *testing.T) {
 	require.Empty(t, projects)
 }
 
-// Database drops are confined to one guarded function, and the code that
-// talks to a source issues no collection-level or multi-document write.
+// Database drops are confined to explicit call sites. Every write or command
+// in a package that handles source connections, including calls through
+// helpers that take a MongoDB handle, belongs to the inventory below.
 func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	require.NoError(t, err)
-	calls := make(map[string][]string) // method -> "file:function"
-	require.NoError(t, filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	drops, sites, err := confinedSourceCalls(root)
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"cli/cmd/doctor.go:probeCapture",
+		"cli/cmd/doctor.go:probeCapture",
+		"internal/checkout/service.go:dropPhysical",
+	}, drops, "a new database or collection drop must go through checkout's guarded dropPhysical")
+	require.Equal(t, []string{
+		// The doctor inspects the deployment and writes to its own probe databases.
+		"cli/cmd/doctor.go:inspectDeployment RunCommand",
+		"cli/cmd/doctor.go:inspectDeployment RunCommand",
+		"cli/cmd/doctor.go:inspectDeployment probeCapture",
+		"cli/cmd/doctor.go:probeCapture Drop",
+		"cli/cmd/doctor.go:probeCapture Drop",
+		"cli/cmd/doctor.go:probeCapture InsertOne",
+		"cli/cmd/doctor.go:probeCapture InsertOne",
+		"cli/cmd/doctor.go:probeCapture InsertOne",
+		"cli/cmd/doctor.go:probeCapture RunCommand",
+		"cli/cmd/doctor.go:probeCapture UpdateOne",
+		"cli/cmd/doctor.go:probeCapture WithTransaction",
+		// Argon metadata indexes and checkout of a branch's own physical database.
+		"internal/branch/wal/service.go:NewBranchService CreateMany",
+		"internal/checkout/service.go:Checkout DeleteOne",
+		"internal/checkout/service.go:Checkout RunCommand",
+		"internal/checkout/service.go:Checkout UpdateOne",
+		"internal/checkout/service.go:Checkout loadCollection",
+		"internal/checkout/service.go:EnablePrePostImages RunCommand",
+		"internal/checkout/service.go:EnablePrePostImages RunCommand",
+		"internal/checkout/service.go:dropPhysical Drop",
+		"internal/checkout/service.go:loadCollection EnablePrePostImages",
+		"internal/checkout/service.go:loadCollection InsertMany",
+		"internal/checkout/service.go:loadCollection InsertMany",
+		// Reads the source and enables its images when requested.
+		"internal/importer/online.go:DryRunOnline prepareOnline",
+		"internal/importer/online.go:importOnline CatchUp",
+		"internal/importer/online.go:importOnline EnableImages",
+		"internal/importer/online.go:importOnline prepareOnline",
+		"internal/importer/online.go:prepareOnline Identify",
+		"internal/importer/online.go:prepareOnline PrimaryTime",
+		"internal/importer/online.go:prepareOnline ProbeStream",
+		"internal/importer/service.go:ImportDatabase DryRunOnline",
+		"internal/importer/service.go:PreviewImport RunCommand",
+		// Reads the source stream and writes Argon's metadata and WAL.
+		"internal/ingest/follow.go:CatchUp followStream",
+		"internal/ingest/follow.go:Follow followStream",
+		"internal/ingest/follow.go:PrimaryTime primaryTime",
+		"internal/ingest/follow.go:commit WithTransaction",
+		"internal/ingest/follow.go:commitAndCheck primaryTime",
+		"internal/ingest/follow.go:convert documentAt",
+		"internal/ingest/follow.go:followStream WithTransaction",
+		"internal/ingest/follow.go:followStream primaryTime",
+		"internal/ingest/follow.go:primaryTime RunCommand",
+		"internal/ingest/follow.go:reached primaryTime",
+		"internal/ingest/follow.go:readPostImage documentAt",
+		"internal/ingest/images.go:documentAt RunCommand",
+		"internal/ingest/images.go:recoverImages documentAt",
+		"internal/ingest/images.go:recoverImages documentAt",
+		"internal/ingest/lifecycle.go:Drain DeleteOne",
+		"internal/ingest/lifecycle.go:Drain InsertOne",
+		"internal/ingest/lifecycle.go:report FindOneAndUpdate",
+		"internal/ingest/lifecycle.go:report FindOneAndUpdate",
+		"internal/ingest/resync.go:Resync resync",
+		"internal/ingest/resync.go:commit WithTransaction",
+		"internal/ingest/resync.go:resync WithTransaction",
+		"internal/ingest/resync.go:resync followStream",
+		"internal/ingest/resync.go:resync primaryTime",
+		"internal/ingest/resync.go:resync probeStream",
+		// Capture of an Argon branch's physical database and its status.
+		"internal/ingest/service.go:ClearResumeState DeleteOne",
+		"internal/ingest/service.go:convertEvent ensurePrePostImages",
+		"internal/ingest/service.go:convertEvent ensurePrePostImages",
+		"internal/ingest/service.go:convertEvent recoverImages",
+		"internal/ingest/service.go:convertEvent recoverImages",
+		"internal/ingest/service.go:ensurePrePostImages EnablePrePostImages",
+		"internal/ingest/service.go:flush UpdateOne",
+		"internal/ingest/service.go:flush UpdateOne",
+		"internal/ingest/service.go:flush WithTransaction",
+		"internal/ingest/service.go:runStream DeleteOne",
+		"internal/ingest/service.go:runStream InsertOne",
+		"internal/ingest/service.go:runStream UpdateOne",
+		"internal/ingest/service.go:runStream convertEvent",
+		"internal/ingest/service.go:runStream ensurePrePostImages",
+		// Argon's wal_ingest_state.
+		"internal/ingest/source_lease.go:InitSourceState InsertOne",
+		"internal/ingest/source_lease.go:acquireSourceLease UpdateOne",
+		"internal/ingest/source_lease.go:acquireSourceLease WithTransaction",
+		"internal/ingest/source_lease.go:releaseSourceLease DeleteOne",
+		"internal/ingest/source_lease.go:releaseSourceLease UpdateOne",
+		"internal/ingest/source_lease.go:reportSource FindOneAndUpdate",
+		"internal/ingest/source_lease.go:reportSource FindOneAndUpdate",
+		"internal/ingest/source_lease.go:updateSourceLease UpdateOne",
+		// Reads the source to probe its change stream.
+		"internal/ingest/source_stream.go:ProbeStream probeStream",
+		"internal/ingest/source_stream.go:probeStream primaryTime",
+		// Argon's wal_merge_plans and writes to a branch's own physical database.
+		"internal/merge/service.go:Apply UpdateOne",
+		"internal/merge/service.go:Apply UpdateOne",
+		"internal/merge/service.go:Apply WithTransaction",
+		"internal/merge/service.go:Preview InsertOne",
+		"internal/merge/service.go:applyPhysical DeleteOne",
+		"internal/merge/service.go:applyPhysical ReplaceOne",
+		// Argon's wal_merge_plans and the source write-back transaction.
+		"internal/merge/writeback.go:ApplyToSource UpdateOne",
+		"internal/merge/writeback.go:ApplyToSource UpdateOne",
+		"internal/merge/writeback.go:ApplyToSource UpdateOne",
+		"internal/merge/writeback.go:ApplyToSource WithTransaction",
+		"internal/merge/writeback.go:ApplyToSource writeChanges",
+		"internal/merge/writeback.go:EnsureIndexes CreateOne",
+		"internal/merge/writeback.go:SettleWriteBack UpdateOne",
+		// Applies the plan one document at a time in existing source collections.
+		"internal/merge/writeback.go:writeChanges DeleteOne",
+		"internal/merge/writeback.go:writeChanges InsertOne",
+		"internal/merge/writeback.go:writeChanges ReplaceOne",
+		// Argon metadata indexes.
+		"internal/pin/service.go:NewService CreateMany",
+		"internal/project/wal/service.go:NewProjectService CreateMany",
+		"internal/snapshot/service.go:NewService NewServiceWithStore",
+		"internal/snapshot/service.go:NewServiceWithStore CreateMany",
+		"internal/source/source.go:Bind InsertOne",
+		// Alters the source to enable images when requested.
+		"internal/source/source.go:EnableImages RunCommand",
+		// Reads hello and replSetGetConfig on the source.
+		"internal/source/source.go:Identify RunCommand",
+		"internal/source/source.go:Identify RunCommand",
+		// Argon's wal_sources and metadata indexes.
+		"internal/source/source.go:NewRegistry CreateMany",
+		"internal/source/source.go:Unbind DeleteOne",
+		"internal/wal/service.go:NewService CreateMany",
+		"internal/wal/service.go:NewService DropOne",
+		// Connects to and initializes Argon's metadata.
+		"pkg/walcli/services.go:Connect newServices",
+		"pkg/walcli/services.go:NewServicesAt newServices",
+		// Enables images on an Argon branch's own collection.
+		"pkg/walcli/services.go:PrepareCollection EnablePrePostImages",
+		// Initializes Argon's metadata collections.
+		"pkg/walcli/services.go:newServices NewBranchService",
+		"pkg/walcli/services.go:newServices NewProjectService",
+		"pkg/walcli/services.go:newServices NewRegistry",
+		"pkg/walcli/services.go:newServices NewService",
+		"pkg/walcli/services.go:newServices NewService",
+		"pkg/walcli/services.go:newServices NewServiceWithStore",
+		// Opens and follows or resyncs a source, enabling images when requested.
+		"pkg/walcli/source.go:DryRunOnlineImport DryRunOnline",
+		"pkg/walcli/source.go:FollowSource EnableImages",
+		"pkg/walcli/source.go:FollowSource Follow",
+		"pkg/walcli/source.go:FollowSource resyncSource",
+		"pkg/walcli/source.go:ResyncSource resyncSource",
+		"pkg/walcli/source.go:openSource Identify",
+		"pkg/walcli/source.go:resyncSource Resync",
+	}, sites, "a database write or command was added to, or removed from, code that can hold a source connection; check what it is sent to, then update this list")
+}
+
+type sourceCallTarget struct {
+	pkg  string
+	name string
+}
+
+type sourceCallScope struct {
+	site        string
+	target      sourceCallTarget
+	takesHandle bool
+	calls       []sourceCallTarget
+}
+
+func confinedSourceCalls(root string) (drops, writes []string, err error) {
+	var scopes []sourceCallScope
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -215,113 +382,171 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		relative, _ := filepath.Rel(root, path)
-		for _, declaration := range file.Decls {
-			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Body == nil {
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		scopes = append(scopes, sourceCallScopes(filepath.ToSlash(relative), file)...)
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Collection and database writers, plus IndexView and SearchIndexView
+	// writers. Client's transaction writes go through Session. Aggregate can
+	// write through $out or $merge; either RunCommand variant can write.
+	methods := make(map[string]bool)
+	for _, name := range strings.Fields(
+		"InsertOne InsertMany UpdateOne UpdateMany UpdateByID ReplaceOne DeleteOne DeleteMany BulkWrite " +
+			"FindOneAndUpdate FindOneAndReplace FindOneAndDelete Drop CreateCollection CreateView " +
+			"CreateOne CreateMany DropOne DropOneWithKey DropWithKey DropAll Rename " +
+			"RunCommand RunCommandCursor Aggregate WithTransaction CommitTransaction",
+	) {
+		methods[name] = true
+	}
+
+	// A helper that can write through a handle must itself be checked at
+	// each call site. Iterate so a helper can call another such helper.
+	helpers := make(map[sourceCallTarget]bool)
+	for changed := true; changed; {
+		changed = false
+		for _, scope := range scopes {
+			if !scope.takesHandle || helpers[scope.target] {
 				continue
 			}
-			ast.Inspect(function.Body, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
-					calls[selector.Sel.Name] = append(calls[selector.Sel.Name], filepath.ToSlash(relative)+":"+function.Name.Name)
-				}
-				return true
-			})
-		}
-		return nil
-	}))
-	unique := func(sites []string) []string {
-		set := make(map[string]bool)
-		for _, site := range sites {
-			set[site] = true
-		}
-		out := make([]string, 0, len(set))
-		for site := range set {
-			out = append(out, site)
-		}
-		sort.Strings(out)
-		return out
-	}
-
-	// Drop: checkout's guarded function, and doctor's own probe database.
-	require.Equal(t, []string{
-		"cli/cmd/doctor.go:probeCapture",
-		"internal/checkout/service.go:dropPhysical",
-	}, unique(calls["Drop"]), "a new database or collection drop must go through checkout's guarded dropPhysical")
-
-	// Every package that can hold a connection to a source. In them, each
-	// call that writes to a database or sends it a command is listed here by
-	// file, function and method, and the list must match exactly. A new one
-	// (a RunCommand, an Aggregate, a single-document write) fails this test
-	// until someone has looked at what it is sent to and added it.
-	prefixes := []string{"internal/ingest/", "internal/importer/", "internal/merge/", "internal/source/", "pkg/walcli/", "cli/cmd/"}
-	var sites []string
-	for _, method := range strings.Fields("InsertOne InsertMany UpdateOne UpdateMany UpdateByID ReplaceOne DeleteOne DeleteMany BulkWrite FindOneAndUpdate FindOneAndReplace FindOneAndDelete Drop CreateCollection CreateView CreateOne CreateMany DropOne DropAll Rename RunCommand RunCommandCursor Aggregate") {
-		for _, site := range unique(calls[method]) {
-			for _, prefix := range prefixes {
-				if strings.HasPrefix(site, prefix) {
-					sites = append(sites, site+" "+method)
+			for _, call := range scope.calls {
+				if methods[call.name] || helpers[call] {
+					helpers[scope.target] = true
+					changed = true
+					break
 				}
 			}
 		}
 	}
-	sort.Strings(sites)
-	require.Equal(t, []string{
-		// The doctor's probe: its own temporary database and collection.
-		"cli/cmd/doctor.go:inspectDeployment RunCommand",
-		"cli/cmd/doctor.go:probeCapture Drop",
-		"cli/cmd/doctor.go:probeCapture InsertOne",
-		"cli/cmd/doctor.go:probeCapture RunCommand",
-		"cli/cmd/doctor.go:probeCapture UpdateOne",
-		// READS A SOURCE: collStats for the import preview.
-		"internal/importer/service.go:PreviewImport RunCommand",
-		// Argon's wal_ingest_state.
-		"internal/ingest/follow.go:CatchUp UpdateOne",
-		"internal/ingest/follow.go:commit UpdateOne",
-		"internal/ingest/follow.go:heartbeat UpdateOne",
-		// READS A SOURCE: hello, and a find at a past cluster time.
-		"internal/ingest/follow.go:primaryTime RunCommand",
-		"internal/ingest/images.go:documentAt RunCommand",
-		// Capture of a branch's own physical database, and its status.
-		"internal/ingest/lifecycle.go:Drain DeleteOne",
-		"internal/ingest/lifecycle.go:Drain InsertOne",
-		"internal/ingest/lifecycle.go:report FindOneAndUpdate",
-		// Argon's wal_ingest_state.
-		"internal/ingest/resync.go:commit UpdateOne",
-		"internal/ingest/resync.go:resync UpdateOne",
-		"internal/ingest/service.go:ClearResumeState DeleteOne",
-		"internal/ingest/service.go:flush UpdateOne",
-		"internal/ingest/service.go:runStream DeleteOne",
-		"internal/ingest/service.go:runStream InsertOne",
-		"internal/ingest/service.go:runStream UpdateOne",
-		// Argon's wal_merge_plans, and a branch's own physical database.
-		"internal/merge/service.go:Apply UpdateOne",
-		"internal/merge/service.go:Preview InsertOne",
-		"internal/merge/service.go:applyPhysical DeleteOne",
-		"internal/merge/service.go:applyPhysical ReplaceOne",
-		"internal/merge/writeback.go:ApplyToSource UpdateOne",
-		"internal/merge/writeback.go:EnsureIndexes CreateOne",
-		"internal/merge/writeback.go:ReleaseWriteBacks UpdateMany",
-		"internal/merge/writeback.go:SettleWriteBack UpdateOne",
-		// WRITES TO A SOURCE: the write-back transaction body, one document
-		// at a time, into collections that exist.
-		"internal/merge/writeback.go:writeChanges DeleteOne",
-		"internal/merge/writeback.go:writeChanges InsertOne",
-		"internal/merge/writeback.go:writeChanges ReplaceOne",
-		// Argon's wal_sources.
-		"internal/source/source.go:AdoptID UpdateOne",
-		"internal/source/source.go:Bind InsertOne",
-		// ALTERS A SOURCE, when asked for by name: collMod for images.
-		"internal/source/source.go:EnableImages RunCommand",
-		// READS A SOURCE: hello and replSetGetConfig.
-		"internal/source/source.go:Identify RunCommand",
-		"internal/source/source.go:NewRegistry CreateMany",
-		"internal/source/source.go:Unbind DeleteOne",
-	}, sites, "a database write or command was added to, or removed from, code that can hold a source connection; check what it is sent to, then update this list")
+
+	prefixes := []string{"internal/checkout/", "internal/ingest/", "internal/importer/", "internal/merge/", "internal/source/", "pkg/walcli/", "cli/cmd/"}
+	for _, scope := range scopes {
+		inSourcePath := helpers[scope.target]
+		for _, prefix := range prefixes {
+			inSourcePath = inSourcePath || strings.HasPrefix(scope.site, prefix)
+		}
+		for _, call := range scope.calls {
+			if call.name == "Drop" {
+				drops = append(drops, scope.site)
+			}
+			if inSourcePath && (methods[call.name] || helpers[call]) {
+				writes = append(writes, scope.site+" "+call.name)
+			}
+		}
+	}
+	sort.Strings(drops)
+	sort.Strings(writes)
+	return drops, writes, nil
+}
+
+func sourceCallScopes(path string, file *ast.File) []sourceCallScope {
+	dir := filepath.ToSlash(filepath.Dir(path))
+	pkg := "github.com/argon-lab/argon/v2/" + dir
+	if subdir, ok := strings.CutPrefix(dir, "cli/"); ok {
+		pkg = "argon-cli/" + subdir
+	}
+	if subdir, ok := strings.CutPrefix(dir, "api/"); ok {
+		pkg = "github.com/argon-lab/argon/api/v2/" + subdir
+	}
+	imports := make(map[string]string)
+	for _, imported := range file.Imports {
+		importPath, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := filepath.Base(importPath)
+		if imported.Name != nil {
+			name = imported.Name.Name
+		}
+		imports[name] = importPath
+	}
+
+	var scopes []sourceCallScope
+	add := func(target sourceCallTarget, function *ast.FuncType, node ast.Node) {
+		scope := sourceCallScope{
+			site:        path + ":" + target.name,
+			target:      target,
+			takesHandle: sourceTakesMongoHandle(function, imports),
+		}
+		ast.Inspect(node, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch callee := ast.Unparen(call.Fun).(type) {
+			case *ast.SelectorExpr:
+				// Package functions use their import path. Methods are
+				// tracked by name, like the MongoDB driver calls.
+				var qualifier string
+				if receiver, ok := callee.X.(*ast.Ident); ok {
+					qualifier = imports[receiver.Name]
+				}
+				scope.calls = append(scope.calls, sourceCallTarget{pkg: qualifier, name: callee.Sel.Name})
+			case *ast.Ident:
+				scope.calls = append(scope.calls, sourceCallTarget{pkg: pkg, name: callee.Name})
+			}
+			return true
+		})
+		scopes = append(scopes, scope)
+	}
+
+	for _, declaration := range file.Decls {
+		switch declaration := declaration.(type) {
+		case *ast.FuncDecl:
+			if declaration.Body == nil {
+				continue
+			}
+			target := sourceCallTarget{pkg: pkg, name: declaration.Name.Name}
+			if declaration.Recv != nil {
+				target.pkg = ""
+			}
+			add(target, declaration.Type, declaration.Body)
+		case *ast.GenDecl:
+			if declaration.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range declaration.Specs {
+				value := spec.(*ast.ValueSpec)
+				for i, initializer := range value.Values {
+					var function *ast.FuncType
+					if literal, ok := ast.Unparen(initializer).(*ast.FuncLit); ok {
+						function = literal.Type
+					}
+					add(sourceCallTarget{pkg: pkg, name: value.Names[i].Name}, function, initializer)
+				}
+			}
+		}
+	}
+	return scopes
+}
+
+func sourceTakesMongoHandle(function *ast.FuncType, imports map[string]string) bool {
+	if function == nil {
+		return false
+	}
+	for _, parameter := range function.Params.List {
+		handle := ast.Unparen(parameter.Type)
+		if pointer, ok := handle.(*ast.StarExpr); ok {
+			handle = ast.Unparen(pointer.X)
+		}
+		if selector, ok := handle.(*ast.SelectorExpr); ok {
+			pkg, ok := selector.X.(*ast.Ident)
+			if !ok || imports[pkg.Name] != "go.mongodb.org/mongo-driver/mongo" {
+				continue
+			}
+			switch selector.Sel.Name {
+			case "Client", "Database", "Collection", "IndexView", "SearchIndexView":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // The source connection string is used and forgotten. Its credentials are in

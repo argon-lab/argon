@@ -38,13 +38,14 @@ argon console [--port 1818]   local web console (REST API + UI), opens browser
 
 While a branch is checked out, its history is fed by `watch` (or the
 API/MCP servers' ingesters); SDK writes to it are refused — one source of
-truth.
+truth. `checkout` and `connect` return a connection string only for the
+branch's own physical database.
 
 ## Import ("git clone")
 
 ```
-argon import preview  --uri U --database D
-argon import database --uri U --database D --project P --online [--follow [--allow-inexact]] [--enable-source-images] [--yes]
+argon import preview  --uri U --database D [--online]
+argon import database --uri U --database D --project P --online [--follow [--allow-inexact]] [--enable-source-images] [--yes] [--dry-run]
 argon import database --uri U --database D --project P --source-quiesced [--yes]
 argon import database --uri U --database D --project P --dry-run
 argon import cleanup --project P --yes   # only after stopping a crashed importer
@@ -63,13 +64,22 @@ needs one of two flags, and `--yes` replaces neither:
   `--follow`) means what it means for `argon source follow`. Nothing is written
   to the source. `--enable-source-images` is the one exception and has to be
   asked for: it switches on `changeStreamPreAndPostImages` for the source's
-  collections.
+  collections, and needs an import by a user allowed to run
+  `replSetGetConfig`, such as one with the `clusterMonitor` role.
 - `--source-quiesced` is for a database nobody is writing to: pause its
   writers and DDL for the whole import. The result is a one-time copy.
 
+Both preview modes skip views and estimate copy size. `import preview --online`
+also includes ordinary collections whose names start with `admin.`, `config.`
+or `local.`. `import database --online --dry-run` checks whether an online
+import can start and reports its collections and estimated document count
+without writing anything.
+
 `--uri` can be left out when `ARGON_SOURCE_URI` is set. Source preflight
-checks collection types/readability. The target stays unpublished until the
-import succeeds; ordinary failures clean up the reserved project and history.
+checks collection types and readability. Online preflight opens and reads the
+stream with the replay's options and start position. The target stays unpublished
+until the import succeeds. Ordinary failures clean up the reserved project and
+history.
 After a hard kill, stop the old process and use `import cleanup` before
 retrying the same name. Completed projects cannot be removed by cleanup. See
 [the import contract](OPERATIONS.md#importing-existing-data).
@@ -91,38 +101,64 @@ argon merge apply <plan-id> --write-back [--uri U] [--strategy theirs|ours]
 A project imported with `--online` has a `main` that mirrors its source.
 `source follow` applies the source's changes to it until interrupted and
 resumes where it stopped. The connection string comes from `--uri` or
-`ARGON_SOURCE_URI` on every command and is never stored; a string that leads
-to a different deployment than the one imported from is refused.
+`ARGON_SOURCE_URI` on every command and is never stored. Each connection
+must match the identity recorded at import. If the import could read the
+replica-set ID, each connection must prove the same ID. Otherwise following
+and resync match on the set name and at least one member host.
+
+`--write-back` and `--enable-source-images` require a replica-set ID recorded
+at import. Separate deployments can report the same set name and member
+hosts. For a project bound by name and hosts, detach it with
+`argon source detach -p P --yes`, then import the source online into a new
+project as a user allowed to run `replSetGetConfig`, such as one with the
+`clusterMonitor` role.
+
+`source follow --enable-source-images` checks the binding, saved position
+and lease, then opens the stream before altering collections. A degraded
+position must recover or be resynced first. If following subsequently
+fails, the error names any source collections on which it enabled images.
 
 While `main` follows a source, the source is the only thing that changes it:
 `merge apply` without `--write-back`, `undo`, `restore reset`, `checkout` and
 programmatic writes on `main` are refused. Sandboxes forked from it work as
 usual. To bring a sandbox's changes back, `merge apply <plan-id> --write-back`
-writes the reviewed plan to the source database in one transaction, after
-checking every document against the state the plan was reviewed with; one
-mismatch aborts all of it. `main` shows the result once following has read it
-back from the source. `--write-back` is the only way Argon writes to a
-source, it has to be given on the call, and the MCP server and REST API do
-not offer it.
+writes the plan to the source database in one transaction after checking
+every document against the plan's before-image. One mismatch aborts the
+transaction. `main` shows the result once following has read it back from
+the source. The MCP server and REST API do not offer write-back.
 
 `source status` exits nonzero when following is degraded or a resync is
 unfinished, and lists the ranges of `main`'s history that are not exact.
+It shows the binding's identity check and reports when that check rules
+out write-back (`write_back_unavailable_reason` in JSON).
+It reports the lease owner's run type, host, process ID and last heartbeat
+in both table and JSON output. Only one follower or resync can hold the
+lease for a project at a time.
 
-`source resync` repairs a project whose follower ended as degraded, in place:
-after a collection was dropped or renamed on the source, after the source
-database was dropped, or when the source's oplog no longer holds the saved
-position. It compares the source with `main` in batches, stores what differs,
-deletes from `main` what the source no longer has, replays the source's
-changes made meanwhile, and prints the cluster time and LSN at which `main`
+If Argon 2.5.0 checked out a followed `main`, status reports it as
+degraded. Upgrade all processes using that metadata database, stop writers
+to the checkout, then run `argon release -p P -b main` and
+`argon source resync -p P`.
+
+`source resync` repairs degraded following in place, such as after a
+collection was dropped or renamed on the source, after the source database
+was dropped, or when the source's oplog no longer holds the saved position.
+It compares the source with `main` in batches, stores what differs,
+deletes from `main` what the source no longer has, and replays the source's
+changes made meanwhile. View creation, modification and removal are ignored,
+and a view that replaced a collection counts as an absent collection during
+resync. The command prints the cluster time and LSN at which `main`
 equals the source again; `source follow` continues from there. It reads the
 source and writes nothing to it. The LSNs it writes are recorded as an
-inexact range. Run without `--force` it refuses unless following ended as
-degraded or an earlier resync is unfinished. If it is interrupted, or the
-source drops or renames another collection while it runs, `main` stays marked
-as unfinished (`source status` says so and `source follow` refuses to start)
-until `source resync` is run again. `source follow --auto-resync` runs the
-same resync itself when following ends as degraded, then continues; it stops
-instead if that happens twice within a minute.
+inexact range. Run without `--force` it refuses unless following is
+degraded or an earlier resync is unfinished. If a resync is interrupted or
+the source drops or renames another collection while it runs, `source status`
+reports the unfinished resync and plain `source follow` refuses to start.
+Run `source resync` again or restart with `source follow --auto-resync` to
+complete it. `--auto-resync` also repairs a gap in the source stream before
+following again. It stops if another automatic resync would be needed
+within a minute. If another process moves the branch head, follow stops as
+degraded and requires `source resync` to be run explicitly.
 
 `source detach` ends the tie for good
 and turns `main` back into an ordinary branch. See
@@ -173,6 +209,10 @@ When the parent follows an external database, a plan is applied with
 `--write-back`. Write-back is experimental, off by default, and has known
 open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See
 [Follow a live database](#follow-a-live-database).
+A write-back plan in `writing_back` is claimed and cannot be used again.
+Check the affected documents on the source, let following catch up, then
+run `argon merge preview` again for the sandbox. `merge list` prints this
+guidance and includes it as `writing_back_advice` in JSON output.
 
 ## Pins — immutable datasets
 

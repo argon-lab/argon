@@ -34,8 +34,9 @@ type ImportService struct {
 
 	// Set by EnableOnline; an online import binds the new project to its
 	// source and catches up with the changes made during the copy.
-	sources  *source.Registry
-	follower Follower
+	onlineMetadata *mongo.Database
+	sources        *source.Registry
+	follower       Follower
 }
 
 // SetImportedHook registers a callback invoked after each successful import.
@@ -113,36 +114,47 @@ func NewImportService(walService *wal.Service, projectService *projectwal.Projec
 
 // PreviewImport analyzes a MongoDB database and returns import preview information
 func (s *ImportService) PreviewImport(ctx context.Context, mongoURI, databaseName string) (*ImportPreview, error) {
+	return PreviewImport(ctx, mongoURI, databaseName, false)
+}
+
+// PreviewImport estimates copy size using the selected import's collection rules.
+func PreviewImport(ctx context.Context, mongoURI, databaseName string, online bool) (_ *ImportPreview, err error) {
+	defer func() { err = source.RedactError(err, mongoURI) }()
 	// Connect to source MongoDB
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", source.RedactError(err, mongoURI))
+		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", err)
 	}
 	defer func() { _ = client.Disconnect(ctx) }()
 
 	// Check connection
 	if err := client.Ping(ctx, nil); err != nil {
-		return nil, fmt.Errorf("failed to ping source MongoDB: %w", source.RedactError(err, mongoURI))
+		return nil, fmt.Errorf("failed to ping source MongoDB: %w", err)
 	}
 
 	db := client.Database(databaseName)
 
-	// List all collections
-	collectionNames, err := db.ListCollectionNames(ctx, bson.D{})
+	collections, err := db.ListCollectionSpecifications(ctx, bson.D{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list collections: %w", err)
+	}
+	skip := isSystemCollection
+	if online {
+		skip = source.SkipCollection
 	}
 
 	preview := &ImportPreview{
 		DatabaseName: databaseName,
-		Collections:  make([]CollectionInfo, 0, len(collectionNames)),
+		Collections:  make([]CollectionInfo, 0, len(collections)),
 	}
 
-	// Analyze each collection
-	for _, collName := range collectionNames {
-		// Skip system collections
-		if isSystemCollection(collName) {
+	for _, spec := range collections {
+		collName := spec.Name
+		if skip(collName) || spec.Type == "view" {
 			continue
+		}
+		if online && spec.Type != "collection" {
+			return nil, unsupportedCollectionType(collName, spec.Type)
 		}
 
 		collection := db.Collection(collName)
@@ -205,9 +217,12 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 		}
 	}
 	startTime := time.Now()
+	if opts.Online && opts.DryRun {
+		return DryRunOnline(ctx, opts, s.onlineMetadata)
+	}
 
 	// Validate options
-	if err := s.validateImportOptions(opts); err != nil {
+	if err := validateImportOptions(opts); err != nil {
 		return nil, fmt.Errorf("invalid import options: %w", err)
 	}
 
@@ -215,7 +230,7 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 1000
 	}
-	if opts.Online && !opts.DryRun {
+	if opts.Online {
 		return s.importOnline(ctx, opts)
 	}
 
@@ -352,7 +367,7 @@ func importCollections(ctx context.Context, db *mongo.Database, skip func(string
 			continue
 		}
 		if spec.Type != "collection" {
-			return nil, fmt.Errorf("source collection %q has unsupported type %q; import ordinary collections only", spec.Name, spec.Type)
+			return nil, unsupportedCollectionType(spec.Name, spec.Type)
 		}
 		// Limit-one verifies source read permission without copying data yet.
 		if err := db.Collection(spec.Name).FindOne(ctx, bson.D{}).Err(); err != nil && err != mongo.ErrNoDocuments {
@@ -368,6 +383,10 @@ func importCollections(ctx context.Context, db *mongo.Database, skip func(string
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+func unsupportedCollectionType(name, collectionType string) error {
+	return fmt.Errorf("source collection %q has unsupported type %q; import ordinary collections only", name, collectionType)
 }
 
 // importCollection imports a single collection into the WAL system.
@@ -470,7 +489,7 @@ func (s *ImportService) appendImportBatch(branch *wal.Branch, entries []*wal.Ent
 }
 
 // validateImportOptions validates the provided import options
-func (s *ImportService) validateImportOptions(opts ImportOptions) error {
+func validateImportOptions(opts ImportOptions) error {
 	if opts.MongoURI == "" {
 		return fmt.Errorf("mongo_uri is required")
 	}

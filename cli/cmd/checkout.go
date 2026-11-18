@@ -83,6 +83,9 @@ preserves pending direct writes. Stop writers before release.`,
 var connectCmd = &cobra.Command{
 	Use:   "connect",
 	Short: "Print the connection string of a checked-out branch",
+	Long: `Print the connection string of a checked-out branch.
+
+The branch record must name the database Argon created for that branch.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		branchName, _ := cmd.Flags().GetString("branch")
@@ -105,10 +108,14 @@ var connectCmd = &cobra.Command{
 		if !branch.IsLive() {
 			return fmt.Errorf("branch is not checked out; run \"argon checkout\" first")
 		}
-		if jsonOutput(cmd) {
-			return writeJSON(cmd, map[string]any{"branch_id": branchID, "connection_string": services.BranchConnectionString(branch.PhysicalDB), "capture_managed": false})
+		own, err := branch.OwnDatabase()
+		if err != nil {
+			return err
 		}
-		fmt.Println(services.BranchConnectionString(branch.PhysicalDB))
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, map[string]any{"branch_id": branchID, "connection_string": services.BranchConnectionString(own), "capture_managed": false})
+		}
+		fmt.Println(services.BranchConnectionString(own))
 		return nil
 	},
 }
@@ -116,6 +123,11 @@ var connectCmd = &cobra.Command{
 var releaseCmd = &cobra.Command{
 	Use:   "release",
 	Short: "Drop a branch's physical database (the WAL keeps the history)",
+	Long: `Release drops the branch's own physical database. Stop its writers first.
+
+If Argon 2.5.0 checked out a followed branch, upgrade every process using
+the metadata database first. Releasing that checkout discards any direct
+writes that never reached the WAL. Run "argon source resync" after release.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		branchName, _ := cmd.Flags().GetString("branch")

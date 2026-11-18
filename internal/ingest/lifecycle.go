@@ -17,13 +17,29 @@ import (
 
 // CaptureError marks a gap that retries cannot repair. Its event is never
 // checkpointed, so an incomplete history cannot masquerade as healthy capture.
-type CaptureError struct{ Message string }
+type CaptureError struct {
+	Message   string
+	streamGap bool
+}
 
 func (e *CaptureError) Error() string { return e.Message }
+
+// AutoResyncAllowed reports whether the source stream has a gap that can
+// warrant an automatic resync.
+func (e *CaptureError) AutoResyncAllowed() bool { return e.streamGap }
 
 type ConfigurationError struct{ Message string }
 
 func (e *ConfigurationError) Error() string { return e.Message }
+
+// ErrUnfinishedResync indicates that the saved position belongs to a resync
+// that must finish before ordinary following can resume.
+var ErrUnfinishedResync = errors.New("unfinished resync")
+
+type unfinishedResyncError struct{ *ConfigurationError }
+
+func (e unfinishedResyncError) Is(target error) bool { return target == ErrUnfinishedResync }
+func (e unfinishedResyncError) Unwrap() error        { return e.ConfigurationError }
 
 const barrierCollection = "__argon_capture_barriers"
 
@@ -49,6 +65,9 @@ type Status struct {
 	HeadLSN        int64     `bson:"head_lsn,omitempty" json:"head_lsn,omitempty"`
 	// Source is set for a branch that follows an external database.
 	Source *SourceStatus `bson:"source,omitempty" json:"source,omitempty"`
+	Owner  *SourceOwner  `bson:"owner,omitempty" json:"-"`
+
+	hasResumeToken bool
 }
 
 type running struct {
@@ -58,14 +77,11 @@ type running struct {
 	readyOnce sync.Once
 	err       error
 	// progress counts what a follower stored; see execute.
-	progress atomic.Int64
-	actor    string
-	barriers map[string]chan struct{}
-	// follower marks a run that follows an external database. Its status
-	// document exists for as long as the branch follows and is never
-	// created by a report: a detach removes it, and a follower in another
-	// process must not bring it back.
-	follower bool
+	progress      atomic.Int64
+	actor         string
+	barriers      map[string]chan struct{}
+	lease         *sourceLease
+	resyncStarted bool
 }
 
 func (s *Service) register(ctx context.Context, branchID string, cfg runConfig) (*running, context.Context, bool) {
@@ -75,7 +91,7 @@ func (s *Service) register(ctx context.Context, branchID string, cfg runConfig) 
 		return run, ctx, false
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	run := &running{ready: make(chan struct{}), done: make(chan struct{}), cancel: cancel, actor: cfg.actor, barriers: make(map[string]chan struct{}), follower: cfg.follower}
+	run := &running{ready: make(chan struct{}), done: make(chan struct{}), cancel: cancel, actor: cfg.actor, barriers: make(map[string]chan struct{}), lease: cfg.lease}
 	s.runs[branchID] = run
 	return run, ctx, true
 }
@@ -152,7 +168,17 @@ func (s *Service) start(ctx context.Context, branchID string, opts ...RunOption)
 }
 
 func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, run *running, retry bool) (err error) {
+	var heartbeat <-chan error
+	if run.lease != nil {
+		heartbeat = s.keepSourceLease(ctx, run)
+	}
 	defer func() {
+		run.cancel()
+		if heartbeat != nil {
+			if lost := <-heartbeat; lost != nil {
+				err = lost
+			}
+		}
 		state := "stopped"
 		message := ""
 		var gap *CaptureError
@@ -165,20 +191,30 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 				state = "degraded"
 			}
 		}
-		_ = s.report(branchID, state, s.currentActor(run), message)
+		if (!cfg.resync || run.resyncStarted) && !errors.Is(err, ErrUnfinishedResync) {
+			reportErr := s.report(branchID, state, s.currentActor(run), message)
+			var lost *ConfigurationError
+			if run.lease != nil && errors.As(reportErr, &lost) {
+				err = lost
+			}
+		}
 		s.mu.Lock()
 		run.err = err
 		delete(s.runs, branchID)
 		close(run.done)
 		s.mu.Unlock()
-		run.cancel()
 	}()
 	stuck, stored := 0, run.progress.Load()
 	for attempt := 0; ; attempt++ {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if err = s.report(branchID, "starting", cfg.actor, ""); err == nil {
+		if run.lease != nil {
+			err = nil
+		} else {
+			err = s.report(branchID, "starting", cfg.actor, "")
+		}
+		if err == nil {
 			if cfg.stream != nil {
 				err = cfg.stream(ctx, run)
 			} else {
@@ -194,8 +230,8 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		var gap *CaptureError
 		var command mongo.CommandError
 		var configuration *ConfigurationError
-		if errors.As(err, &command) && (command.Code == 260 || command.Code == 280 || command.Code == 286 || command.Code == 40573) {
-			err = &CaptureError{fmt.Sprintf("capture cannot resume safely: %v", err)}
+		if run.lease == nil {
+			err = streamCaptureError(err, false)
 		}
 		if err == nil || !retry || errors.As(err, &gap) || errors.As(err, &configuration) {
 			return err
@@ -211,10 +247,10 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 			}
 			switch {
 			case errors.As(err, &command) && (command.Code == 10334 || command.Code == 13):
-				return &CaptureError{fmt.Sprintf("the source cannot be followed past this position: %v", err)}
+				return &CaptureError{Message: fmt.Sprintf("the source cannot be followed past this position: %v", err)}
 			case !mongo.IsNetworkError(err) && !mongo.IsTimeout(err) || errors.Is(err, errCommitTimeout):
 				if stuck++; stuck >= maxStuckAttempts {
-					return &CaptureError{fmt.Sprintf("following made no progress in %d attempts and has stopped; the last error was: %v", stuck, err)}
+					return &CaptureError{Message: fmt.Sprintf("following made no progress in %d attempts and has stopped; the last error was: %v", stuck, err)}
 				}
 			}
 		}
@@ -222,7 +258,10 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		if cfg.redact != nil {
 			retryMessage = cfg.redact(retryMessage)
 		}
-		_ = s.report(branchID, "retrying", s.currentActor(run), retryMessage)
+		reportErr := s.report(branchID, "retrying", s.currentActor(run), retryMessage)
+		if errors.As(reportErr, &configuration) {
+			return configuration
+		}
 		delay := 5 * time.Second
 		if attempt < 6 {
 			delay = time.Duration(1<<attempt) * 100 * time.Millisecond
@@ -267,12 +306,14 @@ func (s *Service) report(branchID, state, actor, message string) error {
 	if status.Actor == "" {
 		status.Actor = s.statuses[branchID].Actor
 	}
-	follower := false
+	var lease *sourceLease
 	if run := s.runs[branchID]; run != nil {
 		run.actor = status.Actor
-		follower = run.follower
+		lease = run.lease
 	}
-	s.statuses[branchID] = status
+	if lease == nil {
+		s.statuses[branchID] = status
+	}
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -291,12 +332,14 @@ func (s *Service) report(branchID, state, actor, message string) error {
 	var stored struct {
 		Status Status `bson:"capture_status"`
 	}
-	if err := s.state.FindOneAndUpdate(ctx, bson.M{"_id": branchID}, bson.M{"$set": fields},
-		options.FindOneAndUpdate().SetUpsert(!follower).SetReturnDocument(options.After)).Decode(&stored); err != nil {
-		if follower && err == mongo.ErrNoDocuments {
-			// Nothing to report into: the branch was detached.
-			return nil
-		}
+	var err error
+	if lease != nil {
+		err = s.reportSource(ctx, lease, fields, state, &stored.Status)
+	} else {
+		err = s.state.FindOneAndUpdate(ctx, bson.M{"_id": branchID}, bson.M{"$set": fields},
+			options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)).Decode(&stored)
+	}
+	if err != nil {
 		return err
 	}
 	s.mu.Lock()

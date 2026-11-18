@@ -102,6 +102,7 @@ back to it:
 ```bash
 export ARGON_EXPERIMENTAL_SOURCE=1
 export ARGON_SOURCE_URI="mongodb://…"     # read per command, never stored
+argon import preview --database myapp --online
 argon import database --database myapp --project myapp --online
 argon source follow -p myapp              # main tracks the source; leave it running
 
@@ -110,13 +111,33 @@ argon merge preview -p myapp -b <sandbox>
 argon merge apply <plan-id> --write-back  # one transaction on the source
 ```
 
-The import is the source at one cluster time, which it prints. `--write-back`
-checks every document against the state the plan was reviewed with and writes
-nothing if one has changed. It is the only way Argon writes to the source, it
-must be given on the call, and the MCP server and REST API do not offer it.
-Argon never drops, renames or rewrites anything in a source database. What is
-and is not guaranteed is in
+The import copies ordinary collections at one cluster time, which it prints.
+Add `--dry-run` to the import command to check the source and its change stream
+and see the estimated copy without writing anything.
+Following ignores changes to views. `--write-back`
+checks every document against the plan's before-image and aborts the
+transaction if one has changed. Write-back and `--enable-source-images`
+require importing with a user allowed to run `replSetGetConfig`, such as one
+with the `clusterMonitor` role. Use `argon source status` to see which identity
+check applies. The MCP server and REST API do not offer write-back. Argon
+never drops, renames or rewrites a source database. See
 [the operations guide](docs/OPERATIONS.md#following-a-source-database).
+
+If a plan stays `writing_back`, check the affected documents on the source,
+let following catch up, and run `argon merge preview` again for the sandbox.
+
+Each project can run one follower or resync at a time. `argon source status`
+shows the lease owner's host, process ID and last heartbeat. Run
+`argon source follow --auto-resync` to complete an unfinished resync or
+repair a gap in the source stream before continuing to follow.
+If an older Argon process checked out a followed `main`, status reports
+it as degraded. Upgrade the older processes, stop writes to the checkout,
+release it with `argon release -p myapp -b main`, then run
+`argon source resync -p myapp`.
+
+When requested, `source follow --enable-source-images` alters existing
+source collections after the saved position is followable. An error after
+the change lists the affected collections.
 
 Prefer clicking? `argon console` serves a local web console (UI + REST API),
 supervises capture, reaps expired sandboxes every minute, and opens your browser.

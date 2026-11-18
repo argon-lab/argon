@@ -44,8 +44,8 @@ func TestSource_IdentityNeverRestsOnTheSetNameAlone(t *testing.T) {
 // the other holds a copy of the same data under the same database name, as a
 // staging restore of production would. The stored binding is put into the
 // state an import by a user without replSetGetConfig records, claiming the
-// other deployment's set name. Write-back, follow and --enable-source-images
-// pointed at the other deployment are all refused, and nothing changes there.
+// other deployment's set name. Every operation pointed at the other deployment
+// is refused, and the real source can still be followed once its name matches.
 func TestSource_AnotherDeploymentWithTheSameSetNameIsRefused(t *testing.T) {
 	deployments := sourceDeployments()
 	if len(deployments) < 2 {
@@ -102,28 +102,33 @@ func TestSource_AnotherDeploymentWithTheSameSetNameIsRefused(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", other)
-	require.ErrorContains(t, err, "none of the members")
+	require.ErrorContains(t, err, "write-back refused")
+	requireWeakBindingRemedy(t, err)
 	untouched("write-back")
 	err = f.services.FollowSource(ctx, f.project, walcli.FollowSourceOptions{URI: other, EnableSourceImages: true})
-	require.ErrorContains(t, err, "none of the members")
+	require.ErrorContains(t, err, "--enable-source-images refused")
+	requireWeakBindingRemedy(t, err)
 	untouched("follow with --enable-source-images")
+	err = f.services.FollowSource(ctx, f.project, walcli.FollowSourceOptions{URI: other})
+	require.ErrorContains(t, err, "none of the members")
+	untouched("follow")
 	_, err = f.services.ResyncSource(ctx, f.project, walcli.ResyncSourceOptions{URI: other})
 	require.ErrorContains(t, err, "none of the members")
 	untouched("resync")
 
-	// Back on the real source the name-only binding is accepted on name plus
-	// hosts, and takes the replica-set ID now that it can be read.
-	_, err = bindings.UpdateOne(ctx, bson.M{"_id": main.ID}, bson.M{"$set": bson.M{"set_name": "rs0"}})
+	// Back on the real source the weak binding can still be followed. The
+	// newly readable replica-set ID does not change the recorded check.
+	realIdentity, err := source.Identify(ctx, f.sourceClient)
 	require.NoError(t, err)
-	status, err := f.services.SourceStatus(ctx, f.project)
+	_, err = bindings.UpdateOne(ctx, bson.M{"_id": main.ID}, bson.M{"$set": bson.M{"set_name": realIdentity.SetName}})
 	require.NoError(t, err)
+	stop := f.follow(t, f.services, walcli.FollowSourceOptions{})
+	status := f.waitCaughtUp(t)
 	require.Equal(t, "replica-set name and member hosts", status.Identity)
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	require.Contains(t, status.WriteBackUnavailableReason, "requires a replica-set ID recorded at import")
+	require.NoError(t, stop())
+	stored, err := f.services.Sources.Get(ctx, main.ID)
 	require.NoError(t, err)
-	status, err = f.services.SourceStatus(ctx, f.project)
-	require.NoError(t, err)
-	require.Equal(t, "replica-set ID", status.Identity)
-	untouched0, err := otherDB.Collection("catalog").CountDocuments(ctx, bson.M{"_id": "item-new"})
-	require.NoError(t, err)
-	require.Zero(t, untouched0)
+	require.Empty(t, stored.ReplicaSetID)
+	untouched("follow on the source")
 }

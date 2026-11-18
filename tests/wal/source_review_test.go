@@ -144,11 +144,8 @@ func TestFollow_ForeignWriteToMainIsDegraded(t *testing.T) {
 	require.ErrorContains(t, f.followUntilItStops(t, walcli.FollowSourceOptions{}), "replaced by another process")
 }
 
-// A plan claimed for write-back by a process that died before its
-// transaction committed is not stuck for good: once following has passed the
-// time that transaction could have appeared, the plan is pending again. A
-// claim that is still young is left alone.
-func TestWriteBack_NeverCommittedClaimIsReleased(t *testing.T) {
+// Following preserves claims of any age whose transactions it has not seen.
+func TestWriteBack_UnobservedClaimsStayClaimed(t *testing.T) {
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -176,11 +173,12 @@ func TestWriteBack_NeverCommittedClaimIsReleased(t *testing.T) {
 	f.waitCaughtUp(t)
 	require.NoError(t, stop())
 
-	released := f.plan(t, old)
-	require.Equal(t, merge.StatusPending, released.Status)
-	require.Nil(t, released.WriteBack)
-	require.Contains(t, released.WriteBackLastError, "never committed")
-	require.Equal(t, merge.StatusWritingBack, f.plan(t, young).Status, "its transaction could still arrive")
+	for _, plan := range []*merge.Plan{old, young} {
+		claimed := f.plan(t, plan)
+		require.Equal(t, merge.StatusWritingBack, claimed.Status)
+		require.NotNil(t, claimed.WriteBack)
+		require.Empty(t, claimed.WriteBackLastError)
+	}
 }
 
 // Removing an unfinished import removes the snapshots taken of it too. They

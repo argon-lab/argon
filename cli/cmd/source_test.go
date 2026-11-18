@@ -25,7 +25,7 @@ func TestCLISourceCommandsAreDocumented(t *testing.T) {
 		}
 	}
 	stdout, _, err := invokeCLI(t, "mongodb://127.0.0.1:1", "merge", "apply", "--help")
-	if err != nil || !strings.Contains(stdout, "--write-back") {
+	if err != nil || !strings.Contains(stdout, "--write-back") || !strings.Contains(stdout, "requires a source bound by replica-set ID") {
 		t.Fatalf("merge apply must document --write-back: %v %s", err, stdout)
 	}
 	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
@@ -191,6 +191,39 @@ func TestCLIOnlineImportFollowAndWriteBack(t *testing.T) {
 	if diff := call("diff", "-p", project, "-b", "agent-1")["plan"].(map[string]any); diff["changes"] != nil && len(diff["changes"].([]any)) != 0 {
 		t.Fatalf("after the write-back was followed nothing should be left to merge: %v", diff)
 	}
+
+	// A plan whose outcome remains unrecorded carries recovery advice.
+	planObjectID, err := primitive.ObjectIDFromHex(planID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Database(metadataDatabase()).Collection("wal_merge_plans").UpdateByID(ctx, planObjectID, bson.M{
+		"$set":   bson.M{"status": "writing_back"},
+		"$unset": bson.M{"applied_at": "", "write_back.committed_at": "", "write_back.settled_at": ""},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkAdvice := func(output string) {
+		t.Helper()
+		for _, advice := range []string{"will not be written again", "Check the source database", "argon merge preview"} {
+			if !strings.Contains(output, advice) {
+				t.Errorf("missing %q in write-back guidance: %s", advice, output)
+			}
+		}
+	}
+	stdout, stderr, err := run("merge", "list", "-p", project)
+	if err != nil {
+		t.Fatalf("merge list: %v %s", err, stderr)
+	}
+	checkAdvice(stdout)
+	advice, _ := call("merge", "list", "-p", project)["writing_back_advice"].(string)
+	checkAdvice(advice)
+	_, stderr, err = run("merge", "apply", planID, "--write-back")
+	if err == nil {
+		t.Fatal("a writing_back plan was accepted")
+	}
+	checkAdvice(stderr)
 
 	// Ctrl-C saves the position and exits cleanly.
 	if err := follow.Process.Signal(os.Interrupt); err != nil {

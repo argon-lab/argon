@@ -449,6 +449,18 @@ type ApplyResult struct {
 	ConflictsResolved int
 }
 
+// RequirePending reports why a plan is unavailable for apply.
+func (plan *Plan) RequirePending() error {
+	switch plan.Status {
+	case StatusPending:
+		return nil
+	case StatusWritingBack:
+		return fmt.Errorf("merge plan %s is %s. Following marks it applied if it sees the transaction. %s", plan.ID.Hex(), plan.Status, writingBackAdvice)
+	default:
+		return fmt.Errorf("merge plan is %s, not pending", plan.Status)
+	}
+}
+
 // Apply executes a pending plan against the exact heads it was computed
 // for. Conflicts require an explicit strategy; without one, a conflicted
 // plan refuses to apply.
@@ -457,8 +469,8 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 	if err != nil {
 		return nil, err
 	}
-	if plan.Status != StatusPending {
-		return nil, fmt.Errorf("merge plan is %s, not pending", plan.Status)
+	if err := plan.RequirePending(); err != nil {
+		return nil, err
 	}
 
 	target, err := s.branches.GetBranchByID(plan.TargetBranchID)

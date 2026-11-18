@@ -482,12 +482,12 @@ func (r *Router) listSandboxes(c *gin.Context) {
 	items := make([]gin.H, 0, len(boxes))
 	for _, b := range boxes {
 		item := gin.H{"branch": b}
-		if b.IsLive() && !r.opts.DemoMode {
+		if own, err := b.OwnDatabase(); b.IsLive() && !r.opts.DemoMode && err == nil {
 			if err := r.startIngester(b.ID); err != nil {
 				abortErr(c, http.StatusServiceUnavailable, err)
 				return
 			}
-			item["connection_string"] = r.services.BranchConnectionString(b.PhysicalDB)
+			item["connection_string"] = r.services.BranchConnectionString(own)
 		}
 		items = append(items, item)
 	}
