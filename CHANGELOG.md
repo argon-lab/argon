@@ -11,6 +11,23 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Changed
+
+- `argon diff` and `argon merge preview` do work in proportion to what the
+  branch changed, not to the size of the database. A plan used to rebuild
+  three complete states (the fork point, the branch and its parent) and compare
+  every document. Only a document the branch wrote since its fork can be part
+  of a plan, so the plan is now built from those documents: their state at the
+  fork, on the branch and on the parent is read from each document's own
+  history. The plans are the same, and the REST API, the MCP tools and the
+  console use the same path. Two cases still read a whole collection. When
+  `argon gc` has deleted the parent's entries, the state of a changed document
+  at the fork and on the parent comes from the parent's snapshot, which is
+  loaded for each. When it has deleted entries of the branch itself, or the
+  history holds entries from before 2.1 that do not identify their document,
+  or the branch holds more than 200,000 entries of its own, the plan is
+  computed the previous way.
+
 ## [2.4.1] - 2026-11-17
 
 Sandboxes and checkouts work on MongoDB Atlas free clusters. No data format
@@ -39,21 +56,6 @@ changes since 2.4.0.
   merges it with `--apply`.
 
 ### Changed
-
-- `argon diff` and `argon merge preview` do work in proportion to what the
-  branch changed, not to the size of the database. A plan used to rebuild
-  three complete states (the fork point, the branch and its parent) and compare
-  every document. Only a document the branch wrote since its fork can be part
-  of a plan, so the plan is now built from those documents: their state at the
-  fork, on the branch and on the parent is read from each document's own
-  history. The plans are the same, and the REST API, the MCP tools and the
-  console use the same path. Two cases still read a whole collection. When
-  `argon gc` has deleted the parent's entries, the state of a changed document
-  at the fork and on the parent comes from the parent's snapshot, which is
-  loaded for each. When it has deleted entries of the branch itself, or the
-  history holds entries from before 2.1 that do not identify their document,
-  or the branch holds more than 200,000 entries of its own, the plan is
-  computed the previous way.
 
 - CI's audit of the console's dependencies can excuse an advisory by name. The
   whole tree is still audited, a production install must be clean, and an
