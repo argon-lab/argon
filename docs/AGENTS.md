@@ -113,6 +113,11 @@ argon merge apply <plan-id>          # after you have read the plan
 offers only the three read-only tools. A withheld tool is neither listed nor
 callable.
 
+Online import, the `argon source` commands, and `merge apply --write-back`
+are experimental and off by default. They have known open issues. Set
+`ARGON_EXPERIMENTAL_SOURCE=1` to enable them. See
+[following a source](OPERATIONS.md#following-a-source-database).
+
 When a project follows an external database (`argon import database
 --online`, releases after 2.5.0), an agent cannot change that database
 through the server at all. `argon_merge_apply` is refused for a plan whose

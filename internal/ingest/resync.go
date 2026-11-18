@@ -127,6 +127,9 @@ type ResyncResult struct {
 // Resync brings a followed branch to the source's current state and leaves
 // it ready to be followed from there. It writes nothing to the source.
 func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Database, opts ResyncOptions) (*ResyncResult, error) {
+	if err := source.RequireExperimental(); err != nil {
+		return nil, err
+	}
 	if opts.State == nil {
 		return nil, errors.New("resync needs a reader for the branch's documents")
 	}

@@ -59,6 +59,7 @@ type followFixture struct {
 
 func newFollowFixture(t *testing.T, sourceURI string) *followFixture {
 	t.Helper()
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	id := fmt.Sprintf("%d_%d", time.Now().UnixNano(), followFixtureSeq.Add(1))
 	f := &followFixture{sourceURI: sourceURI, project: "shop-" + id, metadataName: "argon_follow_meta_" + id}

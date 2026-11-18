@@ -117,8 +117,19 @@ var mergePreviewCmd = &cobra.Command{
 
 var mergeApplyCmd = &cobra.Command{
 	Use:   "apply <plan-id>",
-	Short: "Apply a pending merge plan",
-	Args:  cobra.ExactArgs(1),
+	Short: "Apply a pending merge plan (--write-back is experimental)",
+	Long: `Apply a pending merge plan. The --write-back option is experimental
+and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it and read
+docs/OPERATIONS.md for known issues.`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		writeBack, _ := cmd.Flags().GetBool("write-back")
+		if writeBack {
+			if err := walcli.RequireExperimentalSource(); err != nil {
+				return err
+			}
+		}
+		return cobra.ExactArgs(1)(cmd, args)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		strategy, _ := cmd.Flags().GetString("strategy")
 		writeBack, _ := cmd.Flags().GetBool("write-back")
@@ -232,7 +243,7 @@ func init() {
 	}
 	mergeListCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	mergeApplyCmd.Flags().String("strategy", "", "Conflict resolution: theirs (take the branch) or ours (keep the target)")
-	mergeApplyCmd.Flags().Bool("write-back", false, "Write the plan to the external database the target follows, in one transaction that first checks every document against the plan")
+	mergeApplyCmd.Flags().Bool("write-back", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Write the plan to the external database the target follows, in one transaction that first checks every document against the plan")
 	mergeApplyCmd.Flags().String("uri", "", "With --write-back: source connection string (default $ARGON_SOURCE_URI); never stored")
 
 	mergeCmd.AddCommand(mergePreviewCmd)

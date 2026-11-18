@@ -236,6 +236,7 @@ func TestWriteBack_OnlyWhenAskedFor(t *testing.T) {
 		require.Equal(t, merge.StatusPending, f.plan(t, plan).Status, "%s: the plan stays pending", label)
 	}
 
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "")
 	// The ordinary apply, which the CLI, the REST API, the SDKs and the MCP
 	// server all call, never reaches the source and never diverges main.
 	_, err := f.services.Merge.Apply(ctx, plan.ID, "")
@@ -268,6 +269,7 @@ func TestWriteBack_OnlyWhenAskedFor(t *testing.T) {
 	require.ErrorContains(t, err, "cannot be checked out")
 	unchanged("writer, reset and checkout")
 
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	// A write-back needs the connection string on the call: nothing stored
 	// can stand in for it.
 	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", "")
