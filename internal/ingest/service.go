@@ -70,6 +70,8 @@ type runConfig struct {
 	stream func(ctx context.Context, run *running) error
 	// redact cleans error text before it is stored in a status report.
 	redact func(string) string
+	// follower: see running.follower.
+	follower bool
 }
 
 // WithActor labels all native writes captured on this branch/run. MongoDB
@@ -315,6 +317,8 @@ type changeEvent struct {
 	} `bson:"documentKey"`
 	FullDocument             bson.Raw `bson:"fullDocument"`
 	FullDocumentBeforeChange bson.Raw `bson:"fullDocumentBeforeChange"`
+	// Present on expanded events such as create.
+	OperationDescription bson.Raw `bson:"operationDescription"`
 	// Present on events that belong to a multi-document transaction.
 	LSID      bson.Raw `bson:"lsid"`
 	TxnNumber int64    `bson:"txnNumber"`

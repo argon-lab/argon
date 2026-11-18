@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,15 +39,20 @@ type Binding struct {
 	Display string `bson:"display" json:"display"`
 	// SetName and ReplicaSetID identify the deployment. A later connection
 	// string must lead to the same one before Argon reads or writes there.
-	SetName      string    `bson:"set_name" json:"set_name"`
-	ReplicaSetID string    `bson:"replica_set_id,omitempty" json:"replica_set_id,omitempty"`
-	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
+	SetName      string `bson:"set_name" json:"set_name"`
+	ReplicaSetID string `bson:"replica_set_id,omitempty" json:"replica_set_id,omitempty"`
+	// Hosts are the replica-set members the deployment reported. When the
+	// replica-set ID could not be read they are the second half of the
+	// identity: a set name alone ("rs0") says almost nothing.
+	Hosts     []string  `bson:"hosts,omitempty" json:"hosts,omitempty"`
+	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 }
 
 // Identity is what a deployment reports about itself.
 type Identity struct {
 	SetName      string
 	ReplicaSetID string
+	Hosts        []string
 	Sharded      bool
 }
 
@@ -137,9 +143,16 @@ func (r *Registry) GuardDrop(ctx context.Context, database string) error {
 }
 
 // Verify reports whether the deployment behind a connection is the one the
-// binding was created against.
+// binding was created against. It fails closed: a binding that recorded the
+// replica set's ID accepts nothing less than the same ID, and one that could
+// not record it requires the set name and at least one member host to match.
+// A matching name on its own is never enough, because separate deployments
+// routinely share one ("rs0", or a staging set restored from production).
 func (b *Binding) Verify(id Identity) error {
-	if b.ReplicaSetID != "" && id.ReplicaSetID != "" {
+	if b.ReplicaSetID != "" {
+		if id.ReplicaSetID == "" {
+			return fmt.Errorf("this project recorded its source's replica-set ID, and this connection is not allowed to read it (replSetGetConfig), so it cannot be shown to lead to the same deployment (%s). Connect as a user that may run replSetGetConfig, for example one with the clusterMonitor role", b.Display)
+		}
 		if b.ReplicaSetID != id.ReplicaSetID {
 			return fmt.Errorf("the connection leads to a different deployment than the one this project follows (%s)", b.Display)
 		}
@@ -148,6 +161,43 @@ func (b *Binding) Verify(id Identity) error {
 	if b.SetName != id.SetName {
 		return fmt.Errorf("the connection leads to replica set %q, but this project follows %q (%s)", id.SetName, b.SetName, b.Display)
 	}
+	if !sharesHost(b.Hosts, id.Hosts) {
+		return fmt.Errorf("the connection leads to a replica set named %q with none of the members this project's source had when it was imported (%s); it is treated as a different deployment. If the source's members were all replaced, connect once as a user that may run replSetGetConfig", id.SetName, b.Display)
+	}
+	return nil
+}
+
+// Strength says what a binding's identity check rests on.
+func (b *Binding) Strength() string {
+	if b.ReplicaSetID != "" {
+		return "replica-set ID"
+	}
+	return "replica-set name and member hosts"
+}
+
+func sharesHost(recorded, reported []string) bool {
+	for _, a := range recorded {
+		for _, b := range reported {
+			if strings.EqualFold(a, b) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// AdoptID records the replica-set ID for a binding that was created without
+// one, the first time a verified connection can read it. From then on the
+// stronger check applies.
+func (r *Registry) AdoptID(ctx context.Context, binding *Binding, id Identity) error {
+	if binding.ReplicaSetID != "" || id.ReplicaSetID == "" {
+		return nil
+	}
+	if _, err := r.bindings.UpdateOne(ctx, bson.M{"_id": binding.BranchID, "replica_set_id": bson.M{"$in": bson.A{nil, ""}}},
+		bson.M{"$set": bson.M{"replica_set_id": id.ReplicaSetID}}); err != nil {
+		return err
+	}
+	binding.ReplicaSetID = id.ReplicaSetID
 	return nil
 }
 
@@ -155,15 +205,17 @@ func (b *Binding) Verify(id Identity) error {
 // both the consistent import and following it read its change stream.
 func Identify(ctx context.Context, client *mongo.Client) (Identity, error) {
 	var hello struct {
-		SetName string `bson:"setName"`
-		Msg     string `bson:"msg"`
+		SetName  string   `bson:"setName"`
+		Msg      string   `bson:"msg"`
+		Hosts    []string `bson:"hosts"`
+		Passives []string `bson:"passives"`
 	}
 	admin := client.Database("admin")
 	primary := options.RunCmd().SetReadPreference(readpref.Primary())
 	if err := admin.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}, primary).Decode(&hello); err != nil {
 		return Identity{}, err
 	}
-	id := Identity{SetName: hello.SetName, Sharded: hello.Msg == "isdbgrid"}
+	id := Identity{SetName: hello.SetName, Sharded: hello.Msg == "isdbgrid", Hosts: append(hello.Hosts, hello.Passives...)}
 	if id.Sharded {
 		return id, errors.New("the source is a sharded cluster (mongos); online import, follow and write-back are only supported, and only tested, against a replica set")
 	}
@@ -172,7 +224,9 @@ func Identify(ctx context.Context, client *mongo.Client) (Identity, error) {
 	}
 	// The set name alone can repeat across deployments ("rs0"). The replica
 	// set's own ID cannot, but reading it needs a privilege not every source
-	// user has, so it is used when available.
+	// user has. A server that refuses the command leaves the ID empty, which
+	// Verify treats as "cannot prove"; a failure to reach the server at all
+	// is an error, not a missing ID.
 	var config struct {
 		Config struct {
 			Settings struct {
@@ -180,8 +234,17 @@ func Identify(ctx context.Context, client *mongo.Client) (Identity, error) {
 			} `bson:"settings"`
 		} `bson:"config"`
 	}
-	if err := admin.RunCommand(ctx, bson.D{{Key: "replSetGetConfig", Value: 1}}, primary).Decode(&config); err == nil && !config.Config.Settings.ReplicaSetID.IsZero() {
-		id.ReplicaSetID = config.Config.Settings.ReplicaSetID.Hex()
+	err := admin.RunCommand(ctx, bson.D{{Key: "replSetGetConfig", Value: 1}}, primary).Decode(&config)
+	var refused mongo.CommandError
+	switch {
+	case err == nil:
+		if !config.Config.Settings.ReplicaSetID.IsZero() {
+			id.ReplicaSetID = config.Config.Settings.ReplicaSetID.Hex()
+		}
+	case errors.As(err, &refused):
+		// Not permitted, or not offered by this deployment.
+	default:
+		return id, fmt.Errorf("failed to read the source's replica-set configuration: %w", err)
 	}
 	return id, nil
 }
@@ -230,52 +293,94 @@ type redactedError struct {
 func (e *redactedError) Error() string { return e.message }
 func (e *redactedError) Unwrap() error { return e.cause }
 
-// Redact removes a connection string's secrets from arbitrary text.
+// minStandaloneSecret is the shortest password removed as a bare substring.
+const minStandaloneSecret = 4
+
+// secretOptions are the connection-string options whose values are secrets.
+// Other option values (replica set name, read preference, file paths) are
+// left alone: masking them only makes errors unreadable.
+var secretOptions = map[string]bool{
+	"tlscertificatekeyfilepassword":   true,
+	"sslclientcertificatekeypassword": true,
+	"authmechanismproperties":         true,
+	"proxypassword":                   true,
+}
+
+// Redact removes a connection string's secrets from arbitrary text: the
+// string itself, the user:password pair, the password in every escaping, and
+// the values of options that carry secrets. A user name on its own is not
+// removed.
 func Redact(text, uri string) string {
 	if uri == "" {
 		return text
 	}
 	const mask = "[redacted]"
-	text = strings.ReplaceAll(text, uri, mask)
-	scheme := strings.Index(uri, "://")
-	if scheme < 0 {
-		return text
-	}
-	rest := uri[scheme+3:]
-	// User information ends at the last '@' of the authority. A string with
-	// an unescaped '/' or '?' in its password is not a valid URI, but it is
-	// still somebody's password: take the last '@' of the whole string too.
-	ends := []int{strings.LastIndex(rest, "@")}
-	if stop := strings.IndexAny(rest, "/?"); stop >= 0 {
-		ends = append(ends, strings.LastIndex(rest[:stop], "@"))
-	}
-	for _, end := range ends {
-		if end <= 0 {
-			continue
-		}
-		userinfo := rest[:end]
-		secrets := []string{userinfo}
-		if _, password, ok := strings.Cut(userinfo, ":"); ok {
-			secrets = append(secrets, password)
-			if decoded, err := url.PathUnescape(password); err == nil {
-				secrets = append(secrets, decoded, url.QueryEscape(decoded), url.PathEscape(decoded))
-			}
-		}
-		for _, secret := range secrets {
-			if secret != "" {
-				text = strings.ReplaceAll(text, secret, mask)
+	seen := map[string]bool{}
+	var secrets []string
+	add := func(values ...string) {
+		for _, value := range values {
+			if value != "" && !seen[value] {
+				seen[value] = true
+				secrets = append(secrets, value)
 			}
 		}
 	}
-	// Options can carry session tokens and key material.
-	if q := strings.Index(rest, "?"); q >= 0 && q+1 < len(rest) {
-		for _, pair := range strings.Split(rest[q+1:], "&") {
-			if _, value, ok := strings.Cut(pair, "="); ok && len(value) >= 8 {
-				text = strings.ReplaceAll(text, value, mask)
+	add(uri)
+	if scheme := strings.Index(uri, "://"); scheme >= 0 {
+		rest := uri[scheme+3:]
+		// User information ends at the last '@' of the authority. A string
+		// with an unescaped '/' or '?' in its password is not a valid URI,
+		// but it is still somebody's password: take the last '@' of the
+		// whole string too.
+		ends := []int{strings.LastIndex(rest, "@")}
+		if stop := strings.IndexAny(rest, "/?"); stop >= 0 {
+			ends = append(ends, strings.LastIndex(rest[:stop], "@"))
+		}
+		for _, end := range ends {
+			if end <= 0 {
+				continue
+			}
+			userinfo := rest[:end]
+			add(userinfo)
+			// On its own the password is removed wherever it occurs, unless
+			// it is so short that doing so would cut up ordinary words (a
+			// password of "a" would take every "a" out of the message). Such
+			// a password is still removed with the string and the pair.
+			if _, password, ok := strings.Cut(userinfo, ":"); ok && len(password) >= minStandaloneSecret {
+				add(password)
+				if decoded, err := url.PathUnescape(password); err == nil && len(decoded) >= minStandaloneSecret {
+					add(decoded, url.QueryEscape(decoded), url.PathEscape(decoded))
+				}
+			}
+		}
+		if q := strings.Index(rest, "?"); q >= 0 {
+			for _, pair := range strings.Split(rest[q+1:], "&") {
+				key, value, ok := strings.Cut(pair, "=")
+				if !ok || !secretOptions[strings.ToLower(key)] {
+					continue
+				}
+				add(value)
+				if decoded, err := url.QueryUnescape(value); err == nil {
+					add(decoded)
+					// authMechanismProperties is NAME:value,NAME:value.
+					for _, property := range strings.Split(decoded, ",") {
+						if _, secret, ok := strings.Cut(property, ":"); ok {
+							add(secret)
+						}
+					}
+				}
 			}
 		}
 	}
-	return text
+	// One pass, longest first: a later replacement never rescans a mask an
+	// earlier one inserted, and a secret that contains another is removed
+	// whole.
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	pairs := make([]string, 0, 2*len(secrets))
+	for _, secret := range secrets {
+		pairs = append(pairs, secret, mask)
+	}
+	return strings.NewReplacer(pairs...).Replace(text)
 }
 
 // Connect opens a client on a source deployment and checks that it answers.
@@ -302,33 +407,62 @@ func Connect(ctx context.Context, uri string) (*mongo.Client, error) {
 	return client, nil
 }
 
-// SkipCollection reports collections that are neither copied nor followed.
-// The import and the follower must agree on this exactly: a collection one
-// of them skips and the other does not would end up half present.
+// SkipCollection reports collections that are neither copied nor followed by
+// an online import. Only the system.* namespace is reserved by MongoDB
+// inside a user database; everything else is the application's data. The
+// import and the follower must agree on this exactly: a collection one of
+// them skips and the other does not would end up half present.
 func SkipCollection(name string) bool {
-	for _, prefix := range []string{"system.", "admin.", "local.", "config.", "argon_wal."} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
+	return strings.HasPrefix(name, "system.")
 }
 
 // EnableImages turns on changeStreamPreAndPostImages for existing source
-// collections. It changes how the source stores writes (MongoDB keeps a
-// pre-image of every updated or deleted document), so it runs only when the
-// operator asked for it by name. It uses collMod alone: a collection that
-// disappeared in the meantime is reported, never created.
-func EnableImages(ctx context.Context, db *mongo.Database, collections []string) error {
+// collections and returns the ones it changed, also when it stops at an
+// error. It changes how the source stores writes (MongoDB keeps a pre-image
+// of every updated or deleted document), so it runs only when the operator
+// asked for it by name. It uses collMod alone: a collection that disappeared
+// in the meantime is reported, never created. Argon does not turn the
+// setting off again.
+func EnableImages(ctx context.Context, db *mongo.Database, collections []string) ([]string, error) {
+	var changed []string
 	for _, name := range collections {
 		if err := db.RunCommand(ctx, bson.D{
 			{Key: "collMod", Value: name},
 			{Key: "changeStreamPreAndPostImages", Value: bson.M{"enabled": true}},
 		}).Err(); err != nil {
-			return fmt.Errorf("failed to enable change-stream pre- and post-images on source collection %s: %w", name, err)
+			// A collMod that was interrupted may still have taken effect.
+			return changed, ImagesLeftEnabled(fmt.Errorf("enabling change-stream pre- and post-images on source collection %s did not report success (%w); check that collection, the change may have been made", name, err), changed)
+		}
+		changed = append(changed, name)
+	}
+	return changed, nil
+}
+
+// ImagesLeftEnabled adds to an error the fact that the source was altered
+// and stays altered. A failure after EnableImages must say so: nothing else
+// tells the operator that production now records pre-images.
+func ImagesLeftEnabled(err error, collections []string) error {
+	if err == nil || len(collections) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w. changeStreamPreAndPostImages was enabled on source collection(s) %s and is still enabled; Argon does not turn it off (collMod with changeStreamPreAndPostImages: {enabled: false} does)", err, strings.Join(collections, ", "))
+}
+
+// TimeSeries lists the time-series collections of a source database. Their
+// measurements live in system.buckets.* and never reach a change stream as
+// documents, so a source that has one cannot be followed.
+func TimeSeries(ctx context.Context, db *mongo.Database) ([]string, error) {
+	specs, err := db.ListCollectionSpecifications(ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, spec := range specs {
+		if spec.Type == "timeseries" {
+			names = append(names, spec.Name)
 		}
 	}
-	return nil
+	return names, nil
 }
 
 // Collections lists the ordinary collections of a source database that an

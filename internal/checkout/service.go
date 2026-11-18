@@ -132,7 +132,13 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	}
 	// A connection request must never rebuild a database with pending writes.
 	if branch.IsLive() {
-		return &Info{BranchID: branch.ID, PhysicalDB: branch.PhysicalDB, LSN: branch.HeadLSN}, nil
+		// The caller connects and writes to whatever is returned here, so it
+		// is the database Argon created for the branch or nothing.
+		own, err := branch.OwnDatabase()
+		if err != nil {
+			return nil, err
+		}
+		return &Info{BranchID: branch.ID, PhysicalDB: own, LSN: branch.HeadLSN}, nil
 	}
 
 	collections, err := s.materializer.CollectionsAtLSN(branch, branch.HeadLSN)

@@ -184,6 +184,15 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 	checkoutService.SetDropGuard(sourceRegistry.GuardDrop)
 	ingestService := ingest.NewService(client, db, walService, branchService)
 	importerService.EnableOnline(sourceRegistry, ingestService)
+	// A removed import leaves no snapshot of the data it copied.
+	projectService.SetImportAbortHook(func(ctx context.Context, branchIDs []string) error {
+		for _, branchID := range branchIDs {
+			if _, _, err := snapshotService.CleanupBranch(ctx, branchID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	ingestService.SetAutoSnapshotter(snapshotService)
 	checkoutService.SetBeforeRelease(func(ctx context.Context, branchID string) error {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

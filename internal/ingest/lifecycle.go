@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -25,6 +26,15 @@ type ConfigurationError struct{ Message string }
 func (e *ConfigurationError) Error() string { return e.Message }
 
 const barrierCollection = "__argon_capture_barriers"
+
+// maxStuckAttempts is how many times in a row a follower may fail on
+// something other than the network without storing anything in between.
+// With the backoff below that is about a minute.
+const maxStuckAttempts = 12
+
+// errCommitTimeout marks a follower's storing transaction that ran out of
+// time; a timeout there is not the source being unreachable.
+var errCommitTimeout = errors.New("storing the followed changes took too long")
 
 // Status describes observed capture health, not merely a goroutine's existence.
 type Status struct {
@@ -47,8 +57,15 @@ type running struct {
 	cancel    context.CancelFunc
 	readyOnce sync.Once
 	err       error
-	actor     string
-	barriers  map[string]chan struct{}
+	// progress counts what a follower stored; see execute.
+	progress atomic.Int64
+	actor    string
+	barriers map[string]chan struct{}
+	// follower marks a run that follows an external database. Its status
+	// document exists for as long as the branch follows and is never
+	// created by a report: a detach removes it, and a follower in another
+	// process must not bring it back.
+	follower bool
 }
 
 func (s *Service) register(ctx context.Context, branchID string, cfg runConfig) (*running, context.Context, bool) {
@@ -58,7 +75,7 @@ func (s *Service) register(ctx context.Context, branchID string, cfg runConfig) 
 		return run, ctx, false
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	run := &running{ready: make(chan struct{}), done: make(chan struct{}), cancel: cancel, actor: cfg.actor, barriers: make(map[string]chan struct{})}
+	run := &running{ready: make(chan struct{}), done: make(chan struct{}), cancel: cancel, actor: cfg.actor, barriers: make(map[string]chan struct{}), follower: cfg.follower}
 	s.runs[branchID] = run
 	return run, ctx, true
 }
@@ -156,6 +173,7 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		s.mu.Unlock()
 		run.cancel()
 	}()
+	stuck, stored := 0, run.progress.Load()
 	for attempt := 0; ; attempt++ {
 		if ctx.Err() != nil {
 			return nil
@@ -182,6 +200,24 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		if err == nil || !retry || errors.As(err, &gap) || errors.As(err, &configuration) {
 			return err
 		}
+		// Following retries for as long as retrying can help. It cannot when
+		// the server answers the same position with an error every time: an
+		// event too large to return, a privilege the user lacks, a
+		// transaction too large to store. Such a follower would otherwise
+		// report "retrying" forever, and an import would never return.
+		if cfg.stream != nil {
+			if now := run.progress.Load(); now != stored {
+				stuck, stored = 0, now
+			}
+			switch {
+			case errors.As(err, &command) && (command.Code == 10334 || command.Code == 13):
+				return &CaptureError{fmt.Sprintf("the source cannot be followed past this position: %v", err)}
+			case !mongo.IsNetworkError(err) && !mongo.IsTimeout(err) || errors.Is(err, errCommitTimeout):
+				if stuck++; stuck >= maxStuckAttempts {
+					return &CaptureError{fmt.Sprintf("following made no progress in %d attempts and has stopped; the last error was: %v", stuck, err)}
+				}
+			}
+		}
 		retryMessage := err.Error()
 		if cfg.redact != nil {
 			retryMessage = cfg.redact(retryMessage)
@@ -199,6 +235,13 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		case <-timer.C:
 		}
 	}
+}
+
+// Running reports whether this process is capturing or following the branch.
+func (s *Service) Running(branchID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runs[branchID] != nil
 }
 
 func (s *Service) currentActor(run *running) string {
@@ -224,8 +267,10 @@ func (s *Service) report(branchID, state, actor, message string) error {
 	if status.Actor == "" {
 		status.Actor = s.statuses[branchID].Actor
 	}
+	follower := false
 	if run := s.runs[branchID]; run != nil {
 		run.actor = status.Actor
+		follower = run.follower
 	}
 	s.statuses[branchID] = status
 	s.mu.Unlock()
@@ -247,7 +292,11 @@ func (s *Service) report(branchID, state, actor, message string) error {
 		Status Status `bson:"capture_status"`
 	}
 	if err := s.state.FindOneAndUpdate(ctx, bson.M{"_id": branchID}, bson.M{"$set": fields},
-		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)).Decode(&stored); err != nil {
+		options.FindOneAndUpdate().SetUpsert(!follower).SetReturnDocument(options.After)).Decode(&stored); err != nil {
+		if follower && err == mongo.ErrNoDocuments {
+			// Nothing to report into: the branch was detached.
+			return nil
+		}
 		return err
 	}
 	s.mu.Lock()

@@ -492,6 +492,18 @@ physical entry, as capture does, and differs where the source is not Argon's:
   metadata deployment, so exactly-once does not depend on where the source
   is.
 
+The follower's writes are fenced on more than the branch head. Each one
+requires, in its transaction, that the branch still follows this source and
+is not checked out, and that the status document still exists; a detach by
+another process therefore ends the follower at its next write instead of
+being overwritten by it. A head that moved without the follower, or a saved
+position another process replaced, ends it as degraded: the branch no longer
+equals the source at that position, and only a resync can say so again.
+
+Which deployment a connection leads to is decided by the replica set's ID
+when it can be read and by the set name plus member hosts otherwise, never by
+the name alone.
+
 A snapshot read at a cluster time shows a document after everything that
 committed at that time. Within a multi-document transaction an earlier change
 to a document may therefore be stored with the document's state at the end of
@@ -569,7 +581,12 @@ the follower. One writer per branch is kept, and there is nothing to
 reconcile between two deployments.
 
 The write is one source transaction that compares each document with the
-plan's before-image and then replaces or deletes it. Because the source and
+plan's before-image and then inserts, replaces or deletes it, in a collection
+that already exists: it never upserts, so it cannot create one. The
+comparison is on the bytes the followed branch stored for the document when
+it has them, which makes a reordered document a changed one. A replacement is
+sent with its fields in the order the source's document has them, so that
+only what the plan changed changes. Because the source and
 the metadata may be different deployments, the plan's status cannot commit
 with the documents. Instead the plan is claimed first, with the ID of a
 session used for nothing else; the follower recognises change events from
@@ -597,10 +614,26 @@ that cannot be applied again and that the follower closes on its own.
   unfinished, until it is run again; `main` is not held at its old state
   while a resync runs.
 - An update event that MongoDB cannot return because it exceeds 16 MB with
-  its images keeps the follower retrying, with the error in its status.
-- Field order: a plan holds documents as maps. Write-back sends the bytes the
-  sandbox stored when they are the planned document, and sorted fields
-  otherwise.
+  its images ends following as degraded at that position, as does any error
+  the source answers with repeatedly while nothing can be stored. A resync
+  gets past it.
+- A source with a time-series collection cannot be followed: its
+  measurements never reach a change stream as documents. Importing one is
+  refused, and creating one on a followed source ends following as degraded.
+  Views are neither imported nor followed.
+- A collection MongoDB does not serve at a past cluster time (a capped one
+  up to 7.0; on 6.0 also any collection altered after the update) can only
+  be followed exactly through attached images.
+- A saved stream position that is a high-water mark is not verified by the
+  server on resume. A source restored to an earlier state under the same
+  replica-set ID, with an oplog that still covers the position, is followed
+  on from there without the rewind being noticed.
+- Processes older than this feature do not know a followed branch is
+  read-only. The follower detects that the head moved without it and stops
+  as degraded; it cannot stop the older process from writing.
+- Write-back never creates a collection. A replaced document keeps the field
+  order production gave it; fields the plan adds follow in the sandbox's
+  order.
 
 ## Migration from schema v1
 

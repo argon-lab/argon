@@ -44,7 +44,7 @@ truth.
 
 ```
 argon import preview  --uri U --database D
-argon import database --uri U --database D --project P --online [--follow] [--enable-source-images] [--yes]
+argon import database --uri U --database D --project P --online [--follow [--allow-inexact]] [--enable-source-images] [--yes]
 argon import database --uri U --database D --project P --source-quiesced [--yes]
 argon import database --uri U --database D --project P --dry-run
 argon import cleanup --project P --yes   # only after stopping a crashed importer
@@ -58,7 +58,8 @@ needs one of two flags, and `--yes` replaces neither:
   is being written. The result is the source at one cluster time, which the
   command prints, and the project's `main` then follows that database (next
   section). `--follow` keeps following in the foreground once the import is
-  done. Nothing is written to the source. `--enable-source-images` is the one
+  done, and `--allow-inexact` (only with `--follow`) means what it means for
+  `argon source follow`. Nothing is written to the source. `--enable-source-images` is the one
   exception and has to be asked for: it switches on
   `changeStreamPreAndPostImages` for the source's collections.
 - `--source-quiesced` is for a database nobody is writing to: pause its

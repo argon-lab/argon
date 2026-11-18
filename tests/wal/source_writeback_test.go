@@ -92,14 +92,30 @@ func TestWriteBack_ReviewedPlanReachesTheSource(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 4, result.Applied)
 
-		// The source holds what the agent's sandbox held, in the sandbox's
-		// field order.
-		for _, id := range []string{"item-01", "item-02", "item-new"} {
-			want, err := sandboxDB.Collection("catalog").FindOne(ctx, bson.M{"_id": id}).Raw()
+		// The source holds what the agent's sandbox held. Fields production
+		// already had keep production's order; what the agent added follows.
+		order := func(db *mongo.Database, id string) (bson.M, []string) {
+			raw, err := db.Collection("catalog").FindOne(ctx, bson.M{"_id": id}).Raw()
 			require.NoError(t, err)
-			got, err := catalog.FindOne(ctx, bson.M{"_id": id}).Raw()
+			var doc bson.M
+			require.NoError(t, bson.Unmarshal(raw, &doc))
+			elements, err := raw.Elements()
 			require.NoError(t, err)
-			require.Equal(t, []byte(want), []byte(got), "%s is the sandbox's document, byte for byte", id)
+			keys := make([]string, len(elements))
+			for i, element := range elements {
+				keys[i] = element.Key()
+			}
+			return doc, keys
+		}
+		for id, wantOrder := range map[string][]string{
+			"item-01":  {"_id", "name", "stock", "note"},
+			"item-02":  {"_id", "name", "sku"},
+			"item-new": {"_id", "zeta", "alpha"},
+		} {
+			want, _ := order(sandboxDB, id)
+			got, keys := order(f.source, id)
+			require.Equal(t, want, got, "%s holds the sandbox's values", id)
+			require.Equal(t, wantOrder, keys, "%s: field order", id)
 		}
 		require.ErrorIs(t, catalog.FindOne(ctx, bson.M{"_id": "item-03"}).Err(), mongo.ErrNoDocuments)
 

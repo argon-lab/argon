@@ -153,7 +153,9 @@ DDL first and keep them stopped until this command finishes. The result is a
 one-time copy that does not follow the source.
 
 Either way only ordinary documents are copied, not indexes or collection
-options, and a failed import is cleaned up automatically. The connection
+options, and a failed import is cleaned up automatically, except for
+--enable-source-images, which stays in effect on the source and is named in
+the error. The connection
 string is used for this command only and is never stored; it can also be
 given as ARGON_SOURCE_URI instead of --uri.
 

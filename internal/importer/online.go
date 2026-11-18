@@ -92,18 +92,23 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 	if err != nil {
 		return nil, err
 	}
-	collections, err := importCollections(ctx, client.Database(opts.DatabaseName, options.Database().SetReadPreference(readpref.Primary())))
+	collections, err := importCollections(ctx, client.Database(opts.DatabaseName, options.Database().SetReadPreference(readpref.Primary())), source.SkipCollection, true)
 	if err != nil {
+		return nil, err
+	}
+	// Open the change stream once now. The replay only starts after the
+	// copy, which can take hours; a user without the changeStream privilege,
+	// or a source that cannot serve the boundary, should fail here.
+	if err := probeStream(ctx, sourceDB, startAt); err != nil {
 		return nil, err
 	}
 
 	result := &ImportResult{Online: true, Follows: opts.DatabaseName, Collections: make([]string, 0, len(collections))}
-	if opts.EnableSourceImages {
-		if err := source.EnableImages(ctx, sourceDB, collections); err != nil {
-			return nil, err
-		}
-		result.ImagesEnabled = collections
-	}
+	// Collections whose images this import switched on. Any failure from
+	// here on reports them: the source stays altered when nothing is
+	// published.
+	var imagesEnabled []string
+	defer func() { err = source.ImagesLeftEnabled(err, imagesEnabled) }()
 
 	project, err := s.projectService.BeginImport(ctx, opts.ProjectName)
 	if err != nil {
@@ -133,9 +138,21 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 	if err := s.sources.Bind(ctx, &source.Binding{
 		BranchID: branch.ID, ProjectID: project.ID, Database: opts.DatabaseName,
 		Display: source.Display(opts.MongoURI, opts.DatabaseName),
-		SetName: identity.SetName, ReplicaSetID: identity.ReplicaSetID,
+		SetName: identity.SetName, ReplicaSetID: identity.ReplicaSetID, Hosts: identity.Hosts,
 	}); err != nil {
 		return nil, err
+	}
+	// Only now, with the project reserved and bound, is the source altered,
+	// and only because the operator asked for it by name.
+	if opts.EnableSourceImages {
+		imagesEnabled, err = source.EnableImages(ctx, sourceDB, collections)
+		if err != nil {
+			// EnableImages has already named what it changed.
+			failed := err
+			imagesEnabled = nil
+			return nil, failed
+		}
+		result.ImagesEnabled = imagesEnabled
 	}
 	if branch, err = s.branchService.GetBranchByID(branch.ID); err != nil {
 		return nil, err
@@ -191,6 +208,22 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 	}
 	result.Duration = time.Since(started)
 	return result, nil
+}
+
+// probeStream opens and closes the source's change stream at the boundary.
+func probeStream(ctx context.Context, db *mongo.Database, startAt primitive.Timestamp) error {
+	stream, err := db.Watch(ctx, mongo.Pipeline{}, options.ChangeStream().
+		SetStartAtOperationTime(&startAt).SetMaxAwaitTime(100*time.Millisecond))
+	if err != nil {
+		return fmt.Errorf("the source's change stream cannot be opened, so the changes made during the copy could not be replayed (the source user needs the changeStream action on database %s): %w", db.Name(), err)
+	}
+	stream.TryNext(ctx)
+	err = stream.Err()
+	_ = stream.Close(context.Background())
+	if err != nil {
+		return fmt.Errorf("the source's change stream cannot be read: %w", err)
+	}
+	return nil
 }
 
 // copyCollection appends every document of one source collection as a put,

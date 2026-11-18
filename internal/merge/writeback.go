@@ -1,6 +1,7 @@
 package merge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -172,12 +173,25 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		}
 	}
 
-	documents := make([]interface{}, len(changes))
+	// Write-back changes documents in collections the source already has.
+	// It does not create one: a collection made by an upsert would exist in
+	// production with default options and a single document, and one that
+	// production dropped would come back. Checked here, before the plan is
+	// claimed, so that a refusal leaves the plan pending.
+	existing, err := target.Database.ListCollectionNames(ctx, bson.D{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list the source's collections: %w", err)
+	}
+	present := make(map[string]bool, len(existing))
+	for _, name := range existing {
+		present[name] = true
+	}
+	writes := make([]sourceWrite, len(changes))
 	for i, c := range changes {
-		if c.Delete {
-			continue
+		if !present[c.Collection] && !c.Delete {
+			return nil, fmt.Errorf("collection %s does not exist in the source database, and write-back does not create collections. Create it there with the options it should have, let following catch up, and preview again", c.Collection)
 		}
-		if documents[i], err = s.documentToWrite(source, plan.SourceHead, c); err != nil {
+		if writes[i], err = s.sourceWriteFor(source, branch, plan, c); err != nil {
 			return nil, err
 		}
 	}
@@ -211,7 +225,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	database := target.Database
 	_, txnErr := session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
 		reachedCommit = false
-		if err := writeChanges(sc, database, changes, documents); err != nil {
+		if err := writeChanges(sc, database, writes); err != nil {
 			return nil, err
 		}
 		reachedCommit = true
@@ -237,6 +251,14 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 
 	var labeled mongo.LabeledError
 	aborted := !reachedCommit || (errors.As(txnErr, &labeled) && labeled.HasErrorLabel("TransientTransactionError"))
+	// The driver sends the commit on a context of its own. When it returns
+	// the caller's bare context error after the body succeeded, it noticed
+	// the cancellation before committing and aborted instead: no commit was
+	// ever sent.
+	var answered mongo.CommandError
+	if !aborted && ctx.Err() != nil && errors.Is(txnErr, ctx.Err()) && !errors.As(txnErr, &answered) && !errors.As(txnErr, &labeled) {
+		aborted = true
+	}
 	if !aborted {
 		return nil, fmt.Errorf("the source transaction's commit did not report an outcome (%w). The plan stays %s and will not be written again; following closes it as applied if the transaction reached the source", txnErr, StatusWritingBack)
 	}
@@ -254,76 +276,207 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	return nil, txnErr
 }
 
-// writeChanges is the body of the source transaction: compare, then write,
-// one document at a time. It issues only single-document deletes and
-// replacements; it never drops, renames or rewrites a collection.
-func writeChanges(ctx mongo.SessionContext, database *mongo.Database, changes []Change, documents []interface{}) error {
-	for i, c := range changes {
-		id, err := documentIDValue(c)
-		if err != nil {
-			return err
+// sourceWrite is one planned change prepared for the source transaction.
+type sourceWrite struct {
+	change Change
+	id     interface{}
+	// before is the document as the followed branch stored it when the plan
+	// was made, byte for byte, when that is known. The comparison then sees
+	// field order too.
+	before bson.Raw
+	// document is what a put sends when the source has no such document.
+	// When it has one, the fields are sent in that document's order.
+	document bson.D
+}
+
+// sourceWriteFor resolves what the comparison and the write need from the
+// two branches' histories, before the transaction starts.
+func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Change) (sourceWrite, error) {
+	id, err := documentIDValue(c)
+	if err != nil {
+		return sourceWrite{}, err
+	}
+	write := sourceWrite{change: c, id: id}
+	if c.Before != nil {
+		// A followed branch stores the source's own bytes.
+		if image, metadata := s.storedImage(target, plan.TargetHead, c.Collection, c.DocumentID, c.Before); image != nil && metadata["capture_images"] != "attached_unverified" {
+			write.before = image
 		}
+	}
+	if c.Delete {
+		return write, nil
+	}
+	// A plan holds each document as a map, which has no field order. The
+	// branch being merged recorded the document as its database stored it;
+	// failing that the fields are sorted, which is at least the same on
+	// every run.
+	if image, _ := s.storedImage(source, plan.SourceHead, c.Collection, c.DocumentID, c.Document); image != nil {
+		if err := bson.Unmarshal(image, &write.document); err != nil {
+			return sourceWrite{}, err
+		}
+	} else {
+		canonical, err := mongoexpr.Canonicalize(c.Document)
+		if err != nil {
+			return sourceWrite{}, err
+		}
+		write.document, _ = canonical.(bson.D)
+	}
+	ordered := bson.D{{Key: "_id", Value: id}}
+	for _, field := range write.document {
+		if field.Key != "_id" {
+			ordered = append(ordered, field)
+		}
+	}
+	write.document = ordered
+	return write, nil
+}
+
+// storedImage returns the bytes a branch's own history holds for a document
+// state: the newest entry at or below head that the branch still reads and
+// that is the given document.
+func (s *Service) storedImage(branch *wal.Branch, head int64, collection, documentID string, want bson.M) (bson.Raw, map[string]interface{}) {
+	history, err := s.wal.GetDocumentHistory(branch.ID, collection, documentID, branch.BaseLSN+1, head)
+	if err != nil {
+		return nil, nil
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+		if branch.IsDiscardedForRead(entry.LSN, head) {
+			continue
+		}
+		if entry.Operation != wal.OpPut || len(entry.PostImage) == 0 {
+			return nil, nil
+		}
+		var stored bson.M
+		if bson.Unmarshal(entry.PostImage, &stored) != nil {
+			return nil, nil
+		}
+		if differs, err := docsUnequal(stored, want); err != nil || differs {
+			return nil, nil
+		}
+		return entry.PostImage, entry.Metadata
+	}
+	return nil, nil
+}
+
+// writeChanges is the body of the source transaction: compare, then write,
+// one document at a time. It issues single-document inserts, replacements
+// and deletes into collections that exist; it never upserts, drops, renames
+// or rewrites a collection.
+func writeChanges(ctx mongo.SessionContext, database *mongo.Database, writes []sourceWrite) error {
+	for _, write := range writes {
+		c := write.change
+		conflict := &ConflictError{Collection: c.Collection, DocumentID: c.DocumentID}
 		coll := database.Collection(c.Collection)
-		var current bson.M
-		err = coll.FindOne(ctx, bson.M{"_id": id}).Decode(&current)
+		current, err := coll.FindOne(ctx, bson.M{"_id": write.id}).Raw()
 		if err == mongo.ErrNoDocuments {
 			current = nil
 		} else if err != nil {
 			return err
 		}
-		changed, err := docsUnequal(current, c.Before)
-		if err != nil {
-			return err
-		}
-		if changed {
-			return &ConflictError{Collection: c.Collection, DocumentID: c.DocumentID}
-		}
-		if c.Delete {
-			if _, err := coll.DeleteOne(ctx, bson.M{"_id": id}); err != nil {
+		switch {
+		case c.Before == nil || current == nil:
+			if c.Before != nil || current != nil {
+				return conflict
+			}
+		case write.before != nil:
+			// Byte for byte: a document whose fields were reordered since
+			// the review is a different document to MongoDB.
+			if !bytes.Equal(current, write.before) {
+				return conflict
+			}
+		default:
+			var decoded bson.M
+			if err := bson.Unmarshal(current, &decoded); err != nil {
 				return err
 			}
-			continue
+			changed, err := docsUnequal(decoded, c.Before)
+			if err != nil {
+				return err
+			}
+			if changed {
+				return conflict
+			}
 		}
-		if _, err := coll.ReplaceOne(ctx, bson.M{"_id": id}, documents[i], options.Replace().SetUpsert(true)); err != nil {
-			return err
+		switch {
+		case c.Delete:
+			result, err := coll.DeleteOne(ctx, bson.M{"_id": write.id})
+			if err != nil {
+				return err
+			}
+			if result.DeletedCount != 1 {
+				return conflict
+			}
+		case current == nil:
+			if _, err := coll.InsertOne(ctx, write.document); err != nil {
+				return err
+			}
+		default:
+			var existing bson.D
+			if err := bson.Unmarshal(current, &existing); err != nil {
+				return err
+			}
+			result, err := coll.ReplaceOne(ctx, bson.M{"_id": write.id}, orderLike(existing, write.document))
+			if err != nil {
+				return err
+			}
+			if result.MatchedCount != 1 {
+				return conflict
+			}
 		}
 	}
 	return nil
 }
 
-// documentToWrite chooses the bytes a put sends to the source. A plan holds
-// each document as a map, which has no field order. The branch being merged
-// recorded the document as its database stored it, so that image is written
-// when it is the same document; otherwise the fields go out in sorted order,
-// which is at least the same on every run.
-func (s *Service) documentToWrite(source *wal.Branch, sourceHead int64, c Change) (interface{}, error) {
-	id, err := documentIDValue(c)
-	if err != nil {
-		return nil, err
+// orderLike returns want with its fields in the order have has them, at
+// every level: a field both documents have keeps its position in have, and
+// fields only want has follow in want's order. A replacement then changes
+// what the plan changed and leaves the layout of the rest of the document as
+// production wrote it, which matters to anything that compares embedded
+// documents whole.
+func orderLike(have, want bson.D) bson.D {
+	wanted := make(map[string]interface{}, len(want))
+	for _, field := range want {
+		wanted[field.Key] = field.Value
 	}
-	if history, err := s.wal.GetDocumentHistory(source.ID, c.Collection, c.DocumentID, source.BaseLSN+1, sourceHead); err == nil && len(history) > 0 {
-		last := history[len(history)-1]
-		if last.Operation == wal.OpPut && len(last.PostImage) > 0 && !source.IsDiscardedForRead(last.LSN, sourceHead) {
-			var stored bson.M
-			if bson.Unmarshal(last.PostImage, &stored) == nil {
-				if differs, err := docsUnequal(stored, c.Document); err == nil && !differs {
-					return last.PostImage, nil
-				}
-			}
+	placed := make(map[string]bool, len(have))
+	ordered := make(bson.D, 0, len(want))
+	for _, field := range have {
+		value, ok := wanted[field.Key]
+		if !ok || placed[field.Key] {
+			continue
 		}
+		placed[field.Key] = true
+		ordered = append(ordered, bson.E{Key: field.Key, Value: orderValueLike(field.Value, value)})
 	}
-	canonical, err := mongoexpr.Canonicalize(c.Document)
-	if err != nil {
-		return nil, err
-	}
-	fields, _ := canonical.(bson.D)
-	ordered := bson.D{{Key: "_id", Value: id}}
-	for _, field := range fields {
-		if field.Key != "_id" {
+	for _, field := range want {
+		if !placed[field.Key] {
+			placed[field.Key] = true
 			ordered = append(ordered, field)
 		}
 	}
-	return ordered, nil
+	return ordered
+}
+
+func orderValueLike(have, want interface{}) interface{} {
+	switch wanted := want.(type) {
+	case bson.D:
+		if had, ok := have.(bson.D); ok {
+			return orderLike(had, wanted)
+		}
+	case bson.A:
+		if had, ok := have.(bson.A); ok {
+			ordered := make(bson.A, len(wanted))
+			for i, item := range wanted {
+				ordered[i] = item
+				if i < len(had) {
+					ordered[i] = orderValueLike(had[i], item)
+				}
+			}
+			return ordered
+		}
+	}
+	return want
 }
 
 // LookupWriteBack returns the plan whose write-back ran in a source session,
@@ -339,6 +492,21 @@ func (s *Service) LookupWriteBack(ctx context.Context, targetBranchID string, se
 		return nil, err
 	}
 	return &plan, nil
+}
+
+// ReleaseWriteBacks returns to pending the plans of a followed branch that
+// were claimed for write-back before the given time and never confirmed. The
+// follower calls it once the branch has passed the point at which such a
+// plan's transaction would have appeared in the source's change stream, so a
+// plan it still finds claimed was never committed.
+func (s *Service) ReleaseWriteBacks(ctx context.Context, targetBranchID string, claimedBefore time.Time) error {
+	_, err := s.plans.UpdateMany(ctx,
+		bson.M{"target_branch_id": targetBranchID, "status": StatusWritingBack, "write_back.started_at": bson.M{"$lt": claimedBefore}},
+		bson.M{
+			"$set":   bson.M{"status": StatusPending, "write_back_last_error": "the write-back that claimed this plan never committed on the source: following passed the time it could have without seeing its transaction"},
+			"$unset": bson.M{"write_back": ""},
+		})
+	return err
 }
 
 // SettleWriteBack closes a plan whose transaction the follower has seen in

@@ -174,7 +174,10 @@ jobs:
         AWS_SECRET_ACCESS_KEY: argon12345
         AWS_REGION: us-east-1
         ARGON_TEST_SOURCE_MONGODB_URI: mongodb://localhost:27018/?replicaSet=rs1
-      run: go test -race -v ./...
+      # tests/wal runs against two replica sets under the race detector and
+      # no longer fits go test's default ten minutes per package with room
+      # to spare.
+      run: go test -race -v -timeout 25m ./...
 
     # The wire proxy parses bytes from unauthenticated sockets. The seed
     # corpus runs with the tests above; this explores beyond it briefly.

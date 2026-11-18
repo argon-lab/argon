@@ -21,6 +21,16 @@ type ProjectService struct {
 	collection *mongo.Collection
 	wal        *wal.Service
 	branches   *branchwal.BranchService
+
+	// afterImportAbort receives the branch IDs of an unpublished import
+	// whose rows were just removed. Used to reclaim what lives outside the
+	// transaction that removes them, such as snapshots in a chunk store.
+	afterImportAbort func(ctx context.Context, branchIDs []string) error
+}
+
+// SetImportAbortHook registers the reclaim that follows a removed import.
+func (s *ProjectService) SetImportAbortHook(hook func(ctx context.Context, branchIDs []string) error) {
+	s.afterImportAbort = hook
 }
 
 // NewProjectService creates a new WAL project service
