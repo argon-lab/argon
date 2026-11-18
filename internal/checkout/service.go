@@ -37,6 +37,7 @@ type Service struct {
 	beforeRelease func(context.Context, string) error
 	beforeDiscard func(context.Context, string) error
 	dropGuard     func(context.Context, string) error
+	duringLoad    func(context.Context, string) func(context.Context)
 }
 
 // requireOwn is the check behind every drop, made before anything else is
@@ -49,6 +50,17 @@ func requireOwn(branch *wal.Branch, name string) error {
 		return fmt.Errorf("refusing to drop %q: it is not the database Argon created for branch %s (%s)", name, branch.Name, PhysicalDBName(branch.ID))
 	}
 	return nil
+}
+
+// SetDuringLoad installs a function that is called with the parent's ID
+// before a branch's documents are copied into its physical database, and whose
+// result is called once the copy is done. The copy goes through the oplog of
+// the whole deployment, so every change stream that is not being read while it
+// runs has that much more to scan when it is next opened. The caller uses this
+// to keep the parent's capture position moving alongside the copy: a diff or a
+// merge preview of the new branch drains the parent first.
+func (s *Service) SetDuringLoad(fn func(ctx context.Context, parentID string) (done func(context.Context))) {
+	s.duringLoad = fn
 }
 
 // SetDropGuard installs a check that every database drop must pass, after
@@ -138,6 +150,12 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	}
 	if _, err := s.ingestState.DeleteOne(ctx, bson.M{"_id": branch.ID}); err != nil {
 		return nil, fmt.Errorf("failed to clear ingest state: %w", err)
+	}
+
+	if s.duringLoad != nil && branch.ParentID != "" {
+		if done := s.duringLoad(ctx, branch.ParentID); done != nil {
+			defer done(ctx)
+		}
 	}
 
 	info := &Info{BranchID: branch.ID, PhysicalDB: dbName, LSN: branch.HeadLSN}

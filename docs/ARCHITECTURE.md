@@ -281,6 +281,15 @@ What it does not avoid:
   200,000 of them the states are materialized instead, which reads each
   document once however often it was rewritten.
 - **Applying.** Apply writes each change; that is proportional to the plan.
+- **The drain before the plan.** Diff and merge preview first drain the
+  capture of the branch and of its parent, so that completed native writes are
+  in the log. Draining opens the change stream at its stored position, and
+  MongoDB scans the oplog written since, whichever database it was written
+  to. A checkout keeps a checked-out parent's position current while it
+  copies, so the new branch's own copy is not in that scan. Anything else
+  written to the deployment since the parent was last drained or watched
+  still is: keep `argon watch` or a managed process on a parent that sits
+  beside heavy unrelated writes.
 
 ## Garbage collection (retention window)
 
