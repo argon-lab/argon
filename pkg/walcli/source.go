@@ -133,6 +133,8 @@ type SourceInfo struct {
 	ResyncStartedAt  *time.Time `json:"resync_started_at,omitempty"`
 	// Owner records the lease holder and its most recent heartbeat.
 	Owner *SourceOwner `json:"owner,omitempty"`
+	// LeaseExpired marks a live report whose owner can no longer renew.
+	LeaseExpired bool `json:"lease_expired,omitempty"`
 
 	UpdatedAt      time.Time `json:"updated_at"`
 	LastCapturedAt time.Time `json:"last_captured_at,omitempty"`
@@ -202,33 +204,21 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 	if err != nil {
 		return nil, err
 	}
+	branch, status, err := s.Ingest.CaptureStatusFor(ctx, branch.ID)
+	if err != nil {
+		return nil, err
+	}
+	if branch.Follows != binding.Database {
+		return nil, fmt.Errorf("project %q no longer follows database %q", project.Name, binding.Database)
+	}
 	info := &SourceInfo{
 		Project: project.Name, Branch: branch.Name, BranchID: branch.ID,
 		Database: binding.Database, Location: binding.Display, ReplicaSet: binding.SetName, Identity: binding.Strength(),
-		HeadLSN: branch.HeadLSN, State: "stopped", Mode: ingest.ModeExact, InexactRanges: []InexactRange{},
+		HeadLSN: branch.HeadLSN, State: status.State, Error: status.Error, Mode: ingest.ModeExact, InexactRanges: []InexactRange{},
+		LeaseExpired: status.SourceLeaseExpired,
 	}
 	if binding.ReplicaSetID == "" {
 		info.WriteBackUnavailableReason = "requires a replica-set ID recorded at import"
-	}
-	status, err := s.Ingest.SourceStatusFor(ctx, branch.ID)
-	if err != nil {
-		return nil, err
-	}
-	// The position was read after the head above, and the two are stored
-	// together. Read the head again so that it is never behind the position
-	// reported with it.
-	branch, err = s.Branches.GetBranchByID(branch.ID)
-	if err != nil {
-		return nil, err
-	}
-	info.HeadLSN = branch.HeadLSN
-	if reason := status.SourceDegradation(branch); reason != "" {
-		info.State, info.Error = "degraded", reason
-	} else if status != nil {
-		info.State, info.Error = status.State, status.Error
-	}
-	if status == nil {
-		return info, nil
 	}
 	info.UpdatedAt, info.LastCapturedAt = status.UpdatedAt, status.LastCapturedAt
 	info.LastEventAt, info.LastEventLagMS = status.LastEventAt, status.LastEventLagMS
@@ -248,7 +238,7 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 		}
 		info.InexactRangesDropped = src.InexactRangesDropped
 		info.InexactOpenFromLSN, info.InexactOpenReason = src.InexactFromLSN, src.InexactReason
-		if src.Resync != nil {
+		if status.ResyncUnfinished() {
 			started := src.Resync.StartedAt
 			info.ResyncUnfinished, info.ResyncStartedAt = true, &started
 		}
@@ -311,20 +301,19 @@ func (s *Services) FollowSource(ctx context.Context, projectName string, opts Fo
 		return err
 	}
 	defer disconnect(db.Client())
-	var prepareSource func(context.Context) error
+	var prepareSource func(context.Context, func(context.Context) error) error
 	if opts.EnableSourceImages {
-		prepareSource = func(ctx context.Context) error {
+		prepareSource = func(ctx context.Context, checkLease func(context.Context) error) error {
 			collections, err := source.Collections(ctx, db)
 			if err != nil {
 				return source.RedactError(err, opts.URI)
 			}
 			attemptedImages = true
-			changed, err := source.EnableImages(ctx, db, collections)
+			changed, err := source.EnableImages(ctx, db, collections, checkLease)
+			preparedCollections = changed
 			if err != nil {
-				// EnableImages reports any completed changes and the collection in doubt.
 				return source.RedactError(err, opts.URI)
 			}
-			preparedCollections = changed
 			prepareSource = nil
 			return nil
 		}
@@ -500,25 +489,15 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	if err := binding.RequireReplicaSetID(); err != nil {
 		return nil, fmt.Errorf("write-back refused: %w", err)
 	}
-	branch, err := s.Branches.GetBranchByIDContext(ctx, plan.TargetBranchID)
+	branch, status, err := s.Ingest.CaptureStatusFor(ctx, plan.TargetBranchID)
 	if err != nil {
 		return nil, err
 	}
-	// Write-back requires a valid source position for the branch the plan
-	// was previewed against.
-	status, err := s.Ingest.SourceStatusFor(ctx, branch.ID)
-	if err != nil {
+	if branch.Follows != binding.Database {
+		return nil, fmt.Errorf("branch %s no longer follows database %q", branch.Name, binding.Database)
+	}
+	if err := status.RequireSourceWriteBackReady(); err != nil {
 		return nil, err
-	}
-	if reason := status.SourceDegradation(branch); reason != "" {
-		state := "is degraded"
-		if status != nil && status.State == "degraded" {
-			state = "ended as degraded"
-		}
-		return nil, fmt.Errorf("write-back refused: following %s (%s). After repairing the branch with `argon source resync`, preview again", state, reason)
-	}
-	if status != nil && status.Source != nil && status.Source.Resync != nil {
-		return nil, errors.New("write-back refused: a resync of the followed branch has not finished. Complete it with `argon source resync`, then preview again")
 	}
 	db, err := openSource(ctx, binding, uri)
 	if err != nil {

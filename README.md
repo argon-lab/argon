@@ -116,7 +116,9 @@ Add `--dry-run` to the import command to check the source and its change stream
 and see the estimated copy without writing anything.
 Following ignores changes to views. `--write-back`
 checks every document against the plan's before-image and aborts the
-transaction if one has changed. Write-back and `--enable-source-images`
+transaction if one has changed. The metadata deployment must acknowledge
+the plan claim with majority write concern before the source transaction starts.
+Write-back and `--enable-source-images`
 require importing with a user allowed to run `replSetGetConfig`, such as one
 with the `clusterMonitor` role. Use `argon source status` to see which identity
 check applies. The MCP server and REST API do not offer write-back. Argon
@@ -127,17 +129,22 @@ If a plan stays `writing_back`, check the affected documents on the source,
 let following catch up, and run `argon merge preview` again for the sandbox.
 
 Each project can run one follower or resync at a time. `argon source status`
-shows the lease owner's host, process ID and last heartbeat. Run
+shows the lease owner's host, process ID and last heartbeat. When the lease
+expires, the run loses ownership and status reports the saved position with
+an error. Restart `argon source follow` from that position. Run
 `argon source follow --auto-resync` to complete an unfinished resync or
 repair a gap in the source stream before continuing to follow.
+A head moved by another process is reported as degraded and requires an
+explicit `argon source resync`.
 If an older Argon process checked out a followed `main`, status reports
 it as degraded. Upgrade the older processes, stop writes to the checkout,
 release it with `argon release -p myapp -b main`, then run
 `argon source resync -p myapp`.
 
 When requested, `source follow --enable-source-images` alters existing
-source collections after the saved position is followable. An error after
-the change lists the affected collections.
+source collections after the saved position is followable. It checks the
+lease before each collection. An error after a change lists the affected
+collections.
 
 Prefer clicking? `argon console` serves a local web console (UI + REST API),
 supervises capture, reaps expired sandboxes every minute, and opens your browser.

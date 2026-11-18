@@ -238,6 +238,39 @@ func TestCLIOnlineImportFollowAndWriteBack(t *testing.T) {
 	}
 	transcript.Write(followOutput.Bytes())
 
+	saved := call("source", "status", "-p", project)
+	if _, err := client.Database(metadataDatabase()).Collection("wal_ingest_state").UpdateByID(ctx, saved["branch_id"], bson.M{
+		"$set": bson.M{
+			"capture_status.state": "running",
+			"capture_status.owner": bson.M{
+				"id": "old-owner", "kind": "follow", "host": "follower-host", "pid": 111,
+				"started_at": time.Unix(1, 0), "heartbeat_at": time.Unix(1, 0),
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("expired follower lease", func(t *testing.T) {
+		stdout, stderr, err := run("source", "status", "-p", project)
+		if err == nil || !strings.Contains(stdout, "State:       stopped") || !strings.Contains(stdout, "follower-host (pid 111)") ||
+			!strings.Contains(stderr, "has not been heard from since") {
+			t.Fatalf("table status accepted an expired follower: %v\n%s\n%s", err, stdout, stderr)
+		}
+		stdout, stderr, err = run("source", "status", "-p", project, "--output", "json")
+		var info struct {
+			State         string `json:"state"`
+			LeaseExpired  bool   `json:"lease_expired"`
+			ConsistentLSN int64  `json:"consistent_lsn"`
+		}
+		if decodeErr := json.Unmarshal([]byte(stdout), &info); decodeErr != nil {
+			t.Fatalf("unexpected JSON: %v\n%s", decodeErr, stdout)
+		}
+		if err == nil || info.State != "stopped" || !info.LeaseExpired || float64(info.ConsistentLSN) != saved["consistent_lsn"] ||
+			!strings.Contains(stderr, "has not been heard from since") {
+			t.Fatalf("JSON status accepted an expired follower: %v\n%s\n%s", err, stdout, stderr)
+		}
+	})
+
 	if _, _, err := run("source", "detach", "-p", project); err == nil {
 		t.Fatal("detach must require --yes")
 	}

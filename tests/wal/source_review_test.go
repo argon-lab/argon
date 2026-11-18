@@ -87,6 +87,7 @@ func TestFollow_ForeignWriteToMainIsDegraded(t *testing.T) {
 	f.importOnline(t, walcli.OnlineImport{})
 	stop := f.follow(t, f.services, walcli.FollowSourceOptions{})
 	f.waitCaughtUp(t)
+	branchID := f.main(t).ID
 
 	// What an older binary's merge into main does: append, then move the head.
 	foreign := func() {
@@ -104,7 +105,9 @@ func TestFollow_ForeignWriteToMainIsDegraded(t *testing.T) {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		f.tick(t)
-		if info, err := f.services.SourceStatus(ctx, f.project); err == nil && info.State == "degraded" {
+		// Wait for the follower to report its own failure. Source status
+		// can already see a mismatched head before the follower checks it.
+		if f.readIngestState(t, branchID).Lookup("capture_status", "state").StringValue() == "degraded" {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/spf13/cobra"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -84,25 +85,9 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 			return
 		}
 	}
-	cur, err := client.Database(metadataDatabase()).Collection("wal_ingest_state").Find(ctx, bson.M{"capture_status": bson.M{"$exists": true}}, options.Find().SetProjection(bson.M{"_id": 0, "capture_status": 1}))
+	report.Capture, report.Healthy, err = walcli.InspectCaptureHealth(ctx, client.Database(metadataDatabase()))
 	if err != nil {
 		add("capture_status", "", err)
-		return
-	}
-	defer func() { _ = cur.Close(ctx) }()
-	var stored []struct {
-		Status bson.M `bson:"capture_status"`
-	}
-	if err := cur.All(ctx, &stored); err != nil {
-		add("capture_status", "", err)
-		return
-	}
-	report.Healthy = true
-	for _, item := range stored {
-		report.Capture = append(report.Capture, item.Status)
-		if item.Status["state"] == "degraded" {
-			report.Healthy = false
-		}
 	}
 	return
 }
@@ -194,7 +179,11 @@ func runDeploymentCommand(cmd *cobra.Command, probe bool) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s %-20s %s\n", state, check.Name, check.Detail)
 		}
 		for _, status := range report.Capture {
-			fmt.Fprintf(cmd.OutOrStdout(), "Capture last reported: %s %s %v\n", status["branch_id"], status["state"], status["error"])
+			fmt.Fprintf(cmd.OutOrStdout(), "Capture: %s %s", status["branch_id"], status["state"])
+			if detail, ok := status["error"].(string); ok && detail != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), " (%s)", detail)
+			}
+			fmt.Fprintln(cmd.OutOrStdout())
 		}
 	}
 	if !report.Healthy {
@@ -205,7 +194,7 @@ func runDeploymentCommand(cmd *cobra.Command, probe bool) error {
 
 var doctorCmd = &cobra.Command{
 	Use: "doctor", Short: "Verify MongoDB readiness and capture permissions",
-	Long: "Check MongoDB version, replica set, exact images and transactions. Creates and removes uniquely named temporary probe collections. Use status for read-only checks.",
+	Long: "Check MongoDB version, replica set, exact images, transactions and capture health. Creates and removes uniquely named temporary probe collections. Use status for read-only checks.",
 	RunE: func(cmd *cobra.Command, args []string) error { return runDeploymentCommand(cmd, true) },
 }
 

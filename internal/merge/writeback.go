@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/argon-lab/argon/v2/internal/ingest"
 	"github.com/argon-lab/argon/v2/internal/mongoexpr"
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
@@ -155,15 +156,15 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		return nil, errors.New("this plan predates before-images and cannot be checked against the source; run preview again")
 	}
 
-	branch, err := s.branches.GetBranchByID(plan.TargetBranchID)
+	branch, status, err := ingest.ReadCaptureStatus(ctx, s.plans.Database(), plan.TargetBranchID)
 	if err != nil {
 		return nil, fmt.Errorf("target branch not found: %w", err)
 	}
 	if !branch.IsFollower() {
 		return nil, fmt.Errorf("branch %s does not follow an external database; apply the plan without write-back", branch.Name)
 	}
-	if branch.IsLive() || branch.PhysicalDB != "" {
-		return nil, fmt.Errorf("write-back refused: following is degraded because branch %s was checked out. Release the checkout, run `argon source resync`, then preview again", branch.Name)
+	if err := status.RequireSourceWriteBackReady(); err != nil {
+		return nil, err
 	}
 	if target.Database == nil || target.Database.Name() != branch.Follows {
 		return nil, fmt.Errorf("branch %s follows database %q; write-back was pointed at another database", branch.Name, branch.Follows)
@@ -223,10 +224,14 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		Database: branch.Follows, Display: target.Display,
 		Strategy: strategy, Changes: len(changes), StartedAt: time.Now(),
 	}
-	claimed, err := s.plans.UpdateOne(ctx, bson.M{"_id": plan.ID, "status": StatusPending},
+	// A metadata election must not undo the claim after the separate
+	// source transaction commits. Require majority acknowledgement for
+	// the claim and both transitions out of it.
+	plans := s.plans.Database().Collection(s.plans.Name(), options.Collection().SetWriteConcern(writeconcern.Majority()))
+	claimed, err := plans.UpdateOne(ctx, bson.M{"_id": plan.ID, "status": StatusPending},
 		bson.M{"$set": bson.M{"status": StatusWritingBack, "write_back": record}})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not claim plan %s with majority write concern: %w", plan.ID.Hex(), err)
 	}
 	if claimed.MatchedCount != 1 {
 		return nil, errors.New("merge plan is no longer pending")
@@ -254,7 +259,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if txnErr == nil {
 		now := time.Now()
 		// The follower can settle this same claim before we record the commit.
-		marked, err := s.plans.UpdateOne(record2, bson.M{
+		marked, err := plans.UpdateOne(record2, bson.M{
 			"_id": plan.ID, "write_back.session": record.Session,
 			"$or": bson.A{
 				bson.M{"status": StatusWritingBack},
@@ -296,7 +301,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if target.Redact != nil {
 		reason = target.Redact(reason)
 	}
-	if _, err := s.plans.UpdateOne(record2, bson.M{"_id": plan.ID, "status": StatusWritingBack, "write_back.session": record.Session},
+	if _, err := plans.UpdateOne(record2, bson.M{"_id": plan.ID, "status": StatusWritingBack, "write_back.session": record.Session},
 		bson.M{"$set": bson.M{"status": StatusPending, "write_back_last_error": reason}, "$unset": bson.M{"write_back": ""}}); err != nil {
 		return nil, errors.Join(txnErr, fmt.Errorf("nothing was written, but the plan could not be returned to pending: %w", err))
 	}
@@ -326,8 +331,23 @@ func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Chang
 	write := sourceWrite{change: c, id: id}
 	if c.Before != nil {
 		// A followed branch stores the source's own bytes.
-		if image, metadata := s.storedImage(target, plan.TargetHead, c.Collection, c.DocumentID, c.Before); image != nil && metadata["capture_images"] != "attached_unverified" {
-			write.before = image
+		entry, err := s.storedImage(target, plan.TargetHead, c.Collection, c.DocumentID, c.Before)
+		if err != nil {
+			return sourceWrite{}, fmt.Errorf("could not read write-back before-image for %s/%s: %w", c.Collection, c.DocumentID, err)
+		}
+		// GC publishes the floor before deleting entries. At or below it,
+		// a missing or surviving image cannot prove which bytes were latest.
+		floor, err := s.wal.ReclaimFloor(target.ID, c.Collection)
+		if err != nil {
+			return sourceWrite{}, fmt.Errorf("could not check write-back before-image history for %s/%s: %w", c.Collection, c.DocumentID, err)
+		}
+		if floor > target.BaseLSN && (entry == nil || entry.LSN <= floor) {
+			return sourceWrite{}, fmt.Errorf("the exact write-back before-image for %s/%s at LSN %d may have been reclaimed: %w", c.Collection, c.DocumentID, plan.TargetHead, wal.ErrHistoryReclaimed)
+		}
+		// An unverified change-stream image may contain a moved field
+		// twice. It records the decoded values but lacks the exact bytes.
+		if entry != nil && entry.Metadata["capture_images"] != "attached_unverified" {
+			write.before = entry.PostImage
 		}
 	}
 	if c.Delete {
@@ -337,8 +357,12 @@ func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Chang
 	// branch being merged recorded the document as its database stored it;
 	// failing that the fields are sorted, which is at least the same on
 	// every run.
-	if image, _ := s.storedImage(source, plan.SourceHead, c.Collection, c.DocumentID, c.Document); image != nil {
-		if err := bson.Unmarshal(image, &write.document); err != nil {
+	entry, err := s.storedImage(source, plan.SourceHead, c.Collection, c.DocumentID, c.Document)
+	if err != nil {
+		return sourceWrite{}, fmt.Errorf("could not read write-back replacement for %s/%s: %w", c.Collection, c.DocumentID, err)
+	}
+	if entry != nil {
+		if err := bson.Unmarshal(entry.PostImage, &write.document); err != nil {
 			return sourceWrite{}, err
 		}
 	} else {
@@ -358,30 +382,36 @@ func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Chang
 	return write, nil
 }
 
-// storedImage returns the bytes a branch's own history holds for a document
-// state: the newest entry at or below head that the branch still reads and
-// that is the given document.
-func (s *Service) storedImage(branch *wal.Branch, head int64, collection, documentID string, want bson.M) (bson.Raw, map[string]interface{}) {
+// storedImage returns the newest visible entry that holds the given document
+// at or below head. A missing image requires a successful read.
+func (s *Service) storedImage(branch *wal.Branch, head int64, collection, documentID string, want bson.M) (*wal.Entry, error) {
 	history, err := s.wal.GetDocumentHistory(branch.ID, collection, documentID, branch.BaseLSN+1, head)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	for i := len(history) - 1; i >= 0; i-- {
 		entry := history[i]
 		if branch.IsDiscardedForRead(entry.LSN, head) {
 			continue
 		}
+		if !entry.IsData() {
+			continue
+		}
 		if entry.Operation != wal.OpPut || len(entry.PostImage) == 0 {
 			return nil, nil
 		}
 		var stored bson.M
-		if bson.Unmarshal(entry.PostImage, &stored) != nil {
-			return nil, nil
+		if err := bson.Unmarshal(entry.PostImage, &stored); err != nil {
+			return nil, err
 		}
-		if differs, err := docsUnequal(stored, want); err != nil || differs {
-			return nil, nil
+		differs, err := docsUnequal(stored, want)
+		if err != nil {
+			return nil, err
 		}
-		return entry.PostImage, entry.Metadata
+		if differs {
+			return nil, fmt.Errorf("stored image at LSN %d differs from the plan; run preview again", entry.LSN)
+		}
+		return entry, nil
 	}
 	return nil, nil
 }
@@ -407,12 +437,13 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, writes []s
 				return conflict
 			}
 		case write.before != nil:
-			// Byte for byte: a document whose fields were reordered since
-			// the review is a different document to MongoDB.
+			// MongoDB distinguishes documents whose fields are reordered.
 			if !bytes.Equal(current, write.before) {
 				return conflict
 			}
 		default:
+			// Order-insensitive comparison is reserved for states for
+			// which history never recorded exact bytes.
 			var decoded bson.M
 			if err := bson.Unmarshal(current, &decoded); err != nil {
 				return err
@@ -499,39 +530,59 @@ func orderValueLike(have, want interface{}) interface{} {
 }
 
 func orderArrayLike(have, want bson.A) bson.A {
-	keys := make([]string, len(have))
+	// Reserve all exact matches before a fallback can consume an element
+	// with the same decoded values and different field order.
+	exact := make(map[string][]int)
+	for i, item := range have {
+		if key := arrayItemExactKey(item); key != "" {
+			exact[key] = append(exact[key], i)
+		}
+	}
+	used := make([]bool, len(have))
+	wantKeys := make([]string, len(want))
+	wantCounts := make(map[string]int)
+	for i, item := range want {
+		key := arrayItemExactKey(item)
+		indices := exact[key]
+		if len(indices) > 0 {
+			last := len(indices) - 1
+			used[indices[last]] = true
+			exact[key] = indices[:last]
+			continue
+		}
+		if key := arrayItemKey(item); key != "" {
+			wantKeys[i] = key
+			wantCounts[key]++
+		}
+	}
 	matches := make(map[string][]int)
 	for i, item := range have {
-		if key := arrayItemKey(item); key != "" {
-			keys[i] = key
+		if used[i] {
+			continue
+		}
+		if key := arrayItemKey(item); wantCounts[key] == 1 {
 			matches[key] = append(matches[key], i)
 		}
 	}
-	ordered := make(bson.A, len(want))
-	copy(ordered, want)
-	for i, item := range want {
-		key := arrayItemKey(item)
-		if key == "" {
-			continue
+	ordered := append(bson.A{}, want...)
+	for i, key := range wantKeys {
+		// Only an unambiguous remaining pair borrows the source's order.
+		if indices := matches[key]; len(indices) == 1 {
+			ordered[i] = orderValueLike(have[indices[0]], want[i])
 		}
-		// Among matching duplicates, prefer the same position when available.
-		match := i
-		if i >= len(have) || keys[i] != key {
-			indices := matches[key]
-			for len(indices) > 0 && keys[indices[0]] == "" {
-				indices = indices[1:]
-			}
-			if len(indices) == 0 {
-				delete(matches, key)
-				continue
-			}
-			match = indices[0]
-			matches[key] = indices[1:]
-		}
-		keys[match] = ""
-		ordered[i] = orderValueLike(have[match], item)
 	}
 	return ordered
+}
+
+func arrayItemExactKey(item interface{}) string {
+	switch item.(type) {
+	case bson.D, bson.A:
+		typ, value, err := bson.MarshalValue(item)
+		if err == nil {
+			return typ.String() + string(value)
+		}
+	}
+	return ""
 }
 
 // arrayItemKey uses a subdocument's _id if present and otherwise its value

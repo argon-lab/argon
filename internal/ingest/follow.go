@@ -131,8 +131,9 @@ type FollowOptions struct {
 	Redact func(string) string
 	// PrepareSource runs once with the lease held, after validating the saved
 	// position and opening the source stream. A degraded follower must first
-	// replay far enough to clear its stored gap.
-	PrepareSource func(context.Context) error
+	// replay far enough to clear its stored gap. Preparation checks the lease
+	// before each source alteration.
+	PrepareSource func(ctx context.Context, checkLease func(context.Context) error) error
 	// Watch replaces src.Watch. Tests use it to supply server errors that a
 	// fresh replica set cannot be made to produce, such as a resume position
 	// its oplog no longer holds.
@@ -158,8 +159,8 @@ func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Databa
 	}
 	defer s.releaseSourceLease(lease)
 	if prepare := opts.PrepareSource; prepare != nil {
-		opts.PrepareSource = func(ctx context.Context) error {
-			if err := prepare(ctx); err != nil {
+		opts.PrepareSource = func(ctx context.Context, checkLease func(context.Context) error) error {
+			if err := prepare(ctx, checkLease); err != nil {
 				return err
 			}
 			opts.PrepareSource = nil
@@ -317,7 +318,7 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 		return nil, sourcePositionError(branch.Name)
 	}
 	if stored := saved.Status.HeadLSN; stored != nil && *stored != branch.HeadLSN && !opts.resync {
-		return nil, &CaptureError{Message: fmt.Sprintf("the head of branch %s moved from LSN %d to %d without the follower: something else wrote to it, so it no longer equals the source. Upgrade every process that uses this metadata database, then run `argon source resync`", branch.Name, *stored, branch.HeadLSN)}
+		return nil, sourceHeadMismatch(branch, *stored)
 	}
 	if !opts.resync {
 		if err := s.report(branchID, "starting", sourceActor, ""); err != nil {
@@ -407,7 +408,16 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 			}); err != nil {
 				return nil, followerWriteError(branch, err)
 			}
-			if err := opts.PrepareSource(ctx); err != nil {
+			run.lease.recordRenewal()
+			checkLease := func(ctx context.Context) error { return s.refreshSourceLease(ctx, run.lease) }
+			if err := opts.PrepareSource(ctx, checkLease); err != nil {
+				if _, lost := run.lease.renewal(); lost != nil && !errors.Is(err, lost) {
+					return nil, fmt.Errorf("%w: %v", lost, err)
+				}
+				var configuration *ConfigurationError
+				if errors.As(err, &configuration) {
+					return nil, err
+				}
 				return nil, &ConfigurationError{err.Error()}
 			}
 			opts.PrepareSource = nil
@@ -856,7 +866,7 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 		return nil
 	}
 	s, branch := f.s, f.branch
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(f.run.lease.ctx, 30*time.Second)
 	defer cancel()
 	batch := f.ready
 	capturedAt := time.Now()
@@ -923,6 +933,7 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	if err != nil {
 		return followerWriteError(branch, err)
 	}
+	f.run.lease.recordRenewal()
 	f.run.progress.Add(1)
 	if recovered {
 		f.recoverAt = primitive.Timestamp{}
@@ -989,48 +1000,6 @@ func (s *Service) loadFollowState(ctx context.Context, branchID string) (*follow
 		return nil, fmt.Errorf("failed to load the source position: %w", err)
 	}
 	return &doc, nil
-}
-
-// SourceStatusFor returns the stored status of a followed branch, whether or
-// not a follower is running in this process.
-func (s *Service) SourceStatusFor(ctx context.Context, branchID string) (*Status, error) {
-	var doc struct {
-		Status      Status   `bson:"capture_status"`
-		ResumeToken bson.Raw `bson:"resume_token"`
-	}
-	err := s.state.FindOne(ctx, bson.M{"_id": branchID}).Decode(&doc)
-	if err == mongo.ErrNoDocuments {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	doc.Status.hasResumeToken = len(doc.ResumeToken) > 0
-	return &doc.Status, nil
-}
-
-// SourceDegradation reports a followed branch's stored error or an invalid
-// branch or resume position, even when no follower has reported the problem.
-func (s *Status) SourceDegradation(branch *wal.Branch) string {
-	if branch.IsLive() || branch.PhysicalDB != "" {
-		return sourceCheckoutError(branch.Name).Error()
-	}
-	if s != nil && s.State == "degraded" {
-		if s.Error != "" {
-			return s.Error
-		}
-		return "the last follower reported a capture failure"
-	}
-	if !s.hasSavedSourcePosition(branch.Follows) {
-		return sourcePositionError(branch.Name).Error()
-	}
-	return ""
-}
-
-func (s *Status) hasSavedSourcePosition(database string) bool {
-	// An unfinished resync has deliberately replaced the old resume position.
-	return s != nil && s.Source != nil && s.Source.Database == database &&
-		(s.hasResumeToken || s.Source.Resync != nil)
 }
 
 // primaryTime is the primary's current cluster time. Nothing any node has

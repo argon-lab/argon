@@ -117,23 +117,27 @@ project as a user allowed to run `replSetGetConfig`, such as one with the
 and lease, then opens the stream before altering collections. A degraded
 position must recover or be resynced first. If following subsequently
 fails, the error names any source collections on which it enabled images.
+The follower checks the lease before each alteration.
 
 While `main` follows a source, the source is the only thing that changes it:
 `merge apply` without `--write-back`, `undo`, `restore reset`, `checkout` and
 programmatic writes on `main` are refused. Sandboxes forked from it work as
 usual. To bring a sandbox's changes back, `merge apply <plan-id> --write-back`
-writes the plan to the source database in one transaction after checking
-every document against the plan's before-image. One mismatch aborts the
+writes the plan to the source database in one transaction. It starts after
+a majority-acknowledged metadata claim, and checks every document against
+the plan's before-image before writing that document. One mismatch aborts the
 transaction. `main` shows the result once following has read it back from
 the source. The MCP server and REST API do not offer write-back.
 
-`source status` exits nonzero when following is degraded or a resync is
-unfinished, and lists the ranges of `main`'s history that are not exact.
+`source status` exits nonzero when following is degraded, a resync is
+unfinished, or the lease of the last running follower or resync has
+expired. It lists the inexact ranges of `main`'s history.
 It shows the binding's identity check and reports when that check rules
 out write-back (`write_back_unavailable_reason` in JSON).
 It reports the lease owner's run type, host, process ID and last heartbeat
 in both table and JSON output. Only one follower or resync can hold the
-lease for a project at a time.
+lease for a project at a time. Expiry revokes the lease. The status is
+reported as stopped and retains the saved position.
 
 If Argon 2.5.0 checked out a followed `main`, status reports it as
 degraded. Upgrade all processes using that metadata database, stop writers
@@ -142,7 +146,8 @@ to the checkout, then run `argon release -p P -b main` and
 
 `source resync` repairs degraded following in place, such as after a
 collection was dropped or renamed on the source, after the source database
-was dropped, or when the source's oplog no longer holds the saved position.
+was dropped, when the source's oplog no longer holds the saved position,
+or when another process moved `main`'s head.
 It compares the source with `main` in batches, stores what differs,
 deletes from `main` what the source no longer has, and replays the source's
 changes made meanwhile. View creation, modification and removal are ignored,
@@ -150,8 +155,8 @@ and a view that replaced a collection counts as an absent collection during
 resync. The command prints the cluster time and LSN at which `main`
 equals the source again; `source follow` continues from there. It reads the
 source and writes nothing to it. The LSNs it writes are recorded as an
-inexact range. Run without `--force` it refuses unless following is
-degraded or an earlier resync is unfinished. If a resync is interrupted or
+inexact range. Run without `--force`, it requires degraded following,
+an unfinished resync or an expired run. If a resync is interrupted or
 the source drops or renames another collection while it runs, `source status`
 reports the unfinished resync and plain `source follow` refuses to start.
 Run `source resync` again or restart with `source follow --auto-resync` to
@@ -276,8 +281,9 @@ argon gc -p P --dry-run --output json             # {"dry_run": ..., "branches":
 argon restore preview -p P -b B --lsn N --output json  # {"branch": ..., "target_lsn": ...}
 ```
 
-Doctor/status return nonzero when readiness fails. A stored capture status
-is the last report from a worker, not proof that its process is still alive.
+Doctor/status return nonzero when readiness fails. They apply the same
+health checks to followed projects as `source status`. For ordinary
+capture, the status is the worker's last stored report.
 The CLI does not support relative time on `time-travel info`; use retained
 LSNs for queries and RFC3339 timestamps on restore/pin commands.
 

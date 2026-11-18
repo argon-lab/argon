@@ -21,15 +21,13 @@ import (
 
 // The test deployments run without enableTestCommands, so the failCommand
 // fail point is not available. This dialer does the same thing from the
-// client side: commitTransaction is sent to the server unchanged and really
-// commits; the server's acknowledgement is then replaced with the reply a
-// server gives when the commit was applied locally but the write concern
-// could not be confirmed in time (ok:1 plus writeConcernError 50,
-// MaxTimeMSExpired). The driver labels that UnknownTransactionCommitResult
-// and WithTransaction returns it without retrying. (With code 64 the driver
-// re-sends commitTransaction in a tight loop for 120 seconds first.)
+// client side: a command is sent unchanged and applied, then its reply is
+// replaced with ok:1 plus writeConcernError 50 (MaxTimeMSExpired). For
+// commitTransaction the driver labels that UnknownTransactionCommitResult
+// and WithTransaction returns it without retrying.
 type lostAckDialer struct {
-	commits atomic.Int32
+	command         string
+	acknowledgments atomic.Int32
 }
 
 func (d *lostAckDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -49,7 +47,7 @@ type lostAckConn struct {
 }
 
 func (c *lostAckConn) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte("commitTransaction")) {
+	if bytes.Contains(p, []byte(c.dialer.command+"\x00")) {
 		c.mu.Lock()
 		c.rewrite = true
 		c.mu.Unlock()
@@ -67,7 +65,7 @@ func (c *lostAckConn) Read(p []byte) (int, error) {
 		return c.Conn.Read(p)
 	}
 	c.rewrite = false
-	// Read the server's whole reply: the commit has happened by now.
+	// Read the server's whole reply: the command has been applied by now.
 	header := make([]byte, 16)
 	if _, err := io.ReadFull(c.Conn, header); err != nil {
 		return 0, err
@@ -98,7 +96,7 @@ func (c *lostAckConn) Read(p []byte) (int, error) {
 		}
 	}
 	if ok {
-		c.dialer.commits.Add(1)
+		c.dialer.acknowledgments.Add(1)
 		reply = append(reply, bson.E{Key: "writeConcernError", Value: bson.D{
 			{Key: "code", Value: int32(50)},
 			{Key: "codeName", Value: "MaxTimeMSExpired"},
@@ -133,7 +131,7 @@ func TestWriteBack_UnknownCommitOutcomeKeepsThePlanClaimed(t *testing.T) {
 	binding, err := f.services.Sources.Get(ctx, plan.TargetBranchID)
 	require.NoError(t, err)
 	require.NotNil(t, binding)
-	dialer := &lostAckDialer{}
+	dialer := &lostAckDialer{command: "commitTransaction"}
 	faulty, err := mongo.Connect(ctx, options.Client().ApplyURI(f.sourceURI).SetDialer(dialer))
 	require.NoError(t, err)
 	defer func() { _ = faulty.Disconnect(context.Background()) }()
@@ -142,7 +140,7 @@ func TestWriteBack_UnknownCommitOutcomeKeepsThePlanClaimed(t *testing.T) {
 		Database: faulty.Database(f.source.Name()), Display: binding.Display,
 	})
 	t.Logf("ApplyToSource returned: %v", err)
-	require.EqualValues(t, 1, dialer.commits.Load(), "the server acknowledged exactly one commitTransaction with ok:1")
+	require.EqualValues(t, 1, dialer.acknowledgments.Load(), "the server acknowledged exactly one commitTransaction with ok:1")
 
 	// The transaction did reach the source.
 	written := f.sourceState(t, nil)

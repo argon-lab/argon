@@ -282,7 +282,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/ingest/service.go:runStream ensurePrePostImages",
 		// Argon's wal_ingest_state.
 		"internal/ingest/source_lease.go:InitSourceState InsertOne",
-		"internal/ingest/source_lease.go:acquireSourceLease UpdateOne",
+		"internal/ingest/source_lease.go:acquireSourceLease FindOneAndUpdate",
 		"internal/ingest/source_lease.go:acquireSourceLease WithTransaction",
 		"internal/ingest/source_lease.go:releaseSourceLease DeleteOne",
 		"internal/ingest/source_lease.go:releaseSourceLease UpdateOne",
@@ -395,7 +395,8 @@ func confinedSourceCalls(root string) (drops, writes []string, err error) {
 
 	// Collection and database writers, plus IndexView and SearchIndexView
 	// writers. Client's transaction writes go through Session. Aggregate can
-	// write through $out or $merge; either RunCommand variant can write.
+	// write through $out or $merge unless the stages are proven read-only.
+	// Either RunCommand variant can write.
 	methods := make(map[string]bool)
 	for _, name := range strings.Fields(
 		"InsertOne InsertMany UpdateOne UpdateMany UpdateByID ReplaceOne DeleteOne DeleteMany BulkWrite " +
@@ -481,6 +482,9 @@ func sourceCallScopes(path string, file *ast.File) []sourceCallScope {
 			}
 			switch callee := ast.Unparen(call.Fun).(type) {
 			case *ast.SelectorExpr:
+				if callee.Sel.Name == "Aggregate" && sourceReadOnlyAggregate(call, imports) {
+					return true
+				}
 				// Package functions use their import path. Methods are
 				// tracked by name, like the MongoDB driver calls.
 				var qualifier string
@@ -524,6 +528,53 @@ func sourceCallScopes(path string, file *ast.File) []sourceCallScope {
 		}
 	}
 	return scopes
+}
+
+func sourceReadOnlyAggregate(call *ast.CallExpr, imports map[string]string) bool {
+	if len(call.Args) < 2 {
+		return false
+	}
+	pipeline, ok := ast.Unparen(call.Args[1]).(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	selector, ok := pipeline.Type.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Pipeline" {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok || imports[pkg.Name] != "go.mongodb.org/mongo-driver/mongo" {
+		return false
+	}
+	for _, expr := range pipeline.Elts {
+		stage, ok := expr.(*ast.CompositeLit)
+		if !ok || len(stage.Elts) != 1 {
+			return false
+		}
+		element, ok := stage.Elts[0].(*ast.CompositeLit)
+		if !ok || len(element.Elts) != 2 {
+			return false
+		}
+		key := element.Elts[0]
+		if pair, ok := key.(*ast.KeyValueExpr); ok {
+			field, ok := pair.Key.(*ast.Ident)
+			if !ok || field.Name != "Key" {
+				return false
+			}
+			key = pair.Value
+		}
+		literal, ok := key.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return false
+		}
+		name, _ := strconv.Unquote(literal.Value)
+		switch name {
+		case "$match", "$project", "$lookup", "$set":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func sourceTakesMongoHandle(function *ast.FuncType, imports map[string]string) bool {

@@ -120,7 +120,9 @@ var mergeApplyCmd = &cobra.Command{
 	Short: "Apply a pending merge plan (--write-back is experimental)",
 	Long: `Apply a pending merge plan. The --write-back option is experimental
 and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it and read
-docs/OPERATIONS.md for known issues. If a plan stays writing_back, check the
+docs/OPERATIONS.md for known issues. The source transaction starts after
+the metadata deployment acknowledges the plan claim with majority write
+concern. If a plan stays writing_back, check the
 source database, let following catch up, then run "argon merge preview" again
 to create a new plan.`,
 	Args: func(cmd *cobra.Command, args []string) error {
