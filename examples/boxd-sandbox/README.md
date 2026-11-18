@@ -28,6 +28,9 @@ data machine (host)                              agent machine (isolated)
    main branch without asking. That is a scripted merge: run it only after
    you reviewed the diff of a default run.
 
+A [walkthrough](https://argonlabs.tech/blog/connect-code-sandbox-to-mongodb-sandbox-boxd)
+explains the reasons for these steps and shows what happens when a run fails.
+
 ## How the machine reaches MongoDB
 
 MongoDB, Argon and `host.py` run on one boxd machine, the data machine. The
