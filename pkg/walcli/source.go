@@ -260,7 +260,10 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 		return nil, err
 	}
 	defer disconnect(client)
-	result, err := s.Merge.ApplyToSource(ctx, planID, strategy, merge.WriteBackTarget{Database: db, Display: binding.Display})
+	result, err := s.Merge.ApplyToSource(ctx, planID, strategy, merge.WriteBackTarget{
+		Database: db, Display: binding.Display,
+		Redact: func(text string) string { return source.Redact(text, uri) },
+	})
 	return result, source.RedactError(err, uri)
 }
 

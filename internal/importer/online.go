@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 
 	"github.com/argon-lab/argon/v2/internal/ingest"
 	"github.com/argon-lab/argon/v2/internal/source"
@@ -28,6 +29,9 @@ func (s *ImportService) EnableOnline(sources *source.Registry, follower Follower
 }
 
 // importOnline imports a database that keeps being written.
+//
+// The order of the first steps matters: boundary, then the list of
+// collections, then the reads.
 //
 // The copy reads each collection with ordinary cursors, so different
 // documents are read at different moments and the copy alone is not a state
@@ -78,7 +82,17 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 		return nil, err
 	}
 	sourceDB := client.Database(opts.DatabaseName)
-	collections, err := importCollections(ctx, sourceDB)
+
+	// The stream boundary comes first, and the list of collections to copy
+	// is read from the primary after it. A collection created before the
+	// boundary is then in the list; one created after it arrives through the
+	// stream. Taking the list first would leave a moment in which a new
+	// collection is in neither.
+	startAt, err := ingest.PrimaryTime(ctx, sourceDB)
+	if err != nil {
+		return nil, err
+	}
+	collections, err := importCollections(ctx, client.Database(opts.DatabaseName, options.Database().SetReadPreference(readpref.Primary())))
 	if err != nil {
 		return nil, err
 	}
@@ -134,10 +148,6 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 		return nil, err
 	}
 	defer session.EndSession(context.Background())
-	startAt, err := ingest.PrimaryTime(ctx, sourceDB)
-	if err != nil {
-		return nil, err
-	}
 	// The session keeps the pointer it is given, so it gets its own copy.
 	readsFrom := startAt
 	if err := session.AdvanceOperationTime(&readsFrom); err != nil {

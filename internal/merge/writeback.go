@@ -80,6 +80,9 @@ func (e *ConflictError) Error() string {
 type WriteBackTarget struct {
 	Database *mongo.Database
 	Display  string
+	// Redact cleans error text before it is stored with the plan. The
+	// caller knows the connection string; this package never sees it.
+	Redact func(string) string
 }
 
 // EnsureIndexes creates the index the follower uses to recognise write-back
@@ -240,8 +243,12 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	// Nothing was written. Return the plan to pending so that a transient
 	// failure can be retried; a conflict will fail the same way until the
 	// plan is previewed again.
+	reason := txnErr.Error()
+	if target.Redact != nil {
+		reason = target.Redact(reason)
+	}
 	if _, err := s.plans.UpdateOne(record2, bson.M{"_id": plan.ID, "status": StatusWritingBack, "write_back.session": record.Session},
-		bson.M{"$set": bson.M{"status": StatusPending, "write_back_last_error": txnErr.Error()}, "$unset": bson.M{"write_back": ""}}); err != nil {
+		bson.M{"$set": bson.M{"status": StatusPending, "write_back_last_error": reason}, "$unset": bson.M{"write_back": ""}}); err != nil {
 		return nil, errors.Join(txnErr, fmt.Errorf("nothing was written, but the plan could not be returned to pending: %w", err))
 	}
 	return nil, txnErr

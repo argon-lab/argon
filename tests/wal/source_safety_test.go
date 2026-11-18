@@ -318,6 +318,19 @@ func TestSource_CredentialsAreNotStoredOrReported(t *testing.T) {
 	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", withCredentials)
 	require.NoError(t, err)
 	f.waitCaughtUp(t)
+
+	// A write-back that is refused stores its reason with the plan.
+	second, secondDB := f.agentSandbox(t, "agent-two")
+	_, err = secondDB.Collection("catalog").UpdateOne(ctx, bson.M{"_id": "item-09"}, bson.M{"$set": bson.M{"stock": int32(1)}})
+	require.NoError(t, err)
+	refused := f.preview(t, second.BranchID)
+	_, err = f.source.Collection("catalog").UpdateOne(ctx, bson.M{"_id": "item-09"}, bson.M{"$set": bson.M{"stock": int32(2)}})
+	require.NoError(t, err)
+	_, err = f.services.WriteBackMerge(ctx, refused.ID, "", withCredentials)
+	require.Error(t, err)
+	clean("a refused write-back", err.Error())
+	require.NotEmpty(t, f.plan(t, refused).WriteBackLastError)
+	f.waitCaughtUp(t)
 	require.NoError(t, stop())
 
 	// Failures, each reached with the credentials in hand.
