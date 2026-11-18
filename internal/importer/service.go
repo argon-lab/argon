@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
+	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 )
 
@@ -28,6 +30,11 @@ type ImportService struct {
 	// every read replays the whole import until some other write trips the
 	// auto-snapshot threshold.
 	onImported func(branch *wal.Branch)
+
+	// Set by EnableOnline; an online import binds the new project to its
+	// source and catches up with the changes made during the copy.
+	sources  *source.Registry
+	follower Follower
 }
 
 // SetImportedHook registers a callback invoked after each successful import.
@@ -62,6 +69,15 @@ type ImportOptions struct {
 	// SourceQuiesced confirms application writers and DDL are stopped for
 	// the entire import. Ordinary cursor reads are not an online snapshot.
 	SourceQuiesced bool `json:"source_quiesced"`
+	// Online imports a database that keeps being written: the copy is
+	// followed by the source's own changes until the project equals the
+	// source at one cluster time. The project's main branch then follows
+	// that database. Requires a replica-set source.
+	Online bool `json:"online"`
+	// EnableSourceImages turns on changeStreamPreAndPostImages for the
+	// source collections before the copy. It changes how the source stores
+	// writes and is never done unless set.
+	EnableSourceImages bool `json:"enable_source_images"`
 }
 
 // ImportResult contains the result of an import operation
@@ -74,6 +90,15 @@ type ImportResult struct {
 	Duration     time.Duration `json:"duration"`
 	StartLSN     int64         `json:"start_lsn"`
 	EndLSN       int64         `json:"end_lsn"`
+
+	// Set by an online import: main at ConsistentLSN is the source database
+	// at ConsistentClusterTime. LSNs below it are states of the copy in
+	// progress, not states the source was in.
+	Online                bool                 `json:"online,omitempty"`
+	Follows               string               `json:"follows,omitempty"`
+	ConsistentLSN         int64                `json:"consistent_lsn,omitempty"`
+	ConsistentClusterTime *primitive.Timestamp `json:"consistent_cluster_time,omitempty"`
+	ImagesEnabled         []string             `json:"source_images_enabled,omitempty"`
 }
 
 // NewImportService creates a new import service
@@ -90,13 +115,13 @@ func (s *ImportService) PreviewImport(ctx context.Context, mongoURI, databaseNam
 	// Connect to source MongoDB
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", err)
+		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", source.RedactError(err, mongoURI))
 	}
 	defer func() { _ = client.Disconnect(ctx) }()
 
 	// Check connection
 	if err := client.Ping(ctx, nil); err != nil {
-		return nil, fmt.Errorf("failed to ping source MongoDB: %w", err)
+		return nil, fmt.Errorf("failed to ping source MongoDB: %w", source.RedactError(err, mongoURI))
 	}
 
 	db := client.Database(databaseName)
@@ -184,16 +209,19 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 1000
 	}
+	if opts.Online && !opts.DryRun {
+		return s.importOnline(ctx, opts)
+	}
 
 	// Connect to source MongoDB
 	sourceClient, err := mongo.Connect(ctx, options.Client().ApplyURI(opts.MongoURI))
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", err)
+		return nil, fmt.Errorf("failed to connect to source MongoDB: %w", source.RedactError(err, opts.MongoURI))
 	}
 	defer func() { _ = sourceClient.Disconnect(ctx) }()
 
 	if err := sourceClient.Ping(ctx, nil); err != nil {
-		return nil, fmt.Errorf("failed to ping source MongoDB: %w", err)
+		return nil, fmt.Errorf("failed to ping source MongoDB: %w", source.RedactError(err, opts.MongoURI))
 	}
 
 	sourceDB := sourceClient.Database(opts.DatabaseName)
@@ -442,26 +470,20 @@ func (s *ImportService) validateImportOptions(opts ImportOptions) error {
 	if opts.ProjectName == "" {
 		return fmt.Errorf("project_name is required")
 	}
-	if !opts.DryRun && !opts.SourceQuiesced {
-		return fmt.Errorf("source writes and DDL must be paused for the entire import; set source_quiesced (CLI: --source-quiesced) after stopping writers")
+	if opts.Online && opts.SourceQuiesced {
+		return fmt.Errorf("choose one of online and source_quiesced: an online import copies a database that is being written, a quiesced one requires its writers to be stopped")
+	}
+	if opts.EnableSourceImages && !opts.Online {
+		return fmt.Errorf("enable_source_images applies to an online import only")
+	}
+	if !opts.DryRun && !opts.SourceQuiesced && !opts.Online {
+		return fmt.Errorf("the source is being copied with ordinary reads: either import online (CLI: --online; needs a replica-set source), or pause source writes and DDL for the entire import and set source_quiesced (CLI: --source-quiesced)")
 	}
 	return nil
 }
 
 // isSystemCollection returns true if the collection name represents a system collection
 func isSystemCollection(name string) bool {
-	systemPrefixes := []string{
-		"system.",
-		"admin.",
-		"local.",
-		"config.",
-		"argon_wal.", // Don't import our own WAL collections
-	}
-
-	for _, prefix := range systemPrefixes {
-		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
-			return true
-		}
-	}
-	return false
+	// Shared with the follower: both must skip exactly the same collections.
+	return source.SkipCollection(name)
 }

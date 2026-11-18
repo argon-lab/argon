@@ -21,6 +21,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/restore"
 	"github.com/argon-lab/argon/v2/internal/sandbox"
 	"github.com/argon-lab/argon/v2/internal/snapshot"
+	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/timetravel"
 	"github.com/argon-lab/argon/v2/internal/undo"
 	"github.com/argon-lab/argon/v2/internal/wal"
@@ -49,8 +50,10 @@ type Services struct {
 	Merge        *merge.Service
 	Sandbox      *sandbox.Service
 	Pins         *pin.Service
-	Monitor      *wal.Monitor
-	MongoURI     string
+	// Sources records which external database a branch follows.
+	Sources  *source.Registry
+	Monitor  *wal.Monitor
+	MongoURI string
 	// Client is the deployment connection, exposed for tools that read
 	// physical branch databases (e.g. convergence verification).
 	Client *mongo.Client
@@ -171,8 +174,16 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 	}
 	snapshotService.EnableAuto(snapshot.DefaultAutoConfig())
 	gcService := gc.NewService(walService, branchService, snapshotService)
+	sourceRegistry, err := source.NewRegistry(db)
+	if err != nil {
+		return nil, err
+	}
 	checkoutService := checkout.NewService(client, db, branchService, materializerService)
+	// A followed source database is never one of Argon's physical databases;
+	// this is the second, independent check behind checkout's own.
+	checkoutService.SetDropGuard(sourceRegistry.GuardDrop)
 	ingestService := ingest.NewService(client, db, walService, branchService)
+	importerService.EnableOnline(sourceRegistry, ingestService)
 	ingestService.SetAutoSnapshotter(snapshotService)
 	checkoutService.SetBeforeRelease(func(ctx context.Context, branchID string) error {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -182,6 +193,9 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 	checkoutService.SetBeforeDiscard(ingestService.Cancel)
 	undoService := undo.NewService(walService, branchService, client, materializerService)
 	mergeService := merge.NewService(db, walService, branchService, materializerService, client)
+	if err := mergeService.EnsureIndexes(ctx); err != nil {
+		return nil, fmt.Errorf("failed to create merge plan indexes: %w", err)
+	}
 	sandboxService := sandbox.NewService(branchService, checkoutService)
 	pinService, err := pin.NewService(db, branchService)
 	if err != nil {
@@ -244,6 +258,7 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 		Merge:        mergeService,
 		Sandbox:      sandboxService,
 		Pins:         pinService,
+		Sources:      sourceRegistry,
 		Monitor:      monitor,
 		MongoURI:     mongoURI,
 		Client:       client,
@@ -327,7 +342,11 @@ func (s *Services) PrepareCollection(ctx context.Context, branchID, name string)
 	if name == "" || strings.HasPrefix(name, "__argon_") {
 		return fmt.Errorf("choose a non-empty collection name outside the reserved __argon_ namespace")
 	}
-	return checkout.EnablePrePostImages(ctx, s.Client.Database(branch.PhysicalDB), name)
+	own, err := branch.OwnDatabase()
+	if err != nil {
+		return err
+	}
+	return checkout.EnablePrePostImages(ctx, s.Client.Database(own), name)
 }
 
 // SyncBranch makes completed native writes visible to versioned control-plane

@@ -43,6 +43,10 @@ is planned but not built, it says so explicitly.
 │  ├─ driver (interceptor) write-time filter resolution      │
 │  ├─ snapshot             image layer: bounded replay depth │
 │  ├─ importer             bulk import into put entries      │
+│  ├─ ingest               change streams → entries: capture │
+│  │                       of checked-out branches, and      │
+│  │                       following an external database    │
+│  ├─ source               which database a branch follows   │
 │  └─ migrate              v1 → v2 WAL migration             │
 └──────────────────────────────┬─────────────────────────────┘
                                │
@@ -331,7 +335,7 @@ the retention window; retention is not a fixed disk-space quota.
 
 ## Write paths
 
-There are exactly two ways state enters the WAL, and neither reimplements
+There are exactly three ways state enters the WAL, and none reimplements
 MongoDB:
 
 1. **Checked-out branches (applications)** — writes go to the physical
@@ -343,6 +347,11 @@ MongoDB:
    and `Delete(collection, id)`. Pre-images are captured automatically via
    point lookups, puts batch into contiguous LSN ranges, and writes to
    live branches are rejected (their WAL is fed by the change stream).
+
+3. **A followed source database** — a branch that follows an external
+   database receives that database's change stream as entries (see
+   [Following an external database](#following-an-external-database)).
+   It is the branch's only writer.
 
 The in-process Mongo emulation that once backed an SDK write path — filter
 matching, update-operator application, a mongo-like Collection surface —
@@ -386,6 +395,134 @@ before/after images, transaction resolution and mongod's commit order for
 free, and re-deriving those in the proxy would mean reimplementing
 MongoDB write semantics — the one thing this design refuses to do.
 
+## Following an external database
+
+`argon import database --online` imports a database that is in use and leaves
+the new project's `main` following it; `argon merge apply --write-back`
+writes a reviewed plan to it. Both rest on one decision.
+
+### The decision: copy and follow, not adopt in place
+
+`main` stays what every branch is, a pointer into the WAL. The source
+database is copied into it and then followed through its change stream. The
+source is never a branch's physical database.
+
+The alternative was to adopt the source in place: record it as `main`'s
+physical database and run ordinary capture on it. That would have reused the
+capture path unchanged and made a merge into `main` a write to the source for
+free. It was not chosen, for three reasons:
+
+- **Every destructive path would have had to learn an exception.** Checkout
+  refresh, release, discard and the sandbox sweep all drop "the branch's
+  physical database". With the source in that role, its safety would depend
+  on each of them remembering not to. With copy-and-follow no branch record
+  ever names the source, and the drop function accepts only databases Argon
+  created.
+- **Capture is allowed to change the database it watches.** It enables pre-
+  and post-images on every collection and inserts marker documents to prove
+  that a transaction's events are complete. Both are right for a database
+  Argon made and wrong for one it did not.
+- **It only works on one deployment.** A physical database lives next to the
+  metadata. A production database usually does not.
+
+The price of the decision is one copy of the data in the WAL, and a follower
+that needed its own answers to the two things capture does by writing.
+
+### Online import
+
+A copy made with ordinary cursors while the source is written reads different
+documents at different moments. It becomes a state of the source through the
+source's own change stream:
+
+1. Take the primary's cluster time `T0`, and only then list the collections.
+   A collection created before `T0` is in the list; one created later
+   arrives through the stream. Start a causally consistent session at `T0`
+   and read everything in it with majority read concern.
+2. Copy every listed collection into put entries.
+3. Replay the change stream from just after `T0` on top of the copy. Each
+   entry is a whole document, so applying a change the copy already contained
+   leaves the same document.
+4. Stop when the stream's position has passed the primary's cluster time
+   taken after the last read. The branch now holds what the source held at
+   that position, and that pair (LSN, cluster time) is published.
+
+A write made during the import is in the copy, in the replayed stream, or in
+both; it cannot be in neither, because the reads cannot show less than `T0`
+and the stream starts there. Majority reads matter for the opposite error: a
+read must not show a write that later rolls back, since no event would ever
+correct it.
+
+The copy has to finish while `T0` is still in the source's oplog. That is the
+same bound MongoDB's own initial sync has, and exceeding it fails the import
+rather than publishing something unproven.
+
+### Following
+
+The follower (`internal/ingest/follow.go`) turns each change event into a
+physical entry, as capture does, and differs where the source is not Argon's:
+
+- **Completeness without markers.** Entries are grouped by cluster time and a
+  group is published once the stream has moved past its cluster time: either
+  a later event arrived, or the stream's resume token, which advances with
+  the oplog even when nothing concerns this database, stands at a later time.
+  The cluster time is read from the token. MongoDB documents resume tokens as
+  opaque; their encoding has begun with the cluster time since 4.0.7, the
+  follower verifies the decoded value against the server's clock before
+  relying on it and refuses to run if it cannot, and a test pins the property
+  against the server in use.
+- **Exact documents without images.** An update without an attached
+  post-image is read from the source with a snapshot read at the update's
+  cluster time, the same read capture uses for writes that reach a new
+  collection early. It is exact, and it is only available inside MongoDB's
+  snapshot history window. Outside it the follower stops as degraded, unless
+  the operator allowed an inexact catch-up, which is the import's replay
+  again: store the document's current state, and declare the branch
+  consistent once the stream has passed every such read. The range in between
+  is recorded in the capture status as inexact.
+- **Two deployments.** Entries, head and resume token commit together on the
+  metadata deployment, so exactly-once does not depend on where the source
+  is.
+
+A snapshot read at a cluster time shows a document after everything that
+committed at that time. Within a multi-document transaction an earlier change
+to a document may therefore be stored with the document's state at the end of
+the transaction. Published heads are unaffected, because a head never falls
+inside a cluster time.
+
+Collection drops and renames stop the follower as degraded, as they stop
+capture: the WAL has no operation for them.
+
+### Write-back
+
+A plan is written to the source and nowhere else; `main` learns of it through
+the follower. One writer per branch is kept, and there is nothing to
+reconcile between two deployments.
+
+The write is one source transaction that compares each document with the
+plan's before-image and then replaces or deletes it. Because the source and
+the metadata may be different deployments, the plan's status cannot commit
+with the documents. Instead the plan is claimed first, with the ID of a
+session used for nothing else; the follower recognises change events from
+that session, attributes their entries to the merge, appends the `merge`
+record and marks the plan applied in the same transaction that stores them.
+A crash between the source commit and its bookkeeping therefore leaves a plan
+that cannot be applied again and that the follower closes on its own.
+
+### Limits
+
+- Replica-set sources only. Sharded clusters are refused.
+- Indexes, validators and collection options are not followed. Collection
+  drops and renames end following.
+- Following runs through `argon source follow`. The MCP server and the REST
+  control plane do not supervise it, and neither offers write-back.
+- A degraded follower cannot be repaired in place; the database is imported
+  again.
+- An update event that MongoDB cannot return because it exceeds 16 MB with
+  its images keeps the follower retrying, with the error in its status.
+- Field order: a plan holds documents as maps. Write-back sends the bytes the
+  sandbox stored when they are the planned document, and sorted fields
+  otherwise.
+
 ## Migration from schema v1
 
 v1 logged updates/deletes as expressions and re-executed them on replay —
@@ -405,6 +542,11 @@ entries removed). Migration is idempotent.
 - **Live conflict checks:** physical merge/undo compare each current document
   with the previewed before-image inside the write transaction. A stale
   document aborts the entire batch even if capture has not advanced the head.
+  Write-back to a followed source makes the same comparison inside the source
+  transaction.
+- **Followed branches:** a branch that follows an external database is
+  written only by its follower. Its published heads are the source at one
+  cluster time, except inside ranges its capture status lists as inexact.
 - **Asynchronous native capture:** completed driver writes initially exist in
   mongod. Managed API/MCP URI creation waits for readiness and a durable barrier;
   versioned CLI/API/MCP operations drain completed native writes before reading.
@@ -532,7 +674,9 @@ Planned next:
 | `wal_snapshots` | Snapshot manifests |
 | `wal_pins` | Dataset pins (named immutable branch states) |
 | `wal_snapshot_chunks` | Content-addressed snapshot data |
-| `wal_ingest_state` | Durable capture boundary, actor, resume token and last health report |
+| `wal_ingest_state` | Durable capture boundary, actor, resume token and last health report; for a followed branch also its source position, consistent point and inexact ranges |
+| `wal_sources` | Which external database a branch follows: database, hosts, replica-set name and ID. No credentials |
+| `wal_merge_plans` | Merge plans; a written-back plan also records its source session and commit |
 | `wal_snapshot_locks` | Persistent publication/GC locks; see operations recovery |
 | `wal_reclaim_floors` | Per (branch, collection): the LSN at or below which GC has deleted entries |
 

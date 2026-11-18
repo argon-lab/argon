@@ -61,7 +61,8 @@ your data ──sandbox──▶ mongodb://…  ← the agent, any driver
 ```
 
 ```bash
-# 0 · Bring your data in once. Stop source writers and DDL for the import — or: argon projects create myapp
+# 0 · Bring your data in once, from a database nobody is writing to — or: argon projects create myapp
+#     (a database that is in use: see "A database that is in use" below)
 argon import database --uri mongodb://localhost:27017 --database myapp --project myapp --source-quiesced
 
 # 1 · In terminal A, a sandbox: fork + checkout + TTL + capture in one command.
@@ -85,6 +86,30 @@ minute. `--watch` needs 2.3.0 or newer; on older versions run
 `argon watch -p myapp -b <sandbox> --actor agent:run-1` after creating the sandbox.
 Long-lived branches work the same way with `argon branches create` and
 `argon checkout`, and `argon restore reset` rewinds a branch to an earlier time.
+
+### A database that is in use
+
+Releases after 2.5.0 can import a replica-set database without stopping its
+writers, keep the project's `main` following it, and write a reviewed plan
+back to it:
+
+```bash
+export ARGON_SOURCE_URI="mongodb://…"     # read per command, never stored
+argon import database --database myapp --project myapp --online
+argon source follow -p myapp              # main tracks the source; leave it running
+
+argon sandbox create -p myapp --ttl 1h --watch --actor agent:run-1
+argon merge preview -p myapp -b <sandbox>
+argon merge apply <plan-id> --write-back  # one transaction on the source
+```
+
+The import is the source at one cluster time, which it prints. `--write-back`
+checks every document against the state the plan was reviewed with and writes
+nothing if one has changed. It is the only way Argon writes to the source, it
+must be given on the call, and the MCP server and REST API do not offer it.
+Argon never drops, renames or rewrites anything in a source database. What is
+and is not guaranteed is in
+[the operations guide](docs/OPERATIONS.md#following-a-source-database).
 
 Prefer clicking? `argon console` serves a local web console (UI + REST API),
 supervises capture, reaps expired sandboxes every minute, and opens your browser.

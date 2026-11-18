@@ -66,6 +66,10 @@ type RunOption func(*runConfig)
 type runConfig struct {
 	ready chan<- struct{}
 	actor string
+	// stream replaces capture of a physical database (following a source).
+	stream func(ctx context.Context, run *running) error
+	// redact cleans error text before it is stored in a status report.
+	redact func(string) string
 }
 
 // WithActor labels all native writes captured on this branch/run. MongoDB
@@ -97,7 +101,13 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 		return &ConfigurationError{fmt.Sprintf("branch %s is not checked out; run checkout first", branch.Name)}
 	}
 
-	physical := s.client.Database(branch.PhysicalDB)
+	// Capture enables images on, and writes markers into, the database it
+	// watches. That may only ever be the branch's own.
+	own, err := branch.OwnDatabase()
+	if err != nil {
+		return &ConfigurationError{err.Error()}
+	}
+	physical := s.client.Database(own)
 
 	csOpts := options.ChangeStream().
 		SetBatchSize(maxBatch).

@@ -358,7 +358,9 @@ func (p *Proxy) lookup(alias string) (string, error) {
 	if !branch.IsLive() {
 		return "", fmt.Errorf("branch %q is not checked out; run argon checkout first", parts[1])
 	}
-	return branch.PhysicalDB, nil
+	// Clients are routed to the database Argon created for the branch, never
+	// to whatever name a branch record happens to hold.
+	return branch.OwnDatabase()
 }
 
 // buildErrorReply synthesizes an OP_MSG {ok: 0} response so drivers get a

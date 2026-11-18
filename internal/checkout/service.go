@@ -17,6 +17,7 @@ import (
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/materializer"
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -35,6 +36,39 @@ type Service struct {
 	mu            sync.Mutex
 	beforeRelease func(context.Context, string) error
 	beforeDiscard func(context.Context, string) error
+	dropGuard     func(context.Context, string) error
+}
+
+// requireOwn is the check behind every drop, made before anything else is
+// done on the way to one.
+func requireOwn(branch *wal.Branch, name string) error {
+	if branch.IsFollower() {
+		return fmt.Errorf("refusing to drop %q: branch %s follows an external database and has no physical database of its own", name, branch.Name)
+	}
+	if name != PhysicalDBName(branch.ID) {
+		return fmt.Errorf("refusing to drop %q: it is not the database Argon created for branch %s (%s)", name, branch.Name, PhysicalDBName(branch.ID))
+	}
+	return nil
+}
+
+// SetDropGuard installs a check that every database drop must pass, after
+// the service's own. It is how followed source databases stay out of reach.
+func (s *Service) SetDropGuard(fn func(context.Context, string) error) { s.dropGuard = fn }
+
+// dropPhysical is the only place this service drops a database. The name
+// must be the one checkout itself derives for this branch, whatever the
+// branch record claims: a record that names any other database (a followed
+// source, an application database) is refused and nothing is dropped.
+func (s *Service) dropPhysical(ctx context.Context, branch *wal.Branch, name string) error {
+	if err := requireOwn(branch, name); err != nil {
+		return err
+	}
+	if s.dropGuard != nil {
+		if err := s.dropGuard(ctx, name); err != nil {
+			return err
+		}
+	}
+	return s.client.Database(name).Drop(ctx)
 }
 
 // SetBeforeRelease installs the capture drain used before removing a live database.
@@ -59,7 +93,7 @@ func NewService(client *mongo.Client, metaDB *mongo.Database, branches *branchwa
 // are globally unique, so the project doesn't need to appear; the fixed
 // prefix keeps Argon-owned databases recognizable and clear of user names.
 func PhysicalDBName(branchID string) string {
-	return "argon_br_" + branchID
+	return wal.PhysicalDBName(branchID)
 }
 
 // Info describes a completed checkout.
@@ -81,6 +115,9 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	if err != nil {
 		return nil, fmt.Errorf("branch %s not found: %w", branchID, err)
 	}
+	if branch.IsFollower() {
+		return nil, fmt.Errorf("branch %s follows the external database %q and cannot be checked out: connect to that database to read it, or fork a sandbox to write", branch.Name, branch.Follows)
+	}
 	// A connection request must never rebuild a database with pending writes.
 	if branch.IsLive() {
 		return &Info{BranchID: branch.ID, PhysicalDB: branch.PhysicalDB, LSN: branch.HeadLSN}, nil
@@ -96,7 +133,7 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 
 	// Idempotent refresh: rebuild from the WAL state. The old change-stream
 	// position points into the dropped database and must not be resumed.
-	if err := physical.Drop(ctx); err != nil {
+	if err := s.dropPhysical(ctx, branch, dbName); err != nil {
 		return nil, fmt.Errorf("failed to reset physical database: %w", err)
 	}
 	if _, err := s.ingestState.DeleteOne(ctx, bson.M{"_id": branch.ID}); err != nil {
@@ -234,12 +271,17 @@ func (s *Service) Release(ctx context.Context, branchID string) error {
 		return fmt.Errorf("branch %s not found: %w", branchID, err)
 	}
 	if branch.PhysicalDB != "" {
+		// Before the capture drain as well: draining writes a marker into
+		// the database it is told is the branch's.
+		if err := requireOwn(branch, branch.PhysicalDB); err != nil {
+			return err
+		}
 		if s.beforeRelease != nil {
 			if err := s.beforeRelease(ctx, branchID); err != nil {
 				return fmt.Errorf("capture drain failed; database retained: %w", err)
 			}
 		}
-		if err := s.client.Database(branch.PhysicalDB).Drop(ctx); err != nil {
+		if err := s.dropPhysical(ctx, branch, branch.PhysicalDB); err != nil {
 			return fmt.Errorf("failed to drop physical database: %w", err)
 		}
 	}
@@ -260,7 +302,10 @@ func (s *Service) Discard(ctx context.Context, branchID string) error {
 		return err
 	}
 	if branch.PhysicalDB != "" {
-		if err := s.client.Database(branch.PhysicalDB).Drop(ctx); err != nil {
+		if err := requireOwn(branch, branch.PhysicalDB); err != nil {
+			return err
+		}
+		if err := s.dropPhysical(ctx, branch, branch.PhysicalDB); err != nil {
 			return err
 		}
 	}

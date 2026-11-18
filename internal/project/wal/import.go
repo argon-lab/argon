@@ -68,7 +68,19 @@ func (s *ProjectService) AbortImport(ctx context.Context, projectID string) erro
 		if result.DeletedCount != 1 {
 			return nil, fmt.Errorf("refusing cleanup: project is not an unpublished import")
 		}
-		for _, name := range []string{"wal_log", "wal_branches"} {
+		// An online import also left a source binding and a stream position
+		// for its main branch. Like everything else here these are rows in
+		// the metadata database; the source itself is never touched.
+		branchIDs, err := s.db.Collection("wal_branches").Distinct(sc, "_id", bson.M{"project_id": projectID})
+		if err != nil {
+			return nil, err
+		}
+		if len(branchIDs) > 0 {
+			if _, err := s.db.Collection("wal_ingest_state").DeleteMany(sc, bson.M{"_id": bson.M{"$in": branchIDs}}); err != nil {
+				return nil, err
+			}
+		}
+		for _, name := range []string{"wal_log", "wal_branches", "wal_sources"} {
 			if _, err := s.db.Collection(name).DeleteMany(sc, bson.M{"project_id": projectID}); err != nil {
 				return nil, err
 			}

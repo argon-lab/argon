@@ -44,19 +44,64 @@ truth.
 
 ```
 argon import preview  --uri U --database D
+argon import database --uri U --database D --project P --online [--follow] [--enable-source-images] [--yes]
 argon import database --uri U --database D --project P --source-quiesced [--yes]
 argon import database --uri U --database D --project P --dry-run
 argon import cleanup --project P --yes   # only after stopping a crashed importer
 argon import status
 ```
 
-Imports auto-snapshot, so reads never replay the whole import.
-Pause source writers and DDL throughout a real import; `--yes` does not replace
-`--source-quiesced`. Source preflight checks collection types/readability. The
-target stays unpublished until copying succeeds; ordinary failures clean up
-the reserved project and history. After a hard kill, stop the old process and
-use `import cleanup` before retrying the same name. Completed projects cannot
-be removed by cleanup. See [the import contract](OPERATIONS.md#importing-existing-data).
+Imports auto-snapshot, so reads never replay the whole import. A real import
+needs one of two flags, and `--yes` replaces neither:
+
+- `--online` (releases after 2.5.0) imports a replica-set database while it
+  is being written. The result is the source at one cluster time, which the
+  command prints, and the project's `main` then follows that database (next
+  section). `--follow` keeps following in the foreground once the import is
+  done. Nothing is written to the source. `--enable-source-images` is the one
+  exception and has to be asked for: it switches on
+  `changeStreamPreAndPostImages` for the source's collections.
+- `--source-quiesced` is for a database nobody is writing to: pause its
+  writers and DDL for the whole import. The result is a one-time copy.
+
+`--uri` can be left out when `ARGON_SOURCE_URI` is set. Source preflight
+checks collection types/readability. The target stays unpublished until the
+import succeeds; ordinary failures clean up the reserved project and history.
+After a hard kill, stop the old process and use `import cleanup` before
+retrying the same name. Completed projects cannot be removed by cleanup. See
+[the import contract](OPERATIONS.md#importing-existing-data).
+
+## Follow a live database
+
+```
+argon source follow -p P [--uri U] [--allow-inexact] [--enable-source-images]
+argon source status -p P [-o json]
+argon source detach -p P --yes
+argon merge apply <plan-id> --write-back [--uri U] [--strategy theirs|ours]
+```
+
+A project imported with `--online` has a `main` that mirrors its source.
+`source follow` applies the source's changes to it until interrupted and
+resumes where it stopped. The connection string comes from `--uri` or
+`ARGON_SOURCE_URI` on every command and is never stored; a string that leads
+to a different deployment than the one imported from is refused.
+
+While `main` follows a source, the source is the only thing that changes it:
+`merge apply` without `--write-back`, `undo`, `restore reset`, `checkout` and
+programmatic writes on `main` are refused. Sandboxes forked from it work as
+usual. To bring a sandbox's changes back, `merge apply <plan-id> --write-back`
+writes the reviewed plan to the source database in one transaction, after
+checking every document against the state the plan was reviewed with; one
+mismatch aborts all of it. `main` shows the result once following has read it
+back from the source. `--write-back` is the only way Argon writes to a
+source, it has to be given on the call, and the MCP server and REST API do
+not offer it.
+
+`source status` exits nonzero when following is degraded and lists the ranges
+of `main`'s history that are not exact. `source detach` ends the tie for good
+and turns `main` back into an ordinary branch. See
+[following a source](OPERATIONS.md#following-a-source-database) for what is
+guaranteed, what it costs the source and what stops it.
 
 ## History: time travel, undo, restore
 
@@ -98,6 +143,8 @@ argon merge list    -p P
 
 Plans apply exactly once and refuse stale parent heads; conflicts fail
 loudly unless a strategy resolves them. Merges are undoable like any range.
+When the parent follows an external database, a plan is applied with
+`--write-back` instead; see [Follow a live database](#follow-a-live-database).
 
 ## Pins — immutable datasets
 

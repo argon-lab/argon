@@ -74,6 +74,19 @@ func startMCP(t *testing.T, db *mongo.Database) (*mcpClient, *walcli.Services) {
 	return &mcpClient{t: t, in: clientOut, out: scanner}, services
 }
 
+// startMCPOn drives an MCP server over an existing service stack.
+func startMCPOn(t *testing.T, services *walcli.Services) *mcpClient {
+	t.Helper()
+	clientIn, serverOut := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	server := mcpserver.New(services, serverIn, serverOut)
+	go func() { _ = server.Run(context.Background()) }()
+	t.Cleanup(func() { _ = clientOut.Close() })
+	scanner := bufio.NewScanner(clientIn)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	return &mcpClient{t: t, in: clientOut, out: scanner}
+}
+
 // call sends a request and decodes the matching response.
 func (c *mcpClient) call(method string, params interface{}) map[string]interface{} {
 	c.t.Helper()

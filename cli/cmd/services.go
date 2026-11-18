@@ -34,7 +34,7 @@ func connectCommandServices(ctx context.Context, cmd *cobra.Command) (*walcli.Se
 
 func retainCommandServices(cmd *cobra.Command, services *walcli.Services) *walcli.Services {
 	switch cmd.Name() {
-	case "console", "mcp", "watch", "proxy":
+	case "console", "mcp", "watch", "proxy", "follow":
 	default:
 		services.SynchronousSnapshots()
 	}

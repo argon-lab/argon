@@ -42,19 +42,54 @@ migration. Everything here reflects what the code does today.
 | `(cd api && go run .)` (or the built binary) | one | REST control plane; supervises ingesters for the sandboxes it creates; `HOST`/`PORT` (default 127.0.0.1:8080) |
 | `argon mcp` | per agent client | MCP server over stdio; supervises ingesters for its sandboxes |
 | `argon proxy` | optional | stable `project~branch` connection strings on `127.0.0.1:27018` (see [Exposure](#exposure-and-credentials) before listening elsewhere) |
+| `argon source follow -p P` | one per project that follows a source | applies the source database's changes to `main`; resumes from its saved position |
 | `argon sandbox sweep -p P` | schedule for CLI-only use | reap expired sandboxes (pinned ones are skipped loudly) |
 | `argon gc -p P` | cron | reclaim covered, out-of-retention WAL entries |
 
 ## Importing existing data
 
 `argon import database` copies ordinary documents with sequential cursor reads.
-Stop all source application writes, jobs and DDL before starting, and keep them
-stopped until completion. Pass `--source-quiesced` to acknowledge that contract;
-the command cannot prove that an external writer is paused. `--yes` only skips
-the target-creation confirmation. If writers resume during copying, consistency
-is outside the contract: discard that result and repeat from a quiesced source.
-This is not an online transactional clone or continuous source synchronization.
-Indexes, validators and collection options are not copied.
+A cursor reads different documents at different moments, so a copy of a
+database that is being written is not, by itself, a state that database was
+ever in. There are two ways to get one that is. Either way indexes, validators
+and collection options are not copied, and `--yes` only skips the
+target-creation confirmation.
+
+### Online: the source keeps running
+
+```sh
+export ARGON_SOURCE_URI="mongodb://…"      # used per command, never stored
+argon import preview  --database myapp
+argon import database --database myapp --project myapp --online --yes
+argon source follow -p myapp               # keep main current from here on
+```
+
+`--online` (releases after 2.5.0) needs the source to be a replica set; a
+sharded cluster behind mongos is refused, and a standalone has no change
+stream. The import takes the source's cluster time, copies every collection,
+and then replays the source's change stream from that time on top of the copy
+until the stream has passed everything the copy read. Because entries are
+whole documents, replaying a change the copy already contained is harmless.
+What is published is the source at one cluster time, and the command prints
+it together with the LSN it corresponds to (`consistent_lsn`,
+`consistent_cluster_time`). LSNs below that are the copy in progress; they
+are recorded as an inexact range and are not states the source was in.
+
+What the import does to the source: majority reads, one change stream, and
+nothing else. It creates nothing there. Writes made during the import are
+neither lost nor blocked.
+
+What can make it fail, in which case nothing is published and the reserved
+project is removed:
+
+- **The copy outlasts the source's oplog.** The replay starts at the cluster
+  time taken before the copy; if the oplog no longer reaches back that far
+  when the copy ends, the import stops. Give the source a larger oplog, or
+  import when it is quieter.
+- **A collection is dropped or renamed on the source during the import.**
+  Such events carry no documents; the import does not guess.
+
+### Quiesced: nobody is writing
 
 ```sh
 argon import preview --uri "$SOURCE_MONGODB_URI" --database myapp
@@ -62,6 +97,15 @@ argon import preview --uri "$SOURCE_MONGODB_URI" --database myapp
 argon import database --uri "$SOURCE_MONGODB_URI" --database myapp --project myapp --source-quiesced --yes
 # Source writers may resume after success.
 ```
+
+Stop all source application writes, jobs and DDL before starting, and keep them
+stopped until completion. Pass `--source-quiesced` to acknowledge that contract;
+the command cannot prove that an external writer is paused. If writers resume
+during copying, consistency is outside the contract: discard that result and
+repeat. The result is a one-time copy that does not follow the source. This is
+the only way to import a standalone mongod.
+
+### Preflight, failure and recovery
 
 Preflight verifies readable ordinary collections before creating the target;
 views/time-series collections and an absent/no-collection source are rejected.
@@ -79,9 +123,133 @@ argon import cleanup --project myapp --yes
 
 This command accepts only an unfinished import; it refuses ordinary or completed
 projects. Do not run recovery concurrently with the original importer. Imports
-restart from the beginning; source snapshot/catch-up and resumable copies remain
-future capabilities. Destination metadata needs the normal writable replica set
-for transactional recovery, even when the quiesced source is standalone.
+restart from the beginning; a copy cannot be resumed part-way. Cleanup removes
+rows in Argon's metadata database (for an online import that includes the
+source binding and the saved stream position); it never touches the source.
+Destination metadata needs the normal writable replica set for transactional
+recovery, even when the quiesced source is standalone.
+
+## Following a source database
+
+A project imported with `--online` stays tied to its source: `main` follows
+that database. Argon keeps a record of which deployment and database that is
+(`wal_sources`: replica-set name and ID, database name, hosts) but not how to
+log in to it. Every command that reaches the source takes the connection
+string again, from `--uri` or `ARGON_SOURCE_URI`, and refuses a deployment
+other than the recorded one.
+
+### What `argon source follow` guarantees
+
+- **No change is skipped or repeated across restarts.** The entries, the
+  branch head and the stream's resume token commit in one transaction on the
+  metadata deployment. This holds whether or not the source is the same
+  deployment as the metadata.
+- **A published head is the source at one cluster time.** Changes are
+  published a whole cluster time at a time, so a transaction is never half
+  visible. `argon source status` shows the newest such point. On a source
+  nobody else writes to, the last change appears only when the source's next
+  oplog entry does; MongoDB writes one every ten seconds when idle.
+- **Stored documents are exact.** An insert or replacement carries its
+  document. An update's document is read from the source as of the update's
+  own cluster time and stored byte for byte.
+- **Nothing is written to the source.** No marker collections, no collection
+  options. The only writes Argon ever makes to a source are `--write-back`
+  transactions and, when asked for by name, `--enable-source-images`.
+
+### What stops it, and what it then reports
+
+Following ends as `degraded`, with the reason in `argon source status` and
+`argon status` (both exit nonzero), and with `main` left at the last change
+before the problem:
+
+- **The saved position is no longer in the source's oplog.** Following was
+  stopped for longer than the oplog covers. Import the database again.
+- **A collection was dropped or renamed, or the database was dropped.**
+  Import the database again to follow it past that point.
+- **An update's exact document can no longer be read.** MongoDB serves a past
+  cluster time only for its snapshot history window
+  (`minSnapshotHistoryWindowInSeconds`, five minutes by default). If the
+  follower is stopped or lags for longer than that, updates older than the
+  window cannot be read as they were. There are two ways out, both explicit:
+
+  - `--allow-inexact` lets following continue. Updates it can no longer read
+    exactly are stored with the document's current state, `main` converges on
+    the source again, and the LSN range in between is recorded as inexact:
+    `argon source status` lists it, and the entries in it are marked
+    `capture_images: current`. The state at the end of the range is exact;
+    positions inside it are not states the source was in, and time travel
+    there shows a mixture. While it lasts the state is `catching_up`, never
+    `running`.
+  - `--enable-source-images` (on `import database --online` or
+    `source follow`) switches on `changeStreamPreAndPostImages` for the
+    source's existing collections, so updates carry their own documents for
+    as long as the oplog keeps them and no reads are needed. **This changes
+    the source.** MongoDB then stores a pre-image of every updated or deleted
+    document in `config.system.preimages` until it expires with the oplog (or
+    after `changeStreamOptions.preAndPostImages.expireAfterSeconds`): more
+    writes and more storage on the source for every update and delete, a
+    `collMod` on each collection, and the source user needs the privilege to
+    run it. Argon never does this unless the flag is given, and does not
+    undo it. Collections created later are not covered until the flag is
+    given again.
+
+Without images, each followed update costs the source one point read. Pre-images
+of followed changes are stored only when the source supplies them, so `main`
+entries have none unless images are enabled.
+
+### Writing a plan back to the source
+
+`main` cannot be merged into while it follows a source, because it would then
+hold documents its source does not. A reviewed plan is written to the source
+instead:
+
+```sh
+argon merge preview -p myapp -b <sandbox>
+argon merge apply <plan-id> --write-back
+```
+
+- The write is one transaction on the source, with snapshot reads and
+  majority writes. Inside it every document in the plan is read and compared
+  with the before-image the plan recorded. The first one that differs aborts
+  the transaction: nothing is written, the plan is pending again, and the
+  error names the document. Let following catch up and preview again; the
+  new plan shows the production change as a conflict to resolve.
+- The plan does not have to match `main`'s head, which moves with every
+  production write. The per-document comparison is the staleness check.
+- Only single-document replacements and deletes are sent. A replaced document
+  is written with the bytes the sandbox stored, so its field order is the
+  sandbox's.
+- `main` is not written by the write-back. It receives the change through
+  following, like any other change to the source, attributed to the merge
+  (`actor: merge:<sandbox>`) with a `merge` record carrying the plan ID.
+- The plan is claimed in the metadata before the transaction starts and
+  cannot be applied twice. If the process dies after the source commit and
+  before recording it, the plan stays `writing_back`; the follower closes it
+  as applied when it sees the transaction in the stream. A plan that is still
+  `writing_back` after following has caught up was never committed; preview
+  again.
+- Undoing a write-back means writing another plan back. `argon undo` does not
+  apply to a branch that follows a source.
+
+### What Argon can never do to a source
+
+Argon drops databases in exactly one function, which accepts only the
+database it created for the branch in question (`argon_br_<branch-id>`) and
+consults the source registry as well. A database with that prefix, the
+metadata database and MongoDB's system databases cannot be imported online,
+so a followed source can never carry a name a drop path accepts. A branch
+record that names any other database as its physical database is refused by
+release, discard, the sandbox sweep, capture, live merge and undo, and the
+wire proxy. Import cleanup deletes rows in the metadata database only. The
+code that holds a connection to a source contains no drop, rename, collection
+creation or multi-document write, and a test fails the build if one is added.
+
+### Source permissions
+
+Reading and following need `find` and `changeStream` on the source database
+and the ability to run `hello`. `replSetGetConfig` is used when permitted, to
+tell deployments with the same replica-set name apart. `--write-back` needs
+`readWrite` on the database. `--enable-source-images` needs `collMod`.
 
 ## Snapshot chunk stores
 
@@ -143,6 +311,10 @@ migrated branches.
 
 ## Monitoring
 
+A project that follows a source reports through the same capture status as
+checked-out branches, with a `source` section: mode (`exact` or `catch_up`),
+position, newest consistent point and inexact ranges.
+
 `argon status` reports connectivity and system health; `argon metrics`
 prints performance counters (operation rates, latencies, error rates). The
 services log ingester lifecycle events and snapshot/GC warnings to stderr;
@@ -153,6 +325,13 @@ services log ingester lifecycle events and snapshot/GC warnings to stderr;
 Argon passes credentials through `MONGODB_URI` untouched. With the wire
 proxy, clients must set `authSource=admin` explicitly (the URI database is
 a branch alias, not a real database SCRAM can run against).
+
+A source connection string (`--uri`, `ARGON_SOURCE_URI`) is used for the
+command it is given to and is not written anywhere. Errors, status reports
+and stored documents show the source as scheme, hosts and database only;
+user names, passwords and options are removed from driver errors before they
+are printed or stored. Prefer the environment variable to `--uri`, which is
+visible in the process list.
 
 ## Preflight and new collections
 

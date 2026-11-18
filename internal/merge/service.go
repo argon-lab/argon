@@ -90,6 +90,11 @@ type Plan struct {
 	Strategy       string             `bson:"strategy,omitempty" json:"strategy,omitempty"`
 	CreatedAt      time.Time          `bson:"created_at" json:"created_at"`
 	AppliedAt      *time.Time         `bson:"applied_at,omitempty" json:"applied_at,omitempty"`
+	// WriteBack is set once the plan was claimed for writing to the external
+	// database its target follows; see writeback.go.
+	WriteBack *WriteBackRecord `bson:"write_back,omitempty" json:"write_back,omitempty"`
+	// WriteBackLastError is why the latest write-back attempt wrote nothing.
+	WriteBackLastError string `bson:"write_back_last_error,omitempty" json:"write_back_last_error,omitempty"`
 }
 
 // Service computes, persists and applies merge plans.
@@ -464,6 +469,11 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 	if err != nil {
 		return nil, fmt.Errorf("source branch not found: %w", err)
 	}
+	if target.IsFollower() {
+		// Appending here would leave this branch holding documents its source
+		// does not. The only way a followed branch changes is its source.
+		return nil, target.RefuseFollowerWrite("merge apply")
+	}
 	if target.HeadLSN != plan.TargetHead {
 		return nil, fmt.Errorf("stale plan: target advanced from LSN %d to %d since preview; run preview again", plan.TargetHead, target.HeadLSN)
 	}
@@ -474,30 +484,9 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 		return nil, fmt.Errorf("stale plan: branch state changed since preview; run preview again")
 	}
 
-	changes := append([]Change{}, plan.Changes...)
-	resolved := 0
-	if len(plan.Conflicts) > 0 {
-		switch strategy {
-		case StrategyTheirs:
-			for _, c := range plan.Conflicts {
-				changes = append(changes, Change{
-					Collection: c.Collection,
-					DocumentID: c.DocumentID,
-					Delete:     c.Theirs == nil,
-					Document:   c.Theirs,
-					ID:         imageID(c.Theirs, c.Ours, c.Base),
-					Before:     c.Ours,
-				})
-				resolved++
-			}
-			sortChanges(changes)
-		case StrategyOurs:
-			resolved = len(plan.Conflicts) // Keep ours: nothing to write.
-		case "":
-			return nil, fmt.Errorf("plan has %d conflict(s); pass a strategy (theirs/ours) to resolve them", len(plan.Conflicts))
-		default:
-			return nil, fmt.Errorf("unknown strategy %q (want theirs or ours)", strategy)
-		}
+	changes, resolved, err := resolveChanges(plan, strategy)
+	if err != nil {
+		return nil, err
 	}
 
 	// Older persisted plans did not retain delete IDs or before-images.
@@ -624,7 +613,11 @@ func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, chan
 }
 
 func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes []Change) error {
-	physical := s.client.Database(target.PhysicalDB)
+	own, err := target.OwnDatabase()
+	if err != nil {
+		return err
+	}
+	physical := s.client.Database(own)
 	for _, c := range changes {
 		id, err := documentIDValue(c)
 		if err != nil {

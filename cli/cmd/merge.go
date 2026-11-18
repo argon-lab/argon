@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/spf13/cobra"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -120,6 +121,11 @@ var mergeApplyCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		strategy, _ := cmd.Flags().GetString("strategy")
+		writeBack, _ := cmd.Flags().GetBool("write-back")
+		sourceURI, _ := cmd.Flags().GetString("uri")
+		if sourceURI != "" && !writeBack {
+			return fmt.Errorf("--uri names the source database for --write-back; it has no effect without it")
+		}
 
 		planID, err := primitive.ObjectIDFromHex(args[0])
 		if err != nil {
@@ -137,6 +143,29 @@ var mergeApplyCmd = &cobra.Command{
 		}
 		if err := services.SyncBranch(cmd.Context(), plan.SourceBranchID); err != nil {
 			return err
+		}
+		if writeBack {
+			// Only this flag, given on this invocation, reaches the source
+			// database. The connection string is not taken from anything
+			// stored, so a plan cannot be written back by accident.
+			uri := walcli.SourceURI(sourceURI)
+			if uri == "" {
+				return fmt.Errorf("--write-back needs the source connection string: pass --uri or set %s", walcli.SourceURIEnv)
+			}
+			result, err := services.WriteBackMerge(cmd.Context(), planID, strategy, uri)
+			if err != nil {
+				return fmt.Errorf("write-back failed: %w", err)
+			}
+			if jsonOutput(cmd) {
+				return writeJSON(cmd, map[string]any{"plan_id": planID.Hex(), "applied": result.Applied, "conflicts_resolved": result.ConflictsResolved, "written_to_source": true})
+			}
+			fmt.Printf("Written to the source database: %d change(s) in one transaction", result.Applied)
+			if result.ConflictsResolved > 0 {
+				fmt.Printf(", %d conflict(s) resolved via --strategy %s", result.ConflictsResolved, strategy)
+			}
+			fmt.Println(".")
+			fmt.Printf("%s shows them once following has read them from the source (argon source status).\n", plan.TargetBranch)
+			return nil
 		}
 		result, err := services.Merge.Apply(context.Background(), planID, strategy)
 		if err != nil {
@@ -203,6 +232,8 @@ func init() {
 	}
 	mergeListCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	mergeApplyCmd.Flags().String("strategy", "", "Conflict resolution: theirs (take the branch) or ours (keep the target)")
+	mergeApplyCmd.Flags().Bool("write-back", false, "Write the plan to the external database the target follows, in one transaction that first checks every document against the plan")
+	mergeApplyCmd.Flags().String("uri", "", "With --write-back: source connection string (default $ARGON_SOURCE_URI); never stored")
 
 	mergeCmd.AddCommand(mergePreviewCmd)
 	mergeCmd.AddCommand(mergeApplyCmd)

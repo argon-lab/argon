@@ -176,6 +176,47 @@ type Branch struct {
 	// sweep releases and deletes it (storage reclaimed through the delete
 	// hook). Merge or discard it before then — or extend it.
 	ExpiresAt *time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
+
+	// Follows names the external database this branch mirrors (set by an
+	// online import, cleared by detaching). Such a branch has exactly one
+	// writer, the follower that applies the source's change stream, so every
+	// other path that would move its head is refused: the source database is
+	// the only place its documents change. It is never checked out, and the
+	// source is never one of Argon's physical databases.
+	Follows string `bson:"follows,omitempty" json:"follows,omitempty"`
+}
+
+// PhysicalDBName is the database a branch materializes into. Branch IDs are
+// globally unique, so the project doesn't need to appear; the fixed prefix
+// keeps Argon-owned databases recognizable and clear of user names.
+func PhysicalDBName(branchID string) string {
+	return "argon_br_" + branchID
+}
+
+// OwnDatabase returns the physical database of a checked-out branch, after
+// checking that the branch record names the database Argon created for it.
+// Everything that writes to, alters or drops "the branch's database" goes
+// through here, so a record that names any other database (an application's,
+// or one a project follows) is refused instead of acted on.
+func (b *Branch) OwnDatabase() (string, error) {
+	if b.IsFollower() {
+		return "", fmt.Errorf("branch %s follows the external database %q and has no physical database of its own", b.Name, b.Follows)
+	}
+	if b.PhysicalDB == "" || b.PhysicalDB != PhysicalDBName(b.ID) {
+		return "", fmt.Errorf("branch %s records %q as its physical database, which is not the database Argon created for it (%s); refusing to use it", b.Name, b.PhysicalDB, PhysicalDBName(b.ID))
+	}
+	return b.PhysicalDB, nil
+}
+
+// IsFollower reports whether the branch mirrors an external source database.
+func (b *Branch) IsFollower() bool {
+	return b.Follows != ""
+}
+
+// RefuseFollowerWrite is the error every Argon-side writer returns for a
+// branch that follows an external database.
+func (b *Branch) RefuseFollowerWrite(operation string) error {
+	return fmt.Errorf("%s refused: branch %s follows the external database %q and only changes when that database does; write to a sandbox forked from it, write a reviewed plan to the source with `argon merge apply <plan> --write-back`, or stop following with `argon source detach`", operation, b.Name, b.Follows)
 }
 
 // IsExpired reports whether a sandbox branch has passed its TTL.

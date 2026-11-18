@@ -65,7 +65,9 @@ as long as it runs.
 
 ```bash
 # Bring existing data in once, with source writers and DDL stopped
-# (or start empty: argon projects create myapp)
+# (or start empty: argon projects create myapp). For a replica-set database
+# that is in use, releases after 2.5.0 take --online instead; see
+# OPERATIONS.md#importing-existing-data.
 argon import database --uri "$MONGODB_URI" --database myapp --project myapp --source-quiesced
 
 # Fork + checkout + TTL + capture. Note the sandbox name and connection string
