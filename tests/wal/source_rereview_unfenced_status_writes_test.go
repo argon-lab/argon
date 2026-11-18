@@ -63,7 +63,7 @@ func TestResync_StartDoesNotRecreateIngestState(t *testing.T) {
 			}}
 			client, err := mongo.Connect(ctx, options.Client().ApplyURI(f.sourceURI).SetMonitor(monitor))
 			require.NoError(t, err)
-			defer client.Disconnect(ctx)
+			defer func() { _ = client.Disconnect(ctx) }()
 
 			_, err = f.services.Ingest.Resync(ctx, branch.ID, client.Database(f.source.Name()), ingest.ResyncOptions{
 				State: f.services.Materializer, Force: true,

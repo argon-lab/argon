@@ -76,7 +76,7 @@ func TestSource_ConnectRefusesForeignDatabase(t *testing.T) {
 			resp, err = client.Get(url)
 			return err == nil
 		}, 30*time.Second, 100*time.Millisecond)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		var body struct {
 			Sandboxes []struct {
