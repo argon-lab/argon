@@ -256,6 +256,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 	// Code that holds a connection to a source.
 	sourceFacing := map[string]bool{
 		"internal/ingest/follow.go":   true,
+		"internal/ingest/resync.go":   true,
 		"internal/importer/online.go": true,
 		"internal/merge/writeback.go": true,
 		"internal/source/source.go":   true,
@@ -360,6 +361,17 @@ func TestSource_CredentialsAreNotStoredOrReported(t *testing.T) {
 	require.Equal(t, "degraded", status.State)
 	clean("the status report", fmt.Sprintf("%+v", status))
 	require.Equal(t, "mongodb://localhost:27017/"+f.source.Name(), status.Location)
+
+	// A resync that cannot log in, and one that runs and stores its status.
+	_, err = f.services.ResyncSource(ctx, f.project, walcli.ResyncSourceOptions{URI: wrongPassword})
+	require.Error(t, err)
+	clean("a failed resync", err.Error())
+	resynced, err := f.services.ResyncSource(ctx, f.project, walcli.ResyncSourceOptions{URI: withCredentials})
+	require.NoError(t, err)
+	clean("the resync's report", fmt.Sprintf("%+v", resynced))
+	status, err = f.services.SourceStatus(ctx, f.project)
+	require.NoError(t, err)
+	clean("the status report after a resync", fmt.Sprintf("%+v", status))
 
 	// Nothing Argon keeps contains them.
 	metadata := f.services.Client.Database(f.metadataName)

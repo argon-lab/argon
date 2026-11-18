@@ -42,7 +42,7 @@ migration. Everything here reflects what the code does today.
 | `(cd api && go run .)` (or the built binary) | one | REST control plane; supervises ingesters for the sandboxes it creates; `HOST`/`PORT` (default 127.0.0.1:8080) |
 | `argon mcp` | per agent client | MCP server over stdio; supervises ingesters for its sandboxes |
 | `argon proxy` | optional | stable `project~branch` connection strings on `127.0.0.1:27018` (see [Exposure](#exposure-and-credentials) before listening elsewhere) |
-| `argon source follow -p P` | one per project that follows a source | applies the source database's changes to `main`; resumes from its saved position |
+| `argon source follow -p P` | one per project that follows a source | applies the source database's changes to `main`; resumes from its saved position; with `--auto-resync` repairs a degraded end itself |
 | `argon sandbox sweep -p P` | schedule for CLI-only use | reap expired sandboxes (pinned ones are skipped loudly) |
 | `argon gc -p P` | cron | reclaim covered, out-of-retention WAL entries |
 
@@ -163,9 +163,9 @@ Following ends as `degraded`, with the reason in `argon source status` and
 before the problem:
 
 - **The saved position is no longer in the source's oplog.** Following was
-  stopped for longer than the oplog covers. Import the database again.
+  stopped for longer than the oplog covers. Run `argon source resync`.
 - **A collection was dropped or renamed, or the database was dropped.**
-  Import the database again to follow it past that point.
+  Run `argon source resync` to follow it past that point.
 - **An update's exact document can no longer be read.** MongoDB serves a past
   cluster time only for its snapshot history window
   (`minSnapshotHistoryWindowInSeconds`, five minutes by default). If the
@@ -196,6 +196,79 @@ before the problem:
 Without images, each followed update costs the source one point read. Pre-images
 of followed changes are stored only when the source supplies them, so `main`
 entries have none unless images are enabled.
+
+### Repairing a degraded follower: `argon source resync`
+
+```bash
+argon source status -p myapp     # degraded: drop of scratch on the source ...
+argon source resync -p myapp     # compares, repairs, prints the consistent point
+argon source follow -p myapp     # continues from there
+```
+
+Resync brings `main` to the source's current state without a second project.
+It takes a stream position on the source, compares the source with `main`,
+and then replays the source's changes from that position until `main` equals
+the source at one cluster time, which it prints with the LSN.
+
+What it does to `main`:
+
+- Every source document `main` does not hold byte for byte is stored. A
+  document `main` already holds is not stored again, so the cost in history
+  is the size of the difference, not of the database.
+- Every document `main` holds that the source no longer has is deleted. A
+  collection dropped on the source loses all its documents on `main`; a
+  renamed one ends up under its new name; a dropped database leaves `main`
+  empty. Run against the right source: the deployment is checked against the
+  one imported from, as for every source command.
+- `main` keeps its history. The state before the resync can still be read at
+  its LSN, and sandboxes forked from it are not affected.
+
+What it guarantees, and what it cannot:
+
+- **Nothing is written to the source.** It issues reads only: one pass over
+  every collection, and one `_id` lookup per batch of `main`'s documents.
+- **The end is a state of the source.** `main` at the printed LSN is the
+  source at the printed cluster time, also when the source was written
+  throughout.
+- **The LSNs in between are not.** While it runs `main` moves batch by batch
+  and is reported as `catching_up`; afterwards the range from the first LSN
+  after the last consistent point to the printed LSN is listed by
+  `argon source status` as inexact, with a reason that starts with `resync`.
+  Time travel into it shows a mixture.
+- **What happened on the source in the gap is not in `main`'s history.**
+  Between the last change the follower applied and the resync, only the
+  outcome is recorded: one put or delete per document that differs, not the
+  individual changes, their order or their times. A write-back whose
+  transaction fell into that gap is not attributed to its merge, and its plan
+  stays `writing_back`.
+- **An unfinished resync is never reported as healthy.** The status is
+  marked before the first write to `main`. If the resync is interrupted or
+  fails after that, the status keeps `resync_unfinished`, mode `catch_up`
+  and the old consistent point; `source status` exits nonzero and
+  `source follow` refuses to start. Running `source resync` again completes
+  it, comparing whatever `main` holds by then; the recorded range covers
+  every attempt. A sandbox forked from `main` in that state starts from the
+  mixture, as it does during an `--allow-inexact` catch-up.
+- **It fails rather than guess** when the source drops or renames another
+  collection while it runs; run it again. A source that does this
+  continuously (for example an aggregation with `$out`, which renames a
+  temporary collection on every run) cannot be followed without repeated
+  resyncs.
+
+Memory is bounded by the batch (500 documents), not by collection size. The
+exception is a collection whose history on `main` garbage collection has
+partly reclaimed: its documents are then listed from its snapshot, which is
+loaded whole. The source's oplog has to cover the duration of the resync, as
+for the import.
+
+`argon source follow --auto-resync` does the same when following ends as
+degraded and then continues following. It is off by default because each
+resync reads the whole source and leaves an inexact range; it gives up if
+following ends as degraded again within a minute of a resync.
+
+Resync refuses a project whose follower did not end as degraded (`--force`
+overrides that), and it must not run alongside `argon source follow` for the
+same project: the two would compete for the branch head and one would fail.
 
 ### Writing a plan back to the source
 

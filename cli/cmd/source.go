@@ -18,6 +18,8 @@ the database it was imported from: its main branch follows that database.
 
   follow   keep main current with the source (runs until interrupted)
   status   what main follows, how far it has come and how exact its history is
+  resync   bring main to the source's current state after following has ended
+           as degraded, in place, and make it followable again
   detach   stop following for good; main becomes an ordinary branch
 
 The source connection string is given on each command (--uri, or the
@@ -51,13 +53,17 @@ following stops as degraded. Two things avoid that:
                           on the source again, and the range in between is
                           recorded as inexact history (argon source status).
 
-A collection dropped or renamed on the source stops following as degraded;
-import the database again to follow it past that point.`,
+A collection dropped or renamed on the source stops following as degraded,
+and so does a saved position the source's oplog no longer holds. "argon
+source resync" repairs both in place. With --auto-resync, follow runs that
+resync itself and continues; each one compares the whole source with main
+and leaves an inexact range in main's history, so it is off unless asked for.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		uri, _ := cmd.Flags().GetString("uri")
 		allowInexact, _ := cmd.Flags().GetBool("allow-inexact")
 		enableImages, _ := cmd.Flags().GetBool("enable-source-images")
+		autoResync, _ := cmd.Flags().GetBool("auto-resync")
 		uri = walcli.SourceURI(uri)
 		if projectName == "" {
 			return fmt.Errorf("--project is required")
@@ -73,7 +79,13 @@ import the database again to follow it past that point.`,
 		defer stop()
 
 		fmt.Fprintln(cmd.ErrOrStderr(), "Following the source (Ctrl-C to stop)...")
-		if err := services.FollowSource(ctx, projectName, walcli.FollowSourceOptions{URI: uri, AllowInexact: allowInexact, EnableSourceImages: enableImages}); err != nil {
+		if err := services.FollowSource(ctx, projectName, walcli.FollowSourceOptions{
+			URI: uri, AllowInexact: allowInexact, EnableSourceImages: enableImages, AutoResync: autoResync,
+			OnResync: func(info *walcli.ResyncInfo) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Following had ended as degraded; resynced main with the source (%d put, %d deleted, inexact LSN %d-%d). Following again...\n",
+					info.Puts, info.Deletes, info.InexactFromLSN, info.ConsistentLSN)
+			},
+		}); err != nil {
 			return fmt.Errorf("follow failed: %w", err)
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "Stopped; source position saved.")
@@ -103,6 +115,9 @@ var sourceStatusCmd = &cobra.Command{
 			}
 		} else {
 			printSourceStatus(cmd, info)
+		}
+		if info.ResyncUnfinished {
+			return fmt.Errorf("a resync of main has not finished; run `argon source resync -p %s` again", info.Project)
 		}
 		if info.State == "degraded" {
 			// Scripts must not read a gap as success.
@@ -134,6 +149,10 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 	if !info.LastEventAt.IsZero() {
 		fmt.Fprintf(out, "  Last change: %s (stored %d ms after it happened)\n", info.LastEventAt.Format(time.RFC3339), info.LastEventLagMS)
 	}
+	if info.ResyncUnfinished {
+		fmt.Fprintf(out, "  Resync:      UNFINISHED since %s. Main is between its last consistent state and the source's current one; run `argon source resync -p %s` again to complete it.\n",
+			info.ResyncStartedAt.Format(time.RFC3339), info.Project)
+	}
 	if info.Mode == "catch_up" {
 		fmt.Fprintf(out, "  History:     CATCHING UP from LSN %d: %s. Until this ends, main is not a state the source was in.\n", info.InexactOpenFromLSN, info.InexactOpenReason)
 	} else {
@@ -147,6 +166,85 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 	}
 }
 
+var sourceResyncCmd = &cobra.Command{
+	Use:   "resync",
+	Short: "Bring main back to the source's current state after following ended as degraded",
+	Long: `Resync repairs a project whose follower has ended as degraded, without
+importing the database again: after a collection was dropped or renamed on
+the source, after the source database itself was dropped, or when the
+source's oplog no longer holds the saved position.
+
+It takes a stream position on the source, then compares the source with main
+in batches: every source document that main does not already hold is stored,
+and every document main holds that the source no longer has is deleted (all
+documents of a dropped collection; a renamed collection ends up under its new
+name). It then replays the source's changes from the position it took until
+main equals the source at one cluster time, and prints that point. "argon
+source follow" continues from there.
+
+Nothing is written to the source. Main keeps its history: the LSNs written by
+the resync are recorded as an inexact range (argon source status), because
+the states in between are not states the source was in, and what happened on
+the source between the last consistent point and the resync is not in main's
+history at all, only its outcome is.
+
+A resync that is interrupted, or that fails because the source dropped or
+renamed another collection while it ran, leaves main marked as unfinished:
+status says so, follow refuses to start, and running resync again completes
+it. Stop any running "argon source follow" first.
+
+By default resync refuses unless following ended as degraded or an earlier
+resync is unfinished; --force runs it regardless.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectName, _ := cmd.Flags().GetString("project")
+		uri, _ := cmd.Flags().GetString("uri")
+		force, _ := cmd.Flags().GetBool("force")
+		uri = walcli.SourceURI(uri)
+		if projectName == "" {
+			return fmt.Errorf("--project is required")
+		}
+		if uri == "" {
+			return fmt.Errorf("the source connection string is required: pass --uri or set %s", walcli.SourceURIEnv)
+		}
+		services, err := newCommandServices(cmd)
+		if err != nil {
+			return fmt.Errorf("failed to connect: %w", err)
+		}
+		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		quiet := jsonOutput(cmd)
+		lastReport := time.Now()
+		info, err := services.ResyncSource(ctx, projectName, walcli.ResyncSourceOptions{URI: uri, Force: force,
+			Progress: func(p walcli.ResyncProgress) {
+				if quiet || time.Since(lastReport) < 5*time.Second {
+					return
+				}
+				lastReport = time.Now()
+				fmt.Fprintf(cmd.ErrOrStderr(), "  %s %s: %d source documents compared, %d put, %d deleted\n", p.Phase, p.Collection, p.Compared, p.Puts, p.Deletes)
+			}})
+		if err != nil {
+			return fmt.Errorf("resync failed: %w", err)
+		}
+		if quiet {
+			return writeJSON(cmd, info)
+		}
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "Project %q: main equals database %q at source cluster time Timestamp(%d, %d) (LSN %d).\n",
+			info.Project, info.Database, info.ConsistentTime.T, info.ConsistentTime.I, info.ConsistentLSN)
+		fmt.Fprintf(out, "  Compared:  %d source documents in %d collection(s); %d already matched\n", info.Compared, len(info.Collections), info.Unchanged)
+		fmt.Fprintf(out, "  Written:   %d put, %d deleted\n", info.Puts, info.Deletes)
+		if len(info.RemovedCollections) > 0 {
+			fmt.Fprintf(out, "  No longer on the source, emptied on main: %v\n", info.RemovedCollections)
+		}
+		if info.ConsistentLSN >= info.InexactFromLSN {
+			fmt.Fprintf(out, "  History:   LSN %d-%d is recorded as inexact; main is exact again at LSN %d\n", info.InexactFromLSN, info.ConsistentLSN, info.ConsistentLSN)
+		}
+		fmt.Fprintf(out, "Continue with: argon source follow -p %s\n", info.Project)
+		return nil
+	},
+}
+
 var sourceDetachCmd = &cobra.Command{
 	Use:   "detach",
 	Short: "Stop following the source for good",
@@ -154,7 +252,8 @@ var sourceDetachCmd = &cobra.Command{
 imported from. Main keeps its history and becomes an ordinary branch: it can
 be merged into, reset and checked out again, and it no longer changes when
 the source does. This cannot be undone; to follow the database again, import
-it into a new project. Stop any running "argon source follow" first. The
+it into a new project. (To repair a follower that ended as degraded, use
+"argon source resync" instead.) Stop any running "argon source follow" first. The
 source database itself is not touched.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
@@ -181,15 +280,18 @@ source database itself is not touched.`,
 }
 
 func init() {
-	for _, c := range []*cobra.Command{sourceFollowCmd, sourceStatusCmd, sourceDetachCmd} {
+	for _, c := range []*cobra.Command{sourceFollowCmd, sourceStatusCmd, sourceResyncCmd, sourceDetachCmd} {
 		c.Flags().StringP("project", "p", "", "Project name (required)")
 		sourceCmd.AddCommand(c)
 	}
 	sourceFollowCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceFollowCmd.Flags().Bool("allow-inexact", false, "Continue past updates whose exact documents the source no longer serves, recording the range as inexact")
 	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Turn on changeStreamPreAndPostImages for the SOURCE collections (changes how the source stores writes)")
+	sourceFollowCmd.Flags().Bool("auto-resync", false, "When following ends as degraded, resync main with the source and continue (each resync compares the whole source and leaves an inexact range)")
+	sourceResyncCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
+	sourceResyncCmd.Flags().Bool("force", false, "Resync even though following did not end as degraded")
 	sourceDetachCmd.Flags().Bool("yes", false, "Confirm that following stops for good")
-	for _, c := range []*cobra.Command{sourceStatusCmd, sourceDetachCmd} {
+	for _, c := range []*cobra.Command{sourceStatusCmd, sourceResyncCmd, sourceDetachCmd} {
 		c.Flags().StringP("output", "o", "table", "Output format: table, json")
 	}
 	rootCmd.AddCommand(sourceCmd)

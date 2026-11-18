@@ -74,8 +74,9 @@ retrying the same name. Completed projects cannot be removed by cleanup. See
 ## Follow a live database
 
 ```
-argon source follow -p P [--uri U] [--allow-inexact] [--enable-source-images]
+argon source follow -p P [--uri U] [--allow-inexact] [--enable-source-images] [--auto-resync]
 argon source status -p P [-o json]
+argon source resync -p P [--uri U] [--force] [-o json]
 argon source detach -p P --yes
 argon merge apply <plan-id> --write-back [--uri U] [--strategy theirs|ours]
 ```
@@ -97,8 +98,26 @@ back from the source. `--write-back` is the only way Argon writes to a
 source, it has to be given on the call, and the MCP server and REST API do
 not offer it.
 
-`source status` exits nonzero when following is degraded and lists the ranges
-of `main`'s history that are not exact. `source detach` ends the tie for good
+`source status` exits nonzero when following is degraded or a resync is
+unfinished, and lists the ranges of `main`'s history that are not exact.
+
+`source resync` repairs a project whose follower ended as degraded, in place:
+after a collection was dropped or renamed on the source, after the source
+database was dropped, or when the source's oplog no longer holds the saved
+position. It compares the source with `main` in batches, stores what differs,
+deletes from `main` what the source no longer has, replays the source's
+changes made meanwhile, and prints the cluster time and LSN at which `main`
+equals the source again; `source follow` continues from there. It reads the
+source and writes nothing to it. The LSNs it writes are recorded as an
+inexact range. Run without `--force` it refuses unless following ended as
+degraded or an earlier resync is unfinished. If it is interrupted, or the
+source drops or renames another collection while it runs, `main` stays marked
+as unfinished (`source status` says so and `source follow` refuses to start)
+until `source resync` is run again. `source follow --auto-resync` runs the
+same resync itself when following ends as degraded, then continues; it stops
+instead if that happens twice within a minute.
+
+`source detach` ends the tie for good
 and turns `main` back into an ordinary branch. See
 [following a source](OPERATIONS.md#following-a-source-database) for what is
 guaranteed, what it costs the source and what stops it.

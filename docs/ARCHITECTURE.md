@@ -490,7 +490,68 @@ the transaction. Published heads are unaffected, because a head never falls
 inside a cluster time.
 
 Collection drops and renames stop the follower as degraded, as they stop
-capture: the WAL has no operation for them.
+capture: the WAL has no operation for them. They are repaired by a resync
+rather than handled in the stream, for three reasons. A drop or rename
+happens at one cluster time, so its effect on the branch (a delete per
+document, and for a rename a put per document as well) would have to be
+published as one group, whose size is the collection's; publishing it in
+pieces would be an inexact range nobody asked for. Derived from the branch's
+own state it is only right while that state is exact: during a catch-up the
+branch may hold a later state of a document than the one the rename moved,
+and nothing would correct it afterwards. And the same machinery is needed
+anyway for a position the oplog no longer holds, where there is no event to
+derive anything from.
+
+### Resync
+
+`internal/ingest/resync.go` brings a followed branch whose follower ended as
+degraded back to the source, in place. It is the import's copy-then-replay
+with the copy replaced by a comparison, because the branch already has
+documents:
+
+1. Take the primary's cluster time `T0`, then list the source's collections.
+2. Record in the branch's capture status, before anything is written to the
+   branch: mode `catch_up`, the LSN the inexact range starts at, a resync
+   marker, the stream's start position `T0`, and no resume token.
+3. Source to branch: read every source document with majority reads in a
+   causally consistent session that starts at `T0`; append a put unless the
+   branch's newest entry for the document is a put of the same bytes.
+4. Branch to source: walk the branch's document keys, look each batch up on
+   the source by `_id` in the same session, and append a delete for every
+   document the source does not have. A dropped collection has none of its
+   documents on the source; a renamed one is that plus step 3's puts under
+   the new name. Collection-level changes thus become the document-level
+   operations the WAL has.
+5. Replay the change stream from `T0` until it has passed every read, exactly
+   as the import does. The transaction that stores the first head proven
+   equal to the source also clears the marker and records the range.
+
+The deletes are covered by the import's argument. A document found missing in
+step 4 was either removed before `T0` (the delete is the only record of it)
+or after (its event is replayed on top, harmlessly), and one that is inserted
+after being found missing is put back by its insert event, which is stored
+after the delete.
+
+Step 4 does not hold a collection in memory. The keys come from the WAL's
+`(branch, collection, document, lsn)` index, read in key order with one key
+at a time; each batch is resolved to the branch's live documents with the
+materializer's point read and checked against the source with one `$in`
+query. Where garbage collection has reclaimed part of a collection's history
+the log no longer names every document, and the collection is listed from its
+snapshot instead, loaded whole as every reader of reclaimed history does.
+Step 3 treats a document as unchanged only on evidence from the log itself
+(its newest entry, above the reclaim floor); anything else is stored again,
+which costs an entry and changes nothing.
+
+The branch is visible throughout, and each batch moves its head. What keeps a
+half-compared branch from passing for a healthy one is the status written in
+step 2: the follower refuses to open a stream while the marker is set, and
+the saved position is only meaningful on top of a finished comparison. A
+resync that dies is run again; it takes a new `T0` and compares whatever the
+branch holds, so no progress record is needed and none can be stale.
+
+A drop or rename that arrives during step 5 fails the resync as it fails the
+follower, with the marker left in place.
 
 ### Write-back
 
@@ -512,11 +573,20 @@ that cannot be applied again and that the follower closes on its own.
 
 - Replica-set sources only. Sharded clusters are refused.
 - Indexes, validators and collection options are not followed. Collection
-  drops and renames end following.
+  drops and renames end following until `argon source resync` is run; a
+  source that drops or renames collections as a matter of routine (`$out`,
+  temporary collections) needs a resync each time.
 - Following runs through `argon source follow`. The MCP server and the REST
   control plane do not supervise it, and neither offers write-back.
-- A degraded follower cannot be repaired in place; the database is imported
-  again.
+- A resync restores the source's current state, not its history: the
+  changes between the last applied one and the resync are recorded as their
+  outcome only, inside a range marked inexact. A write-back that committed in
+  that gap is not attributed to its merge and its plan stays `writing_back`.
+- A resync reads every source document once and needs the oplog to cover its
+  duration. It is not incremental.
+- A resync that is interrupted leaves `main` between two states, marked as
+  unfinished, until it is run again; `main` is not held at its old state
+  while a resync runs.
 - An update event that MongoDB cannot return because it exceeds 16 MB with
   its images keeps the follower retrying, with the error in its status.
 - Field order: a plan holds documents as maps. Write-back sends the bytes the
