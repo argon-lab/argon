@@ -112,7 +112,8 @@ def review(api: Api, prefix: str, main: Any, apply: bool) -> tuple[int, str]:
     is a scripted merge: it previews a merge plan and applies it without asking.
     """
     diff = api("GET", prefix + "/branches/agent/diff")
-    for change in diff["changes"]:
+    changes = diff.get("changes") or []
+    for change in changes:
         print("change:", json.dumps(change, default=str))
     assert main.tickets.find_one({"_id": "T-1"})["status"] == "open"
     if not apply:
@@ -120,7 +121,12 @@ def review(api: Api, prefix: str, main: Any, apply: bool) -> tuple[int, str]:
         assert main.tickets.find_one({"_id": "T-1"})["status"] == "open"
         assert main.triage_notes.find_one({"_id": "triage-1"}) is None
         print("discarded the sandbox; run again with --apply to merge")
-        return len(diff["changes"]), "discarded"
+        return len(changes), "discarded"
+    if not changes:
+        # Nothing to merge; just discard the sandbox without merging.
+        api("DELETE", prefix + "/sandboxes/agent")
+        print("no changes to merge; discarded the sandbox")
+        return 0, "discarded"
     plan = api("POST", prefix + "/branches/agent/merge-preview", {})
     if plan["conflicts"]:
         raise RuntimeError(
@@ -131,7 +137,7 @@ def review(api: Api, prefix: str, main: Any, apply: bool) -> tuple[int, str]:
     api("DELETE", prefix + "/sandboxes/agent")
     assert main.tickets.find_one({"_id": "T-1"})["status"] == "closed"
     assert main.triage_notes.find_one({"_id": "triage-1"})["escalated"] == 1
-    return len(diff["changes"]), "merged"
+    return len(changes), "merged"
 
 
 def run(args: argparse.Namespace) -> None:
