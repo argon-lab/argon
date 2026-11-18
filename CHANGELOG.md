@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
+the wire proxy (hold a write's ack until the ingester confirms the WAL
+entry — a synchronization barrier, not in-proxy capture).
+
+## [2.4.1] - 2026-11-17
+
+Sandboxes and checkouts work on MongoDB Atlas free clusters. No data format
+changes since 2.4.0.
+
 ### Fixed
 
 - Sandboxes and checkouts work on MongoDB Atlas free (M0) clusters. Checkout
@@ -19,10 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with its project were reported on stdout. Under `argon mcp` stdout is the
   protocol stream, and with `--output json` it is the JSON value, so such a
   warning corrupted both.
-
-Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
-the wire proxy (hold a write's ack until the ingester confirms the WAL
-entry — a synchronization barrier, not in-proxy capture).
 
 ### Added
 
@@ -517,7 +522,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.4.1...HEAD
+[2.4.1]: https://github.com/argon-lab/argon/releases/tag/v2.4.1
 [2.4.0]: https://github.com/argon-lab/argon/releases/tag/v2.4.0
 [2.3.3]: https://github.com/argon-lab/argon/releases/tag/v2.3.3
 [2.3.2]: https://github.com/argon-lab/argon/releases/tag/v2.3.2
