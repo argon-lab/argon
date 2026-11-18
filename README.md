@@ -128,22 +128,18 @@ never drops, renames or rewrites a source database. See
 If a plan stays `writing_back`, check the affected documents on the source,
 let following catch up, and run `argon merge preview` again for the sandbox.
 
-Each project can run one follower or resync at a time. `argon source status`
-shows the lease owner's host, process ID and last heartbeat. When the lease
-expires, the run loses ownership and status reports the saved position with
-an error. The error stays visible until a replacement follower catches up
-and commits a verified checkpoint or a resync completes. Restart
-`argon source follow` from the saved position. A nonzero status while
-following is retrying means it is behind the source and currently unable to
-read it. Run
-`argon source follow --auto-resync` to complete an unfinished resync or
-repair a gap in the source stream before continuing to follow.
-A head moved by another process is reported as degraded and requires an
-explicit `argon source resync`.
-If an older Argon process checked out a followed `main`, status reports
-it as degraded. Upgrade the older processes, stop writes to the checkout,
-release it with `argon release -p myapp -b main`, then run
-`argon source resync -p myapp`.
+Run `argon source status -p myapp` to see whether `main` is verified at its
+saved source cluster time. A clean stop at an exact checkpoint exits zero.
+An open catch-up range, a stored capture error or an expired owner exits
+nonzero even when the state says `stopped`. Table and JSON output give the
+reason and next action. `argon status`, `argon doctor` and write-back
+preflight use the same result. See the
+[source status table](docs/OPERATIONS.md#what-argon-source-status-reports-and-what-to-do).
+
+Each project can run one follower or resync at a time. Restart following
+after lease loss and let the replacement verify its checkpoint.
+`argon source follow --auto-resync` completes an unfinished resync or repairs
+a source stream gap. The option checks `ARGON_EXPERIMENTAL_SOURCE=1` at startup.
 
 `--enable-source-images` is separately experimental and requires
 `ARGON_EXPERIMENTAL_SOURCE=1`. Operators can enable

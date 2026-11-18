@@ -225,11 +225,12 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 		}
 		result.ImagesEnabled = imagesEnabled
 	}
-	if branch, err = s.branchService.GetBranchByID(branch.ID); err != nil {
-		return nil, err
-	}
+	// The first batch expects the head created by BeginImport. Every later
+	// batch expects the head its predecessor committed, even across collections.
+	branch.HeadLSN = branch.CreatedLSN
+	branch.Follows = opts.DatabaseName
 	result.ProjectID, result.BranchID = project.ID, branch.ID
-	result.StartLSN = s.walService.GetCurrentLSN(project.ID)
+	result.StartLSN = branch.HeadLSN
 
 	session, err := client.StartSession()
 	if err != nil {
@@ -290,7 +291,7 @@ func (s *ImportService) copyCollection(ctx context.Context, collection *mongo.Co
 		if len(entries) == 0 {
 			return nil
 		}
-		if err := s.appendImportBatch(branch, entries); err != nil {
+		if err := s.appendCopyBatch(ctx, branch, entries); err != nil {
 			return fmt.Errorf("failed to process batch: %w", err)
 		}
 		copied += int64(len(entries))
@@ -319,4 +320,22 @@ func (s *ImportService) copyCollection(ctx context.Context, collection *mongo.Co
 		return copied, fmt.Errorf("cursor error: %w", err)
 	}
 	return copied, flush()
+}
+
+// appendCopyBatch commits the copied documents and their new head together.
+func (s *ImportService) appendCopyBatch(ctx context.Context, branch *wal.Branch, entries []*wal.Entry) error {
+	var head int64
+	_, err := s.walService.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		lsns, err := s.walService.AppendBatchContext(sc, entries)
+		if err != nil {
+			return nil, err
+		}
+		head = lsns[len(lsns)-1]
+		return nil, s.branchService.FollowerSetHead(sc, branch.ID, branch.Follows, branch.HeadLSN, head)
+	})
+	if err != nil {
+		return fmt.Errorf("advance online copy from LSN %d: %w", branch.HeadLSN, err)
+	}
+	branch.HeadLSN = head
+	return nil
 }

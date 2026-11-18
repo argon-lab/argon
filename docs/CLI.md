@@ -78,9 +78,10 @@ without writing anything.
 
 `--uri` can be left out when `ARGON_SOURCE_URI` is set. Source preflight
 checks collection types and readability. Online preflight opens and reads the
-stream with the replay's options and start position. The target stays unpublished
-until the import succeeds. Ordinary failures clean up the reserved project and
-history.
+stream with the replay's options and start position. Each online copy batch and
+the start of replay check the expected branch head. A concurrent write to the
+unpublished branch fails the import. Ordinary failures clean up the reserved
+project and history.
 After a hard kill, stop the old process and use `import cleanup` before
 retrying the same name. Completed projects cannot be removed by cleanup. See
 [the import contract](OPERATIONS.md#importing-existing-data).
@@ -131,25 +132,25 @@ the plan's before-image before writing that document. One mismatch aborts the
 transaction. `main` shows the result once following has read it back from
 the source. The MCP server and REST API do not offer write-back.
 
-`source status` exits nonzero when following is degraded, a resync is
-unfinished, a lease has expired, or a replacement has yet to verify a
-checkpoint (`unverified` in JSON). It also exits nonzero when the follower
-is `retrying` with a capture error. This means the follower is behind the
-source and currently unable to read it. It keeps retrying and shows the last
-consistent point. Status lists the inexact ranges of `main`'s history.
-It shows the binding's identity check and reports when that check rules
-out write-back (`write_back_unavailable_reason` in JSON).
-It reports the lease owner's run type, host, process ID and last heartbeat
-in both table and JSON output. Only one follower or resync can hold the
-lease for a project at a time. Expiry revokes the lease. The status is
-reported as stopped and retains the saved position. A replacement must
-reach the source time it observed after taking the lease, or finish a resync,
-before status clears the error and write-back is available again.
+`source status` reports the saved position and consistent point, inexact
+ranges, lease owner, source identity and any write-back restriction. Table
+and JSON output also give the health reason, message and next action. Use
+`health.kind` and `health.reason` in scripts. The full report is available
+even on a nonzero exit.
 
-If Argon 2.5.0 checked out a followed `main`, status reports it as
-degraded. Upgrade all processes using that metadata database, stop writers
-to the checkout, then run `argon release -p P -b main` and
-`argon source resync -p P`.
+```sh
+argon source status -p myapp -o json | jq '.health'
+```
+
+Exit zero means the published branch head is a verified exact checkpoint.
+A clean stop at that checkpoint is healthy. An open catch-up range, a stored
+capture error or an expired owner makes even a stopped branch unhealthy.
+Canceling a follow attempt before the stream reopens preserves its capture
+error. A successful stream open clears a transient or terminal open error.
+After takeover, the replacement must verify an exact checkpoint at or beyond
+the source time it observed on acquisition, or finish a resync. Deployment
+status, doctor and write-back use the same verdict. See the
+[source status reasons and actions](OPERATIONS.md#what-argon-source-status-reports-and-what-to-do).
 
 `source resync` repairs degraded following in place, such as after a
 collection was dropped or renamed on the source, after the source database
@@ -162,13 +163,14 @@ and a view that replaced a collection counts as an absent collection during
 resync. The command prints the cluster time and LSN at which `main`
 equals the source again; `source follow` continues from there. It reads the
 source and writes nothing to it. The LSNs it writes are recorded as an
-inexact range. Run without `--force`, it requires degraded following,
-an unfinished resync or an expired run. If a resync is interrupted or
+inexact range. Without `--force`, it accepts degradation, an unfinished
+resync, a lost owner or missing or inconsistent checkpoint evidence. If a resync is interrupted or
 the source drops or renames another collection while it runs, `source status`
 reports the unfinished resync and plain `source follow` refuses to start.
 Run `source resync` again or restart with `source follow --auto-resync` to
-complete it. `--auto-resync` also repairs a gap in the source stream before
-following again. It stops if another automatic resync would be needed
+complete it. `--auto-resync` has its own experimental check at startup
+and requires `ARGON_EXPERIMENTAL_SOURCE=1`. It also repairs a gap in the
+source stream before following again. It stops if another automatic resync would be needed
 within a minute. If another process moves the branch head, follow stops as
 degraded and requires `source resync` to be run explicitly.
 If a replacement stopped before verifying a checkpoint, resync checks whether

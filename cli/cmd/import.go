@@ -145,7 +145,9 @@ by the source's own change stream until the project equals the source at one
 cluster time; no write made during the import is lost. The source must be a
 replica set. The new project's main branch then follows that database: keep
 it current with "argon source follow" (or pass --follow here), and it accepts
-no other writes. Before copying, Argon opens the change stream with the options
+no other writes. If another writer moves main during the copy, the next
+batch or replay detects it and the import fails before publication.
+Before copying, Argon opens the change stream with the options
 it will use for replay. With --online --dry-run, Argon runs these preflight
 checks and estimates document counts without making changes.
 

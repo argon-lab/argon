@@ -30,7 +30,7 @@ A project created with "argon import database --online" stays tied to
 the database it was imported from: its main branch follows that database.
 
   follow   keep main current with the source (runs until interrupted)
-  status   what main follows, who holds its lease and how far it has come
+  status   show the verified checkpoint, health reason and next action
   resync   bring main to the source's current state after following has ended
            as degraded, in place, and make it followable again
   detach   stop following for good; main becomes an ordinary branch
@@ -44,6 +44,11 @@ can also enable changeStreamPreAndPostImages directly in MongoDB. Argon
 never drops, renames or rewrites the source database.`,
 	Args: cobra.NoArgs,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if autoResync, _ := cmd.Flags().GetBool("auto-resync"); autoResync {
+			if err := walcli.RequireExperimentalAutoResync(); err != nil {
+				return err
+			}
+		}
 		if err := requireSourceImagesOptIn(cmd); err != nil {
 			return err
 		}
@@ -101,10 +106,11 @@ following stops as degraded. Two things avoid that:
 A collection dropped or renamed on the source stops following as degraded,
 and so does a saved position the source's oplog no longer holds. View
 creation, modification and removal are ignored. "argon source resync"
-repairs both gaps in place. With --auto-resync, follow runs that
-resync itself and continues. It also completes an unfinished resync at
-startup. If something else moved main's head, follow stops as degraded and
-requires a manual resync. If an older Argon process checked out main,
+repairs both gaps in place. The experimental --auto-resync option requires
+ARGON_EXPERIMENTAL_SOURCE=1 and lets follow run that resync and continue.
+It also completes an unfinished resync at startup. If something else moved
+main's head, follow stops as degraded and requires a manual resync.
+If an older Argon process checked out main,
 upgrade it, stop writes to the checkout, and run "argon release -b main"
 for the project before resyncing. Each resync compares the whole source
 with main and leaves an inexact range in main's history.`,
@@ -145,16 +151,19 @@ with main and leaves an inexact range in main's history.`,
 
 var sourceStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show what a project follows and how far following has come (experimental)",
+	Short: "Show the source checkpoint, health reason and next action (experimental)",
 	Long: experimentalSourceHelp + `
 
-Show the source binding, saved position and lease owner. An unfinished
-resync, an expired lease, an unverified checkpoint or degraded following
-exits with an error. After takeover, the error stays until the replacement
-follower catches up and verifies a checkpoint or a resync completes.
-An unexpected branch head change or checkout makes following degraded.
-A retry with a capture error exits nonzero because following is behind
-the source and currently unable to read it. The follower keeps retrying.`,
+Show the source binding, lease owner, saved position and last consistent
+point. Both table and JSON output report health, a stable reason, a message
+and a next action. Use health.reason in JSON for scripts.
+
+Exit zero means main is verified at the reported source cluster time.
+A clean stop at an exact checkpoint is healthy. An open catch-up range,
+a stored capture error or an expired owner exits nonzero even if the last
+report says stopped. After takeover, wait for the replacement to verify an
+exact checkpoint or finish a resync. Deployment status, doctor and write-back
+preflight use the same verdict. See the source status table in docs/OPERATIONS.md.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		if projectName == "" {
@@ -192,8 +201,10 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 		fmt.Fprintf(out, " (last report %s)", info.UpdatedAt.Format(time.RFC3339))
 	}
 	fmt.Fprintln(out)
-	if info.Error != "" {
-		fmt.Fprintf(out, "  Error:       %s\n", info.Error)
+	fmt.Fprintf(out, "  Health:      %s (%s)\n", info.Health.Kind, info.Health.Reason)
+	fmt.Fprintf(out, "  Checkpoint:  %s\n", info.Health.Message)
+	if info.Health.NextAction != "" {
+		fmt.Fprintf(out, "  Next:        %s\n", info.Health.NextAction)
 	}
 	if owner := info.Owner; owner != nil {
 		fmt.Fprintf(out, "  Owner:       %s on %s (PID %d, last heartbeat %s)\n",
@@ -214,10 +225,10 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 			info.ResyncStartedAt.Format(time.RFC3339), info.Project)
 	}
 	if info.Mode == "catch_up" {
-		fmt.Fprintf(out, "  History:     CATCHING UP from LSN %d: %s. Until this ends, main is not a state the source was in.\n", info.InexactOpenFromLSN, info.InexactOpenReason)
+		fmt.Fprintf(out, "  History:     CATCHING UP from LSN %d: %s. The current head has yet to reach a verified exact checkpoint.\n", info.InexactOpenFromLSN, info.InexactOpenReason)
 	} else if info.InexactRangesDropped > 0 {
 		fmt.Fprintln(out, "  History:     some inexact ranges are no longer listed")
-	} else {
+	} else if info.Health.Kind == "healthy" {
 		fmt.Fprintln(out, "  History:     exact outside the ranges below")
 	}
 	for _, r := range info.InexactRanges {
@@ -259,9 +270,10 @@ renamed another collection while it ran, leaves main marked as unfinished.
 Restart it with "argon source resync" or "argon source follow --auto-resync".
 Only one follower or resync can run for a project at a time.
 
-By default resync requires degraded following, an unfinished resync or an
-expired run. If a replacement stopped before verifying a checkpoint and a
-saved position is available, start "argon source follow" to catch up.
+By default resync accepts degradation, an unfinished resync, a lost owner
+or missing or inconsistent checkpoint evidence. If a replacement stopped
+before verifying a checkpoint and a saved position is available, start
+"argon source follow" to catch up.
 --force permits the full comparison once the lease is available. If an
 older Argon process checked out main, upgrade it,
 stop writes to the checkout, and release the checkout before resyncing.`,
@@ -359,7 +371,7 @@ func init() {
 	sourceFollowCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceFollowCmd.Flags().Bool("allow-inexact", false, "Continue past updates whose exact documents the source no longer serves, recording the range as inexact")
 	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Experimental: turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID recorded at import)")
-	sourceFollowCmd.Flags().Bool("auto-resync", false, "Complete an unfinished resync or repair a source stream gap, then continue following")
+	sourceFollowCmd.Flags().Bool("auto-resync", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Complete an unfinished resync or repair a source stream gap, then continue following")
 	sourceResyncCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceResyncCmd.Flags().Bool("force", false, "Resync even though following did not end as degraded")
 	sourceDetachCmd.Flags().Bool("yes", false, "Confirm that following stops for good")

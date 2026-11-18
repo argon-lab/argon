@@ -68,3 +68,21 @@ func TestCLISourceStatusShowsOmittedInexactRanges(t *testing.T) {
 		t.Fatalf("table output should acknowledge omitted ranges:\n%s", out.String())
 	}
 }
+
+func TestCLISourceStatusPrintsVerdictAndNextAction(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	info := &walcli.SourceInfo{State: "stopped"}
+	info.Health.Kind = "unhealthy"
+	info.Health.Reason = "catch_up"
+	info.Health.Message = "The inexact range is still open."
+	info.Health.NextAction = "Start the follower."
+
+	printSourceStatus(cmd, info)
+	for _, want := range []string{"unhealthy (catch_up)", info.Health.Message, info.Health.NextAction} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("table is missing %q:\n%s", want, out.String())
+		}
+	}
+}

@@ -2,8 +2,6 @@ package walcli
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	"github.com/argon-lab/argon/v2/internal/ingest"
 	"go.mongodb.org/mongo-driver/bson"
@@ -12,29 +10,7 @@ import (
 
 // HealthError reports a problem with the source position or its owner.
 func (info *SourceInfo) HealthError() error {
-	return captureHealthError(info.Project, info.State, info.Error, info.ResyncUnfinished, info.LeaseExpired, info.Unverified, true)
-}
-
-func captureHealthError(project, state, detail string, unfinished, expired, unverified, following bool) error {
-	switch {
-	case unverified:
-		return fmt.Errorf("following has an unverified checkpoint: %s", detail)
-	case unfinished && project != "":
-		return fmt.Errorf("a resync of main has not finished. If it was interrupted, run `argon source resync -p %s` again", project)
-	case unfinished:
-		return errors.New("a resync of the followed branch has not finished. If it was interrupted, run `argon source resync` again")
-	case state == "degraded":
-		if detail == "" {
-			return errors.New("capture is degraded")
-		}
-		return fmt.Errorf("following is degraded: %s", detail)
-	case expired:
-		return fmt.Errorf("following is stopped: %s", detail)
-	case following && state == "retrying" && detail != "":
-		return fmt.Errorf("following is behind the source and currently unable to read it: %s", detail)
-	default:
-		return nil
-	}
+	return info.Health.HealthError()
 }
 
 // InspectCaptureHealth reads saved capture health without initializing metadata.
@@ -55,15 +31,12 @@ func InspectCaptureHealth(ctx context.Context, metadata *mongo.Database) ([]bson
 		if status.SourceLeaseExpired {
 			fields["lease_expired"] = true
 		}
-		detail := status.Error
-		if problem := captureHealthError("", status.State, detail, unfinished, status.SourceLeaseExpired, status.SourceUnverified != nil, status.Source != nil); problem != nil {
-			healthy = false
-			if detail == "" {
-				detail = problem.Error()
-			}
+		healthy = healthy && report.Healthy
+		if status.Health != nil {
+			fields["health"] = *status.Health
 		}
-		if detail != "" {
-			fields["error"] = detail
+		if status.Error != "" {
+			fields["error"] = status.Error
 		}
 		capture = append(capture, fields)
 	}

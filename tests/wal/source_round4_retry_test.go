@@ -121,6 +121,16 @@ func TestSource_StatusReportsRetryUntilTheStreamReopens(t *testing.T) {
 	require.Equal(t, "retrying", reports[0]["state"])
 	require.Contains(t, reports[0]["error"], "test source network outage")
 
+	for _, name := range []string{"status", "doctor"} {
+		cmd := exec.CommandContext(ctx, cli, name)
+		cmd.Env = append(os.Environ(), "MONGODB_URI="+metadataDeploymentURI, "ARGON_METADATA_DB="+f.metadataName)
+		out, err := cmd.CombinedOutput()
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit, "%s", out)
+		require.Equal(t, 1, exit.ExitCode(), "%s", out)
+		require.Contains(t, string(out), "test source network outage")
+	}
+
 	close(resumeRetry)
 	recovered := f.waitCaughtUp(t)
 	require.Equal(t, "running", recovered.State)

@@ -100,6 +100,10 @@ project is removed:
   time taken before the copy; if the oplog no longer reaches back that far
   when the copy ends, the import stops. Give the source a larger oplog, or
   import when it is quieter.
+- **Another writer changes the unpublished branch head.** Each copy batch
+  verifies the head left by the previous batch, beginning with the head
+  created for the import. Replay verifies the final copy head. Stop the
+  unexpected writer before retrying the import.
 - **A collection is dropped or renamed on the source during the import.**
   Such events carry no documents; the import does not guess.
 
@@ -198,25 +202,19 @@ source online into a new project. Use a source user allowed to run
   lease. A follower that cannot renew against the metadata deployment for a
   full lease period stops with an error. Configure its supervisor to restart
   `argon source follow` after failures so it resumes from the saved position.
-  `argon source status` reports an expired run as stopped and exits nonzero
-  in table and JSON output. It shows the owner's host, process ID and last
-  heartbeat, and keeps the position and last consistent point. A replacement
-  follower or resync can take over. Argon records the lost owner at takeover.
-  Status and write-back treat the position as unverified until a replacement
-  commits an exact checkpoint at or beyond the source time it read after
-  taking the lease, or completes a resync. If a replacement stops before
-  then, start `argon source follow` again to catch up. If following reports a
-  gap, run `argon source resync`.
+  A replacement records the lost owner when it takes over. To verify the
+  position it must commit an exact checkpoint at or beyond the source time
+  observed after acquisition, or complete a resync.
 - **No change is skipped or repeated across restarts.** The entries, the
   branch head and the stream's resume token commit in one transaction on the
   metadata deployment. This holds whether or not the source is the same
   deployment as the metadata.
-- **A published head is the source at one cluster time.** Changes are
+- **A verified exact head is the source at one cluster time.** Changes are
   published a whole cluster time at a time, so a transaction is never half
   visible. `argon source status` shows the newest such point. On a source
   nobody else writes to, the last change appears only when the source's next
   oplog entry does; MongoDB writes one every ten seconds when idle.
-- **Stored documents are exact.** An insert or replacement carries its
+- **Exact mode preserves source documents.** An insert or replacement carries its
   document. An update's document is read from the source as of the update's
   own cluster time and stored byte for byte.
 - **Detaching stops every follower.** `argon source detach` cannot reach a
@@ -227,18 +225,51 @@ source online into a new project. Use a source user allowed to run
   options. The only writes Argon ever makes to a source are `--write-back`
   transactions and, when asked for by name, `--enable-source-images`.
 
-### What stops it, and what it then reports
+### What `argon source status` reports and what to do
 
-Following keeps retrying a temporary failure to read the source. While its
-saved report is `retrying` with a capture error, `argon source status`,
-`argon status` and `argon doctor` exit nonzero. This means the follower is
-behind the source and currently unable to read it. The last consistent
-point stays visible. The next successful stream-open report clears the retry
-error. Deployment capture health includes an imported project once published.
+Both output formats report a reason and a next action. In JSON, read
+`health.kind`, `health.reason`, `health.message` and `health.next_action`.
+The message retains any stored capture error. The report also shows the
+position, last consistent point and lease owner's host, process ID and last
+heartbeat. The metadata server's clock determines lease freshness.
 
-Following ends as `degraded`, with the reason in `argon source status` and
-`argon status` (both exit nonzero), and with `main` left at the last change
-before the problem:
+The table is in precedence order. When several conditions apply, the first
+matching row determines the reason. An exact checkpoint establishes what
+`main` held **at the reported source cluster time**. A cleanly stopped
+follower can have a healthy checkpoint while newer source writes await replay.
+
+| Reason | What Argon found | What to do |
+| --- | --- | --- |
+| `importing` | The project is still importing. Deployment health omits it until publication. | Wait for publication. |
+| `project_missing` | The followed branch has no project record. | Restore the missing project metadata. |
+| `checked_out` | The followed branch is checked out or records a physical database. | Upgrade processes sharing the metadata, stop writers to the checkout, run `argon release -p P -b main`, then resync. Release discards checkout writes that never reached the WAL. |
+| `head_changed` | The saved head and branch head differ. | Upgrade processes using this metadata, then run `argon source resync -p P`. |
+| `resync_unfinished` | A resync started and has yet to commit its final checkpoint. | Let the owner finish. After interruption, run `argon source resync -p P` or `argon source follow -p P --auto-resync`. |
+| `position_missing` | The saved position is missing or no longer identifies a usable position for this source. | Upgrade processes using this metadata, then resync. |
+| `head_missing` | The branch or its checkpoint is missing its head LSN. | Resync, then start following. |
+| `mode_unknown` | The checkpoint mode is absent or unrecognized. | Resync, then start following. |
+| `range_inconsistent` | The checkpoint reports exact mode with an open inexact range. | Resync, then start following. |
+| `checkpoint_unverified` | Exact mode lacks a consistent point matching both the branch head and the saved source time. | Run `argon source resync -p P` to rebuild the checkpoint, then start following. |
+| `state_unknown` | The stored follower state is absent or unrecognized. | Resync, then start following. |
+| `owner_expired` | The persisted owner passed its deadline, including during preflight with the previous state still marked stopped. | Start `argon source follow -p P` to take over and verify the checkpoint. |
+| `degraded` | The follower recorded a persistent capture failure. | Address the reported cause, resync, then start following. |
+| `unverified` | A previous owner was lost and its replacement has yet to verify the position. | Wait for the replacement to catch up. If it stopped, start following again. |
+| `owner_missing` | A live follower or resync state has no lease owner. | Start following to verify the position. |
+| `retrying` | The follower is retrying its source stream. | Restore access to the source and wait for the stream to reopen. |
+| `capture_error` | A capture error is stored, including after a terminal stream failure leaves the state stopped. | Correct the reported error. Start following if stopped, or wait for the live owner to verify a checkpoint. |
+| `catch_up` | Catch-up is still open, including after the follower stops. | Let the follower reach an exact checkpoint, or restart it from the saved position. |
+| `starting` | The follower is opening its stream. | Wait for the follower to reach an exact checkpoint. |
+| `resyncing` | The owner reports a resync in progress. | Wait for it to finish. |
+| `exact` | A live owner or a clean stop left a verified exact checkpoint at the published branch head. | No repair is needed. To apply later source writes after a clean stop, start following. |
+
+`exact` is healthy and exits zero. An unhealthy verdict exits nonzero in
+table and JSON output and blocks write-back. `argon status` and
+`argon doctor` use the same verdict for published followed projects.
+
+### Source changes that interrupt following
+
+The stored capture error identifies what stopped the stream. Common causes
+include the following.
 
 - **The saved position is no longer in the source's oplog.** Following was
   stopped for longer than the oplog covers. Run `argon source resync`.
@@ -256,8 +287,8 @@ before the problem:
     `argon source status` lists it, and the entries in it are marked
     `capture_images: current`. The state at the end of the range is exact;
     positions inside it are not states the source was in, and time travel
-    there shows a mixture. While it lasts the state is `catching_up`, never
-    `running`.
+    there shows a mixture. A live follower reports `catching_up` during this
+    interval. Stopping it leaves the range open.
   - `--enable-source-images` (on `import database --online` or
     `source follow`) switches on `changeStreamPreAndPostImages` for the
     source's existing collections, so updates carry their own documents for
@@ -306,23 +337,8 @@ source keeps answering the same position with an error and nothing can be
 stored in between: an update event too large to return (over 16 MB with its
 images), a privilege the user lacks, a transaction too large to store in the
 time allowed. An import in that situation fails with the error instead of
-hanging. And it ends as `degraded` when something else has written to `main`
-(a process from before following existed does not know the branch is
-read-only) or has replaced its saved position. The follower checks the
-saved head on every start and on every write. Source status, deployment
-status, resync admission and write-back check the saved head and branch
-head from one metadata snapshot.
-When either happens, make sure every process that uses this metadata
-database is current, then run `argon source resync` explicitly.
-
-Argon 2.5.0 can also check out a followed `main` into a physical database.
-`argon source status` reports that as degraded even with no follower
-running, and write-back is refused. Upgrade every process that uses this
-metadata database and stop writers to the checkout. Run
-`argon release -p myapp -b main` to drop the branch's own physical database.
-Direct writes that never reached the WAL are discarded with the checkout.
-Run `argon source resync -p myapp` to rebuild the source position, even if
-the checkout removed the entire saved state.
+hanging. The follower also checks the expected branch head and source
+position on startup and fences each write against concurrent changes.
 
 A time-series collection created on a followed source ends following: its
 measurements never reach a change stream as documents, so `main` could not
@@ -387,16 +403,10 @@ What it guarantees, and what it cannot:
   individual changes, their order or their times. A write-back whose
   transaction fell into that gap is not attributed to its merge. If the
   writer had not marked the plan applied, it stays `writing_back`.
-- **An unfinished resync is reported as unhealthy.** The status is
-  marked before the first write to `main`. If the resync is interrupted or
-  fails after that, the status keeps `resync_unfinished`, mode `catch_up`
-  and the old consistent point. `source status`, `argon status` and
-  `argon doctor` exit nonzero, and plain `source follow` refuses to start.
-  Running `source resync` again or
-  starting `source follow --auto-resync` completes it, comparing whatever
-  `main` holds by then. The recorded range covers every attempt. A sandbox
-  forked from `main` in that state starts from the mixture, as it does during
-  an `--allow-inexact` catch-up.
+- The resync records its marker before the first write to `main` and keeps
+  the old consistent point until replay completes. If the comparison restarts,
+  the recorded range covers every attempt. A sandbox forked during this
+  interval starts with the partially compared contents of `main`.
 - **It fails rather than guess** when the source drops or renames another
   collection while it runs; run it again. A source that does this
   continuously (for example an aggregation with `$out`, which renames a
@@ -411,14 +421,18 @@ If garbage collection has partly reclaimed a collection's history on `main`,
 prune lists its documents from the full snapshot, which is loaded into memory.
 The source's oplog has to cover the duration of the resync, as for the import.
 
-`argon source follow --auto-resync` completes an unfinished resync at startup
-or repairs a gap in the source stream, then continues following. It is off
-by default because each resync reads the whole source and leaves an inexact
-range. It stops if another automatic resync would be needed within a minute.
+`argon source follow --auto-resync` checks its own experimental opt-in
+(`ARGON_EXPERIMENTAL_SOURCE=1`) before starting. It completes interrupted
+resyncs and repairs source stream gaps. Each resync reads the whole source
+and records the range it writes as inexact. Automatic repair stops if
+another resync would be needed within a minute.
 
-Resync without `--force` requires degradation, an unfinished resync or an
-expired run. It always needs the branch's lease, so stop any live follower
-first.
+A resync always needs the branch's lease. Stop a live follower first.
+Without `--force`, resync accepts degradation, an unfinished resync, a
+lost owner or a missing, changed or inconsistent checkpoint. After a
+takeover, an unverified position is probed for resumability. If it can
+be resumed, start following. Use `--force` for a full comparison even when
+following can continue. The branch must be released and its project published.
 
 ### Writing a plan back to the source
 
@@ -461,9 +475,9 @@ argon merge apply <plan-id> --write-back
   read or an exact before-image possibly lost to garbage collection aborts
   before claiming the plan. If garbage collection reclaimed the image,
   force a resync to capture the source's bytes again, then preview again.
-- Write-back refuses degraded following, an unfinished resync and an
-  expired lease. Resume following after expiry. For degradation or an
-  unfinished resync, complete the resync and then preview again.
+- Write-back preflight requires the healthy `exact` verdict. For a
+  refusal, use the status reason and next action in the
+  [source status table](#what-argon-source-status-reports-and-what-to-do).
 - `main` is not written by the write-back. It receives the change through
   following, like any other change to the source, attributed to the merge
   (`actor: merge:<sandbox>`) with a `merge` record carrying the plan ID.

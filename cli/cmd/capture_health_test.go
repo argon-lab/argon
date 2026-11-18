@@ -37,6 +37,12 @@ func TestCLIDeploymentStatusUsesSourceHealth(t *testing.T) {
 	})
 
 	const branchID = "main-branch"
+	const projectID = "shop-project"
+	_, err = metadata.Collection("wal_projects").InsertOne(ctx, bson.M{"_id": projectID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := primitive.Timestamp{T: 1700000000, I: 1}
 	for _, tt := range []struct {
 		name, storedState, state, detail, flag string
 		head                                   int64
@@ -52,16 +58,17 @@ func TestCLIDeploymentStatusUsesSourceHealth(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := metadata.Collection("wal_branches").ReplaceOne(ctx, bson.M{"_id": branchID}, bson.M{
-				"_id": branchID, "name": "main", "head_lsn": tt.head, "is_deleted": false, "follows": "shop", "physical_db": tt.physicalDB,
+				"_id": branchID, "project_id": projectID, "name": "main", "head_lsn": tt.head, "is_deleted": false, "follows": "shop", "physical_db": tt.physicalDB,
 			}, options.Replace().SetUpsert(true))
 			if err != nil {
 				t.Fatal(err)
 			}
-			state := bson.M{"database": "shop", "mode": "exact"}
+			state := bson.M{"database": "shop", "mode": "exact", "position": at,
+				"consistent": bson.M{"lsn": int64(10), "cluster_time": at}}
 			stored := bson.M{"branch_id": branchID, "state": tt.storedState, "head_lsn": int64(10), "source": state}
 			doc := bson.M{"_id": branchID, "capture_status": stored}
 			if !tt.missingToken {
-				doc["resume_token"] = bson.M{"_data": "saved"}
+				doc["resume_token"] = bson.M{"_data": "826553F10000000001"}
 			}
 			if tt.flag == "resync_unfinished" {
 				now := time.Now()
@@ -107,4 +114,30 @@ func TestCLIDeploymentStatusUsesSourceHealth(t *testing.T) {
 			}
 		})
 	}
+	t.Run("ordinary capture during an import", func(t *testing.T) {
+		_, err := metadata.Collection("wal_projects").UpdateByID(ctx, projectID, bson.M{"$set": bson.M{"importing": true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = metadata.Collection("wal_branches").UpdateByID(ctx, branchID, bson.M{"$unset": bson.M{"follows": ""}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = metadata.Collection("wal_ingest_state").UpdateByID(ctx, branchID, bson.M{"$set": bson.M{"capture_status.state": "degraded"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := invokeCLI(t, uri, "status", "--output", "json")
+		var report deploymentReport
+		if err != nil {
+			t.Fatalf("status while importing: %v (%s)", err, stderr)
+		}
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatal(err)
+		}
+		if !report.Healthy || len(report.Capture) != 0 {
+			t.Fatalf("unpublished capture affected deployment health: %+v", report)
+		}
+	})
+
 }

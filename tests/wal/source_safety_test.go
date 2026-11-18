@@ -232,6 +232,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/checkout/service.go:loadCollection InsertMany",
 		// Reads the source and enables its images when requested.
 		"internal/importer/online.go:DryRunOnline prepareOnline",
+		"internal/importer/online.go:appendCopyBatch WithTransaction",
 		"internal/importer/online.go:importOnline CatchUp",
 		"internal/importer/online.go:importOnline EnableImages",
 		"internal/importer/online.go:importOnline prepareOnline",

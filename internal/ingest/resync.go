@@ -144,18 +144,15 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 		return nil, redacted(err, opts.Redact)
 	}
 	defer s.releaseSourceLease(lease)
-	stored, err := s.SourceStatusFor(ctx, branchID)
+	// Admission uses the snapshot from the lease transaction, before takeover
+	// replaces the lost owner's report with an unverified checkpoint.
+	stored := lease.prior
+	probe, err := stored.Health.ResyncAdmission(opts.Force)
 	if err != nil {
 		return nil, err
 	}
-	if stored == nil {
-		return nil, s.sourceLeaseMiss(ctx, lease)
-	}
 	var resumeAfter bson.Raw
-	if stored.State != "degraded" && !stored.ResyncUnfinished() && !lease.replacedExpiredRun && !opts.Force {
-		if stored.SourceUnverified == nil {
-			return nil, &ConfigurationError{"following has not ended as degraded, so there is nothing a resync has to repair; `argon source follow` continues from the saved position. A resync compares the whole source with the branch and records the range it writes as inexact history; pass --force to run one anyway"}
-		}
+	if probe {
 		resumeAfter = stored.resumeToken
 	}
 
@@ -183,22 +180,7 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 }
 
 func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Database, opts ResyncOptions, run *running, stored *Status, result *ResyncResult, resumeAfter bson.Raw) error {
-	branch, err := s.branches.GetBranchByIDContext(ctx, branchID)
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			return &ConfigurationError{fmt.Sprintf("branch %s not found", branchID)}
-		}
-		return fmt.Errorf("branch %s not found: %w", branchID, err)
-	}
-	if !branch.IsFollower() {
-		return &ConfigurationError{fmt.Sprintf("branch %s does not follow an external database", branch.Name)}
-	}
-	if branch.Follows != src.Name() {
-		return &ConfigurationError{fmt.Sprintf("branch %s follows database %q, not %q", branch.Name, branch.Follows, src.Name())}
-	}
-	if branch.IsLive() || branch.PhysicalDB != "" {
-		return sourceCheckoutError(branch.Name)
-	}
+	branch := run.lease.branch
 	var status SourceStatus
 	if stored.Source != nil {
 		status = *stored.Source
@@ -223,9 +205,7 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	status.InexactReason = "resync: the branch was compared with the source while the source was written"
 	if status.Resync == nil {
 		status.Resync = &ResyncState{StartedAt: time.Now()}
-		if stored.State == "degraded" {
-			status.Resync.Cause = stored.Error
-		}
+		status.Resync.Cause = stored.facts.StoredError
 	}
 	// Every read below is causally at or after the boundary, so the stream
 	// starts with the cluster time after it.
@@ -272,6 +252,7 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	}
 	stored.BranchID, stored.State, stored.Actor, stored.Error = branchID, "resyncing", sourceActor, ""
 	stored.UpdatedAt, stored.Source = time.Now(), &status
+	stored.Health = nil
 	fields := bson.M{
 		"start_at": startAt, "actor": sourceActor,
 		"capture_status.source":    status,

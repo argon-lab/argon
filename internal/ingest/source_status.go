@@ -7,6 +7,7 @@ import (
 
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
@@ -14,30 +15,37 @@ import (
 )
 
 type captureSnapshot struct {
-	Branch      wal.Branch `bson:"branch"`
-	Stored      bson.Raw   `bson:"capture_status"`
-	ResumeToken bson.Raw   `bson:"resume_token"`
-	LeaseFresh  bool       `bson:"lease_fresh"`
+	Branch  wal.Branch `bson:"branch"`
+	Project *struct {
+		Importing bool `bson:"importing"`
+	} `bson:"project"`
+	// A missing head cannot verify a checkpoint at LSN zero.
+	BranchHead   *int64               `bson:"branch_head"`
+	CheckpointID string               `bson:"checkpoint_id"`
+	StartAt      *primitive.Timestamp `bson:"start_at"`
+	Stored       bson.Raw             `bson:"capture_status"`
+	ResumeToken  bson.Raw             `bson:"resume_token"`
+	LeaseFresh   bool                 `bson:"lease_fresh"`
 }
 
 // A follower transaction changes the head and position together. Snapshot
 // reads keep the join from combining the two sides of a concurrent commit.
-func captureSnapshots(ctx context.Context, metadata *mongo.Database, filter bson.M, publishedOnly bool) (*mongo.Cursor, error) {
+func captureSnapshots(ctx context.Context, metadata *mongo.Database, filter bson.M) (*mongo.Cursor, error) {
 	branches := metadata.Collection("wal_branches", options.Collection().
 		SetReadConcern(readconcern.Snapshot()).SetReadPreference(readpref.Primary()))
-	publication := bson.M{}
-	if publishedOnly {
-		publication["project.importing"] = bson.M{"$ne": true}
-	}
 	// Publication, branch and checkpoint must all come from this snapshot.
 	return branches.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: filter}},
 		{{Key: "$project", Value: bson.M{"_id": 0, "branch": "$$ROOT"}}},
 		{{Key: "$lookup", Value: bson.M{"from": "wal_projects", "localField": "branch.project_id", "foreignField": "_id", "as": "project"}}},
-		{{Key: "$match", Value: publication}},
 		{{Key: "$lookup", Value: bson.M{"from": "wal_ingest_state", "localField": "branch._id", "foreignField": "_id", "as": "checkpoint"}}},
-		{{Key: "$project", Value: bson.M{"branch": 1, "checkpoint": bson.M{"$first": "$checkpoint"}}}},
-		{{Key: "$project", Value: bson.M{"branch": 1, "capture_status": "$checkpoint.capture_status", "resume_token": "$checkpoint.resume_token"}}},
+		{{Key: "$project", Value: bson.M{"branch": 1, "project": bson.M{"$first": "$project"}, "checkpoint": bson.M{"$first": "$checkpoint"}}}},
+		{{Key: "$project", Value: bson.M{
+			"branch": 1, "branch_head": "$branch.head_lsn",
+			"project._id": 1, "project.importing": 1,
+			"checkpoint_id": "$checkpoint._id", "capture_status": "$checkpoint.capture_status",
+			"resume_token": "$checkpoint.resume_token", "start_at": "$checkpoint.start_at",
+		}}},
 		{{Key: "$set", Value: bson.M{"lease_fresh": sourceLeaseFresh()}}},
 	})
 }
@@ -45,7 +53,7 @@ func captureSnapshots(ctx context.Context, metadata *mongo.Database, filter bson
 // ReadCaptureStatus reads a branch and its saved status at one metadata snapshot.
 // An ordinary branch without a capture report returns a nil status.
 func ReadCaptureStatus(ctx context.Context, metadata *mongo.Database, branchID string) (*wal.Branch, *Status, error) {
-	cursor, err := captureSnapshots(ctx, metadata, bson.M{"_id": branchID, "is_deleted": false}, false)
+	cursor, err := captureSnapshots(ctx, metadata, bson.M{"_id": branchID, "is_deleted": false})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -80,13 +88,14 @@ func (s *Service) CaptureStatusFor(ctx context.Context, branchID string) (*wal.B
 
 // CaptureReport pairs an evaluated status with its stored fields for display.
 type CaptureReport struct {
-	Status *Status
-	Fields bson.M
+	Status  *Status
+	Fields  bson.M
+	Healthy bool
 }
 
 // ReadCaptureReports reads capture health across the metadata deployment.
 func ReadCaptureReports(ctx context.Context, metadata *mongo.Database) ([]CaptureReport, error) {
-	cursor, err := captureSnapshots(ctx, metadata, bson.M{"is_deleted": false}, true)
+	cursor, err := captureSnapshots(ctx, metadata, bson.M{"is_deleted": false})
 	if err != nil {
 		return nil, err
 	}
@@ -97,22 +106,46 @@ func ReadCaptureReports(ctx context.Context, metadata *mongo.Database) ([]Captur
 		if err := cursor.Decode(&snapshot); err != nil {
 			return nil, err
 		}
-		status, err := snapshot.status()
+		report, err := snapshot.report()
 		if err != nil {
 			return nil, err
 		}
-		if status == nil {
-			continue
+		if report != nil {
+			reports = append(reports, *report)
 		}
-		fields := bson.M{}
-		if len(snapshot.Stored) != 0 {
-			if err := bson.Unmarshal(snapshot.Stored, &fields); err != nil {
-				return nil, err
-			}
-		}
-		reports = append(reports, CaptureReport{Status: status, Fields: fields})
 	}
 	return reports, cursor.Err()
+}
+
+func (snapshot *captureSnapshot) report() (*CaptureReport, error) {
+	status, err := snapshot.status()
+	if err != nil || status == nil {
+		return nil, err
+	}
+	var healthy bool
+	if status.Health != nil {
+		if status.Health.Kind == SourceImporting {
+			return nil, nil
+		}
+		healthy = status.Health.Kind == SourceHealthy
+	} else {
+		// Ordinary checkout capture has its own lifecycle. Unpublished
+		// projects have no deployment report for either kind of capture.
+		if snapshot.projectState() == ProjectImporting {
+			return nil, nil
+		}
+		healthy = status.State != "degraded"
+		if !healthy && status.Error == "" {
+			status.Error = "capture is degraded"
+		}
+	}
+	fields := bson.M{}
+	if len(snapshot.Stored) != 0 {
+		if err := bson.Unmarshal(snapshot.Stored, &fields); err != nil {
+			return nil, err
+		}
+	}
+	return &CaptureReport{Status: status, Fields: fields, Healthy: healthy}, nil
 }
 
 func (snapshot *captureSnapshot) status() (*Status, error) {
@@ -127,98 +160,93 @@ func (snapshot *captureSnapshot) status() (*Status, error) {
 	}
 	status.BranchID = snapshot.Branch.ID
 	if snapshot.Branch.IsFollower() {
-		status.hasResumeToken = len(snapshot.ResumeToken) != 0
-		if status.SourceUnverified != nil {
-			_, status.hasResumeToken = tokenTime(snapshot.ResumeToken)
-			status.resumeToken = snapshot.ResumeToken
+		status.checkpointExists = snapshot.CheckpointID != ""
+		status.resumeToken, status.startAt = snapshot.ResumeToken, snapshot.StartAt
+		status.facts = snapshot.facts(status)
+		verdict := Evaluate(status.facts)
+		status.Health = &verdict
+		status.State = verdict.DisplayState(status.State)
+		status.SourceLeaseExpired = verdict.LeaseExpired
+		if problem := verdict.HealthError(); problem != nil {
+			status.Error = problem.Error()
 		}
-		status.applySourceLeaseFreshness(snapshot.LeaseFresh)
-		if reason := status.sourceDegradation(&snapshot.Branch, snapshot.Stored.Lookup("head_lsn")); reason != "" {
-			status.synthesizedDegradation = status.State != "degraded"
-			status.State, status.Error = "degraded", reason
-		}
-		status.applySourceVerification(snapshot.LeaseFresh)
 	}
 	return status, nil
 }
 
-func (s *Status) applySourceVerification(fresh bool) {
-	if s.SourceUnverified == nil {
-		return
+func (snapshot *captureSnapshot) projectState() ProjectState {
+	if snapshot.Project == nil {
+		return ProjectMissing
 	}
-	detail := "the previous live source report was left without a lease owner; see the last saved position"
-	if s.SourceUnverified.Reason == leaseExpiredReason {
-		detail = sourceOwnerLoss(s.SourceUnverified.PreviousOwner)
+	if snapshot.Project.Importing {
+		return ProjectImporting
 	}
-	if s.Error != "" && s.Error != detail {
-		detail += ". " + s.Error
-	}
-	switch {
-	case fresh:
-		detail += ". The replacement is catching up to verify a checkpoint"
-	case s.ResyncUnfinished():
-		detail += ". The resync has not finished; complete it with `argon source resync`, then start `argon source follow`"
-	case s.State == "degraded":
-		detail += ". Repair the branch with `argon source resync`, then start `argon source follow`"
-	default:
-		detail += ". Start `argon source follow` to catch up and verify a checkpoint"
-	}
-	s.Error = detail
+	return ProjectPublished
 }
 
-// sourceDegradation checks the branch and position from the same snapshot.
-func (s *Status) sourceDegradation(branch *wal.Branch, savedHead bson.RawValue) string {
-	if branch.IsLive() || branch.PhysicalDB != "" {
-		return sourceCheckoutError(branch.Name).Error()
+// facts interprets only records joined at the same snapshot. The server evaluates
+// the lease deadline even when a stopped run left an owner behind.
+func (snapshot *captureSnapshot) facts(status *Status) Facts {
+	branch := &snapshot.Branch
+	f := Facts{
+		State: followerState(status.State), HasError: status.Error != "", StoredError: status.Error,
+		CheckedOut: branch.IsLive() || branch.PhysicalDB != "", BranchName: branch.Name,
+		Unverified: status.SourceUnverified != nil, Owner: OwnerNone, Head: HeadMissing,
+		Project: snapshot.projectState(),
 	}
-	if s.State == "degraded" {
-		if s.Error != "" {
-			return s.Error
+	if status.Owner != nil {
+		f.Owner = OwnerExpired
+		if snapshot.LeaseFresh {
+			f.Owner = OwnerLive
 		}
-		return "the last follower reported a capture failure"
 	}
-	if !s.hasSavedSourcePosition(branch.Follows) {
-		return sourcePositionError(branch.Name).Error()
+	switch {
+	case f.Owner == OwnerExpired:
+		f.OwnerLoss = sourceOwnerLoss(status.Owner)
+	case status.SourceUnverified != nil && status.SourceUnverified.PreviousOwner != nil:
+		f.OwnerLoss = sourceOwnerLoss(status.SourceUnverified.PreviousOwner)
+	case f.Unverified:
+		f.OwnerLoss = "the previous live source report was left without a lease owner"
+	default:
+		f.OwnerLoss = sourceOwnerLoss(nil)
 	}
-	if head, ok := savedHead.AsInt64OK(); ok && head != branch.HeadLSN {
-		return sourceHeadMismatch(branch, head).Error()
+	if head, ok := snapshot.Stored.Lookup("head_lsn").AsInt64OK(); ok && snapshot.BranchHead != nil {
+		f.Head = HeadEqual
+		if head != branch.HeadLSN {
+			f.Head = HeadDifferent
+			f.HeadMismatch = headMovedMessage(branch, head)
+		}
 	}
-	return ""
+	if src := status.Source; src != nil {
+		f.Mode = checkpointMode(src.Mode)
+		f.UnfinishedResync = status.ResyncUnfinished()
+		f.OpenRange = src.InexactFromLSN != 0 || src.InexactReason != ""
+		tokenAt, ok := tokenTime(snapshot.ResumeToken)
+		// Import and resync open at the tick after their confirmed boundary.
+		// On an idle source, reached records the boundary while MongoDB
+		// returns that opening token. Later checkpoints record the token time.
+		boundary, hasBoundary := previousTimestamp(tokenAt)
+		idleOpening := snapshot.StartAt != nil && snapshot.StartAt.Equal(tokenAt) &&
+			hasBoundary && boundary.Equal(src.Position)
+		f.PositionPresent = src.Database == branch.Follows && ok && !src.Position.IsZero() &&
+			(tokenAt.Equal(src.Position) || idleOpening)
+		consistentLSN, hasLSN := snapshot.Stored.Lookup("source", "consistent", "lsn").AsInt64OK()
+		f.ExactPointAtHead = snapshot.BranchHead != nil && src.Consistent != nil && hasLSN && consistentLSN == branch.HeadLSN &&
+			!src.Consistent.ClusterTime.IsZero() && src.Consistent.ClusterTime.Equal(src.Position) &&
+			src.Mode == ModeExact
+	}
+	return f
 }
 
 func sourceHeadMismatch(branch *wal.Branch, savedHead int64) *CaptureError {
-	return &CaptureError{Message: fmt.Sprintf("the head of branch %s moved from LSN %d to %d without the follower: something else wrote to it, so it no longer equals the source. Upgrade every process that uses this metadata database, then run `argon source resync`", branch.Name, savedHead, branch.HeadLSN)}
+	return &CaptureError{Message: headMovedMessage(branch, savedHead) + ". Upgrade every process that uses this metadata database, then run `argon source resync`"}
+}
+
+func headMovedMessage(branch *wal.Branch, savedHead int64) string {
+	return fmt.Sprintf("the head of branch %s moved from LSN %d to %d without the follower", branch.Name, savedHead, branch.HeadLSN)
 }
 
 // ResyncUnfinished reports whether a resync still has to reach a consistent point.
 func (s *Status) ResyncUnfinished() bool {
 	return s != nil && s.Source != nil && s.Source.Resync != nil
-}
-
-func (s *Status) hasSavedSourcePosition(database string) bool {
-	// An unfinished resync has deliberately replaced the old resume position.
-	return s != nil && s.Source != nil && s.Source.Database == database &&
-		(s.hasResumeToken || s.ResyncUnfinished())
-}
-
-// RequireSourceWriteBackReady rejects an invalid source position before the
-// plan is claimed or a source write is attempted.
-func (s *Status) RequireSourceWriteBackReady() error {
-	if s.State == "degraded" {
-		state := "ended as degraded"
-		if s.synthesizedDegradation {
-			state = "is degraded"
-		}
-		return fmt.Errorf("write-back refused: following %s (%s). After repairing the branch with `argon source resync`, preview again", state, s.Error)
-	}
-	if s.SourceUnverified != nil {
-		return fmt.Errorf("write-back refused: %s. After a checkpoint is verified, preview again", s.Error)
-	}
-	if s.ResyncUnfinished() {
-		return errors.New("write-back refused: a resync of the followed branch has not finished. Complete it with `argon source resync`, then preview again")
-	}
-	if s.SourceLeaseExpired {
-		return fmt.Errorf("write-back refused: %s. Restart `argon source follow`, let it catch up, then preview again", s.Error)
-	}
-	return nil
 }

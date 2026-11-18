@@ -550,3 +550,10 @@ func TestResync_DetachedJustBeforeItStartsLeavesNothingBehind(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, n, "the status document detach removed was not brought back")
 }
+
+func TestFollow_AutoResyncRequiresOptIn(t *testing.T) {
+	f := newFollowFixture(t, metadataDeploymentURI)
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "")
+	err := f.services.FollowSource(context.Background(), "missing-project", walcli.FollowSourceOptions{AutoResync: true})
+	require.ErrorContains(t, err, "--auto-resync is experimental")
+}

@@ -50,6 +50,10 @@ experimental and off by default.
   another database.
 - `--enable-source-images` has its own experimental gate. Operators can
   enable `changeStreamPreAndPostImages` directly on MongoDB.
+- Source status reports a stable health reason, the evidence for it and the
+  next action in table and JSON output. Deployment status, doctor,
+  write-back preflight and follow and resync admission use the same verdict.
+- `source follow --auto-resync` checks its own experimental opt-in at startup.
 
 ### Fixed
 
@@ -107,6 +111,14 @@ experimental and off by default.
 - Source and deployment health fail while following reports a retry with a
   capture error. The follower keeps retrying from the saved position.
 - Deployment capture health skips projects until their imports publish.
+- A stopped follower with an open catch-up range or a stored capture
+  error now reports unhealthy. A clean stop at a verified exact checkpoint
+  still exits zero. Canceling a stream open or retry keeps its stored error
+  visible until the stream reopens.
+- Lease expiry is detected in every follower state, including when resync
+  preflight acquired the lease while the previous report still said stopped.
+- Each online copy batch checks the head left by its predecessor, starting
+  at the branch creation LSN. An unexpected head aborts the unpublished import.
 
 ## [2.6.0] - 2026-11-18
 

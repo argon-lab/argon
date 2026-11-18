@@ -456,7 +456,11 @@ source's own change stream:
    reserving a project.
 2. Start a causally consistent session at `T0` and copy every listed collection
    into put entries with majority read concern. The document key preserves
-   the BSON type of `_id`, including an explicit null.
+   the BSON type of `_id`, including an explicit null. Each batch commits
+   its entries and a conditional head update in one metadata transaction.
+   The first expects the creation LSN. Later batches expect the head the
+   preceding batch committed, including across collection boundaries.
+   A mismatch fails the import before publication.
 3. Verify that the branch still has the head written by the copy, then
    replay the change stream from just after `T0` on top of the copy. Each
    entry is a whole document, so applying a change the copy already contained
@@ -513,24 +517,40 @@ branch head and stream position require a fresh lease. Those transactions
 also check the branch's source and checkout state. Detach removes the
 saved state and a previous owner cannot write into a recreated record.
 A follower stops after a full lease period without a successful renewal.
-Source status reads the saved position, branch head and server-clock
-lease freshness from one metadata snapshot. An expired live state is
-reported as stopped while retaining the last position and consistent point.
 Lease acquisition records an expired owner or an orphaned live report in
-the same metadata update as the new owner. A fresh heartbeat does not
-verify the saved position. The follower clears the loss record only in an
-exact checkpoint transaction once the stream reaches the source primary's
-cluster time observed after lease acquisition. A resync clears it in the
-transaction that completes replay. Source status, deployment health and
-write-back preflight report the unverified position until then. Deployment
-and source status also report a retry with a capture error as unhealthy
-until the stream reopens and the follower reports progress.
+the same metadata update as the new owner. The replacement clears the
+unverified marker in the exact checkpoint transaction once replay reaches
+the source primary's cluster time observed after acquisition. Resync clears
+it in the transaction that completes replay.
+
+A single metadata snapshot joins the branch, project and saved checkpoint,
+with lease freshness evaluated by the metadata server's `$$NOW`. The loader
+in `internal/ingest/source_status.go` derives the stored follower state,
+source mode, capture error, owner freshness, takeover and unfinished-resync
+markers, checkout, publication, saved head, source position and evidence
+for an exact checkpoint at the current branch head. It also checks the
+stored beginning and reason of any open inexact range. Head comparisons
+distinguish a missing LSN from an explicit zero. The token time must match
+the saved source time, except when an idle stream returns its stored opening
+boundary one tick ahead of the time the primary has confirmed.
+
+`ingest.Evaluate` returns the verdict kind, stable reason, message and next
+action. Only a published, released branch at a verified exact checkpoint
+with a usable position, a live owner or a clean stop, and no outstanding
+error, marker or inexact range can be healthy. An importing project gets
+its own verdict and is omitted from deployment health. Source status,
+deployment status, doctor and write-back preflight share this result.
+Follow and resync admission map the same reasons to the work each command
+can perform. The operator table documents their order of precedence in
+[the operations guide](OPERATIONS.md#what-argon-source-status-reports-and-what-to-do).
+
 A subsequent ordinary resync uses its stream preflight to check whether
 the saved position can still be resumed. A confirmed stream gap allows the
 comparison, after the usual preflight on the new boundary.
 A head that moved without the follower, or a saved position another process
 replaced, ends following as degraded and requires a manual resync. Automatic
-resync handles gaps in the source stream and unfinished resyncs.
+resync checks its own experimental gate at follow entry and handles gaps in
+the source stream and unfinished resyncs.
 
 The source binding in `wal_sources` keeps the identity from import. Every
 connection to an ID-bound source must prove the same replica-set ID. A
