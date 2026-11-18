@@ -49,6 +49,16 @@ import (
 // transaction has not been confirmed in the metadata.
 const StatusWritingBack = "writing_back"
 
+const writingBackAdvice = "This plan will not be written again. Check the source database, let following catch up, then run `argon merge preview` again."
+
+// WritingBackAdvice tells operators how to proceed with an unsettled claim.
+func (plan *Plan) WritingBackAdvice() string {
+	if plan.Status == StatusWritingBack {
+		return writingBackAdvice
+	}
+	return ""
+}
+
 // WriteBackRecord is the audit trail of a plan's write-back.
 type WriteBackRecord struct {
 	// Session is the source session the transaction ran in. Change events
@@ -134,12 +144,8 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if err != nil {
 		return nil, err
 	}
-	switch plan.Status {
-	case StatusPending:
-	case StatusWritingBack:
-		return nil, fmt.Errorf("merge plan is %s: an earlier write-back claimed it and did not confirm its commit. It will not be written again. Following settles it as applied if that transaction reached the source; if the plan is still %s once following has caught up, nothing was written, and a new preview shows what is left to merge", plan.Status, plan.Status)
-	default:
-		return nil, fmt.Errorf("merge plan is %s, not pending", plan.Status)
+	if err := plan.RequirePending(); err != nil {
+		return nil, err
 	}
 	if plan.FormatVersion < 2 {
 		return nil, errors.New("this plan predates before-images and cannot be checked against the source; run preview again")
@@ -240,13 +246,27 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	defer cancel()
 	if txnErr == nil {
 		now := time.Now()
-		// The follower may have closed the plan already; either is fine.
-		if _, err := s.plans.UpdateOne(record2, bson.M{"_id": plan.ID, "status": StatusWritingBack},
-			bson.M{"$set": bson.M{"status": StatusApplied, "strategy": strategy, "applied_at": now, "write_back.committed_at": now}}); err != nil {
-			return &ApplyResult{Applied: len(changes), ConflictsResolved: resolved},
-				fmt.Errorf("the plan was written to the source, but recording that failed (%w); the plan stays %s until following sees the transaction and closes it", err, StatusWritingBack)
+		// The follower can settle this same claim before we record the commit.
+		marked, err := s.plans.UpdateOne(record2, bson.M{
+			"_id": plan.ID, "write_back.session": record.Session,
+			"$or": bson.A{
+				bson.M{"status": StatusWritingBack},
+				bson.M{"status": StatusApplied, "write_back.settled_at": bson.M{"$exists": true}},
+			},
+		}, mongo.Pipeline{{{Key: "$set", Value: bson.M{
+			"status":                  StatusApplied,
+			"strategy":                bson.M{"$literal": strategy},
+			"applied_at":              bson.M{"$ifNull": bson.A{"$applied_at", now}},
+			"write_back.committed_at": now,
+		}}}})
+		if err == nil && marked.MatchedCount != 1 {
+			err = errors.New("the plan record no longer matches the write-back claim")
 		}
-		return &ApplyResult{Applied: len(changes), ConflictsResolved: resolved}, nil
+		result := &ApplyResult{Applied: len(changes), ConflictsResolved: resolved}
+		if err != nil {
+			return result, fmt.Errorf("the source transaction committed, but plan %s could not be marked applied: %w", plan.ID.Hex(), err)
+		}
+		return result, nil
 	}
 
 	var labeled mongo.LabeledError
@@ -260,7 +280,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		aborted = true
 	}
 	if !aborted {
-		return nil, fmt.Errorf("the source transaction's commit did not report an outcome (%w). The plan stays %s and will not be written again; following closes it as applied if the transaction reached the source", txnErr, StatusWritingBack)
+		return nil, fmt.Errorf("the source commit for plan %s did not report an outcome (%w). The plan stays %s unless following sees the transaction and marks it applied. %s", plan.ID.Hex(), txnErr, StatusWritingBack, writingBackAdvice)
 	}
 	// Nothing was written. Return the plan to pending so that a transient
 	// failure can be retried; a conflict will fail the same way until the
@@ -284,8 +304,8 @@ type sourceWrite struct {
 	// was made, byte for byte, when that is known. The comparison then sees
 	// field order too.
 	before bson.Raw
-	// document is what a put sends when the source has no such document.
-	// When it has one, the fields are sent in that document's order.
+	// document is the planned replacement. Existing fields can keep their
+	// source order when an existing document is replaced.
 	document bson.D
 }
 
@@ -430,10 +450,9 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, writes []s
 
 // orderLike returns want with its fields in the order have has them, at
 // every level: a field both documents have keeps its position in have, and
-// fields only want has follow in want's order. A replacement then changes
-// what the plan changed and leaves the layout of the rest of the document as
-// production wrote it, which matters to anything that compares embedded
-// documents whole.
+// fields only want has follow in want's order. Inside arrays, only matching
+// elements borrow the source's field order, which matters to anything that
+// compares embedded documents whole.
 func orderLike(have, want bson.D) bson.D {
 	wanted := make(map[string]interface{}, len(want))
 	for _, field := range want {
@@ -466,17 +485,67 @@ func orderValueLike(have, want interface{}) interface{} {
 		}
 	case bson.A:
 		if had, ok := have.(bson.A); ok {
-			ordered := make(bson.A, len(wanted))
-			for i, item := range wanted {
-				ordered[i] = item
-				if i < len(had) {
-					ordered[i] = orderValueLike(had[i], item)
-				}
-			}
-			return ordered
+			return orderArrayLike(had, wanted)
 		}
 	}
 	return want
+}
+
+func orderArrayLike(have, want bson.A) bson.A {
+	keys := make([]string, len(have))
+	matches := make(map[string][]int)
+	for i, item := range have {
+		if key := arrayItemKey(item); key != "" {
+			keys[i] = key
+			matches[key] = append(matches[key], i)
+		}
+	}
+	ordered := make(bson.A, len(want))
+	copy(ordered, want)
+	for i, item := range want {
+		key := arrayItemKey(item)
+		if key == "" {
+			continue
+		}
+		// Among matching duplicates, prefer the same position when available.
+		match := i
+		if i >= len(have) || keys[i] != key {
+			indices := matches[key]
+			for len(indices) > 0 && keys[indices[0]] == "" {
+				indices = indices[1:]
+			}
+			if len(indices) == 0 {
+				delete(matches, key)
+				continue
+			}
+			match = indices[0]
+			matches[key] = indices[1:]
+		}
+		keys[match] = ""
+		ordered[i] = orderValueLike(have[match], item)
+	}
+	return ordered
+}
+
+// arrayItemKey uses a subdocument's _id if present and otherwise its value
+// with document keys sorted for comparison. Scalars have no fields to order.
+func arrayItemKey(item interface{}) string {
+	switch value := item.(type) {
+	case bson.D:
+		for _, field := range value {
+			if field.Key == "_id" {
+				return "id:" + wal.DocumentIDString(field.Value)
+			}
+		}
+	case bson.A:
+	default:
+		return ""
+	}
+	value, err := mongoexpr.CanonicalBytes(item)
+	if err != nil {
+		return ""
+	}
+	return "value:" + string(value)
 }
 
 // LookupWriteBack returns the plan whose write-back ran in a source session,
@@ -492,21 +561,6 @@ func (s *Service) LookupWriteBack(ctx context.Context, targetBranchID string, se
 		return nil, err
 	}
 	return &plan, nil
-}
-
-// ReleaseWriteBacks returns to pending the plans of a followed branch that
-// were claimed for write-back before the given time and never confirmed. The
-// follower calls it once the branch has passed the point at which such a
-// plan's transaction would have appeared in the source's change stream, so a
-// plan it still finds claimed was never committed.
-func (s *Service) ReleaseWriteBacks(ctx context.Context, targetBranchID string, claimedBefore time.Time) error {
-	_, err := s.plans.UpdateMany(ctx,
-		bson.M{"target_branch_id": targetBranchID, "status": StatusWritingBack, "write_back.started_at": bson.M{"$lt": claimedBefore}},
-		bson.M{
-			"$set":   bson.M{"status": StatusPending, "write_back_last_error": "the write-back that claimed this plan never committed on the source: following passed the time it could have without seeing its transaction"},
-			"$unset": bson.M{"write_back": ""},
-		})
-	return err
 }
 
 // SettleWriteBack closes a plan whose transaction the follower has seen in

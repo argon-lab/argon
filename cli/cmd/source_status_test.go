@@ -33,3 +33,28 @@ func TestCLISourceStatusShowsLeaseOwner(t *testing.T) {
 		}
 	}
 }
+
+func TestCLISourceStatusShowsWeakIdentityWriteBackRestriction(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	info := &walcli.SourceInfo{
+		Identity:                   "replica-set name and member hosts",
+		WriteBackUnavailableReason: "requires a replica-set ID recorded at import",
+	}
+	printSourceStatus(cmd, info)
+	for _, field := range []string{info.Identity, "unavailable (" + info.WriteBackUnavailableReason + ")"} {
+		if !strings.Contains(out.String(), field) {
+			t.Fatalf("table output missing %s:\n%s", field, out.String())
+		}
+	}
+	out.Reset()
+	if err := writeJSON(cmd, info); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"identity": "replica-set name and member hosts"`, `"write_back_unavailable_reason": "requires a replica-set ID recorded at import"`} {
+		if !strings.Contains(out.String(), field) {
+			t.Fatalf("JSON output missing %s:\n%s", field, out.String())
+		}
+	}
+}

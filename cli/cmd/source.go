@@ -22,10 +22,12 @@ the database it was imported from: its main branch follows that database.
            as degraded, in place, and make it followable again
   detach   stop following for good; main becomes an ordinary branch
 
-The source connection string is given on each command (--uri, or the
-ARGON_SOURCE_URI environment variable) and is never stored. Argon reads the
-source and, only through "argon merge apply --write-back", writes single
-documents to it. It never drops, renames or rewrites anything there.`,
+The source connection string is given to commands that contact the source
+(--uri, or the ARGON_SOURCE_URI environment variable) and is never stored.
+"argon merge apply --write-back" writes the documents in a plan.
+--enable-source-images changes how the source stores writes. Both require
+a replica-set ID recorded at import. Argon never drops, renames or rewrites
+the source database.`,
 }
 
 var sourceFollowCmd = &cobra.Command{
@@ -40,9 +42,8 @@ position.
 Only one follower or resync can run for a project at a time. "argon source
 status" shows the owner and its last heartbeat.
 
-Nothing is written to the source, and its collections are not altered. An
-update's document is read back from the source as of the update's cluster
-time, which MongoDB serves for a limited time (five minutes by default). If
+Following reads the source. MongoDB serves an update's document as of its
+cluster time for a limited time (five minutes by default). If
 following falls further behind than that, the exact document is gone and
 following stops as degraded. Two things avoid that:
 
@@ -50,7 +51,8 @@ following stops as degraded. Two things avoid that:
                           source's collections, so updates carry their own
                           documents for as long as the oplog keeps them. This
                           changes the source: MongoDB then stores a pre-image
-                          of every updated or deleted document.
+                          of every updated or deleted document. The project
+                          must have recorded the replica-set ID at import.
   --allow-inexact         lets following continue: such updates are applied
                           with the document's current state, main converges
                           on the source again, and the range in between is
@@ -136,6 +138,10 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Project %s: %s follows database %q\n", info.Project, info.Branch, info.Database)
 	fmt.Fprintf(out, "  Source:      %s (replica set %s)\n", info.Location, info.ReplicaSet)
+	fmt.Fprintf(out, "  Identity:    %s\n", info.Identity)
+	if info.WriteBackUnavailableReason != "" {
+		fmt.Fprintf(out, "  Write-back:  unavailable (%s)\n", info.WriteBackUnavailableReason)
+	}
 	fmt.Fprintf(out, "  State:       %s", info.State)
 	if !info.UpdatedAt.IsZero() {
 		fmt.Fprintf(out, " (reported %s; not proof a follower is running now)", info.UpdatedAt.Format(time.RFC3339))
@@ -296,7 +302,7 @@ func init() {
 	}
 	sourceFollowCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceFollowCmd.Flags().Bool("allow-inexact", false, "Continue past updates whose exact documents the source no longer serves, recording the range as inexact")
-	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Turn on changeStreamPreAndPostImages for the SOURCE collections (changes how the source stores writes)")
+	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID recorded at import)")
 	sourceFollowCmd.Flags().Bool("auto-resync", false, "Complete an unfinished resync or repair a source stream gap, then continue following")
 	sourceResyncCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceResyncCmd.Flags().Bool("force", false, "Resync even though following did not end as degraded")

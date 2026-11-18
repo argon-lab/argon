@@ -37,8 +37,8 @@ type Binding struct {
 	Database  string `bson:"database" json:"database"`
 	// Display is the source location without credentials or options.
 	Display string `bson:"display" json:"display"`
-	// SetName and ReplicaSetID identify the deployment. A later connection
-	// string must lead to the same one before Argon reads or writes there.
+	// SetName and ReplicaSetID are recorded at import. A later connection must
+	// present the same ID if the binding has one.
 	SetName      string `bson:"set_name" json:"set_name"`
 	ReplicaSetID string `bson:"replica_set_id,omitempty" json:"replica_set_id,omitempty"`
 	// Hosts are the replica-set members the deployment reported. When the
@@ -142,12 +142,9 @@ func (r *Registry) GuardDrop(ctx context.Context, database string) error {
 	return nil
 }
 
-// Verify reports whether the deployment behind a connection is the one the
-// binding was created against. It fails closed: a binding that recorded the
-// replica set's ID accepts nothing less than the same ID, and one that could
-// not record it requires the set name and at least one member host to match.
-// A matching name on its own is never enough, because separate deployments
-// routinely share one ("rs0", or a staging set restored from production).
+// Verify checks the identity recorded at import. When the binding lacks an ID,
+// the set name and at least one member host must match. That check is suitable
+// only for read operations because different deployments can share the strings.
 func (b *Binding) Verify(id Identity) error {
 	if b.ReplicaSetID != "" {
 		if id.ReplicaSetID == "" {
@@ -162,7 +159,27 @@ func (b *Binding) Verify(id Identity) error {
 		return fmt.Errorf("the connection leads to replica set %q, but this project follows %q (%s)", id.SetName, b.SetName, b.Display)
 	}
 	if !sharesHost(b.Hosts, id.Hosts) {
-		return fmt.Errorf("the connection leads to a replica set named %q with none of the members this project's source had when it was imported (%s); it is treated as a different deployment. If the source's members were all replaced, connect once as a user that may run replSetGetConfig", id.SetName, b.Display)
+		return fmt.Errorf("the connection leads to a replica set named %q with none of the members this project's source had when it was imported (%s). If this is the intended source and its members have changed, %s", id.SetName, b.Display, reimportWithID)
+	}
+	return nil
+}
+
+const replicaSetIDRequired = "a replica-set ID is required because a tunnel or another deployment can present the same replica-set name and member host strings"
+const configReader = "a user allowed to run replSetGetConfig, for example one with the clusterMonitor role"
+const reimportWithID = "stop any running follower, run `argon source detach -p <project> --yes`, then import online into a new project with " + configReader
+
+// RequireReplicaSetID refuses source writes unless the binding recorded an ID.
+func (b *Binding) RequireReplicaSetID() error {
+	if b.ReplicaSetID == "" {
+		return errors.New(replicaSetIDRequired + ". To bind the source again, " + reimportWithID)
+	}
+	return nil
+}
+
+// RequireReplicaSetID refuses source writes during import unless the ID can be recorded.
+func (id Identity) RequireReplicaSetID() error {
+	if id.ReplicaSetID == "" {
+		return errors.New(replicaSetIDRequired + ". To record the ID, import online with " + configReader)
 	}
 	return nil
 }
@@ -186,21 +203,6 @@ func sharesHost(recorded, reported []string) bool {
 	return false
 }
 
-// AdoptID records the replica-set ID for a binding that was created without
-// one, the first time a verified connection can read it. From then on the
-// stronger check applies.
-func (r *Registry) AdoptID(ctx context.Context, binding *Binding, id Identity) error {
-	if binding.ReplicaSetID != "" || id.ReplicaSetID == "" {
-		return nil
-	}
-	if _, err := r.bindings.UpdateOne(ctx, bson.M{"_id": binding.BranchID, "replica_set_id": bson.M{"$in": bson.A{nil, ""}}},
-		bson.M{"$set": bson.M{"replica_set_id": id.ReplicaSetID}}); err != nil {
-		return err
-	}
-	binding.ReplicaSetID = id.ReplicaSetID
-	return nil
-}
-
 // Identify asks a deployment who it is. A source has to be a replica set:
 // both the consistent import and following it read its change stream.
 func Identify(ctx context.Context, client *mongo.Client) (Identity, error) {
@@ -222,11 +224,9 @@ func Identify(ctx context.Context, client *mongo.Client) (Identity, error) {
 	if id.SetName == "" {
 		return id, errors.New("the source is a standalone mongod; online import and follow read the change stream, which needs a replica set. Use a quiesced import (--source-quiesced) for a standalone")
 	}
-	// The set name alone can repeat across deployments ("rs0"). The replica
-	// set's own ID cannot, but reading it needs a privilege not every source
-	// user has. A server that refuses the command leaves the ID empty, which
-	// Verify treats as "cannot prove"; a failure to reach the server at all
-	// is an error, not a missing ID.
+	// The replica-set ID distinguishes separately initialized deployments.
+	// Reading it needs a privilege some source users lack. A server that
+	// refuses the command leaves the ID empty. A network failure is an error.
 	var config struct {
 		Config struct {
 			Settings struct {

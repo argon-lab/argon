@@ -118,7 +118,9 @@ var mergePreviewCmd = &cobra.Command{
 var mergeApplyCmd = &cobra.Command{
 	Use:   "apply <plan-id>",
 	Short: "Apply a pending merge plan",
-	Args:  cobra.ExactArgs(1),
+	Long: "Apply a pending merge plan. If a plan stays writing_back, " +
+		"check the source database, let following catch up, then run \"argon merge preview\" again to create a new plan.",
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		strategy, _ := cmd.Flags().GetString("strategy")
 		writeBack, _ := cmd.Flags().GetBool("write-back")
@@ -139,6 +141,9 @@ var mergeApplyCmd = &cobra.Command{
 
 		plan, err := services.Merge.GetPlan(cmd.Context(), planID)
 		if err != nil {
+			return err
+		}
+		if err := plan.RequirePending(); err != nil {
 			return err
 		}
 		if err := services.SyncBranch(cmd.Context(), plan.SourceBranchID); err != nil {
@@ -208,8 +213,18 @@ var mergeListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		var advice string
+		for _, plan := range plans {
+			if advice = plan.WritingBackAdvice(); advice != "" {
+				break
+			}
+		}
 		if jsonOutput(cmd) {
-			return writeJSON(cmd, map[string]any{"plans": plans})
+			output := map[string]any{"plans": plans}
+			if advice != "" {
+				output["writing_back_advice"] = advice
+			}
+			return writeJSON(cmd, output)
 		}
 		if len(plans) == 0 {
 			fmt.Println("No merge plans.")
@@ -220,6 +235,9 @@ var mergeListCmd = &cobra.Command{
 			fmt.Printf("%-26s %-10s %-16s %8d %10d %s\n",
 				p.ID.Hex(), p.Status, p.SourceBranch+"→"+p.TargetBranch,
 				len(p.Changes), len(p.Conflicts), p.CreatedAt.Format("2006-01-02 15:04:05"))
+		}
+		if advice != "" {
+			fmt.Printf("\nFor a plan in writing_back: %s\n", advice)
 		}
 		return nil
 	},
@@ -232,7 +250,7 @@ func init() {
 	}
 	mergeListCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	mergeApplyCmd.Flags().String("strategy", "", "Conflict resolution: theirs (take the branch) or ours (keep the target)")
-	mergeApplyCmd.Flags().Bool("write-back", false, "Write the plan to the external database the target follows, in one transaction that first checks every document against the plan")
+	mergeApplyCmd.Flags().Bool("write-back", false, "Write the plan to the external database in one transaction after checking every document against the plan (requires a source bound by replica-set ID)")
 	mergeApplyCmd.Flags().String("uri", "", "With --write-back: source connection string (default $ARGON_SOURCE_URI); never stored")
 
 	mergeCmd.AddCommand(mergePreviewCmd)

@@ -16,6 +16,9 @@ import (
 // comparing documents. The first must still capture a write made after
 // its compare cursor read the affected document.
 func TestResync_RefusesConcurrentResync(t *testing.T) {
+	interval := ingest.SourceHeartbeatInterval
+	ingest.SourceHeartbeatInterval = 200 * time.Millisecond
+	t.Cleanup(func() { ingest.SourceHeartbeatInterval = interval })
 	checkResyncReplay(t, func(t *testing.T, f *followFixture) {
 		owner := f.status(t).Owner
 		require.NotNil(t, owner)

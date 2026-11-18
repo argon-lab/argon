@@ -145,8 +145,10 @@ by the source's own change stream until the project equals the source at one
 cluster time; no write made during the import is lost. The source must be a
 replica set. The new project's main branch then follows that database: keep
 it current with "argon source follow" (or pass --follow here), and it accepts
-no other writes. Nothing is written to the source, and its collections are
-left as they are unless you pass --enable-source-images.
+no other writes. --enable-source-images changes the source's collections.
+It requires a user allowed to run replSetGetConfig, for example one with the
+clusterMonitor role. This lets Argon record the replica-set ID at import,
+which is also required for write-back.
 
 --source-quiesced is for a database nobody writes to: stop its writers and
 DDL first and keep them stopped until this command finishes. The result is a
@@ -386,7 +388,7 @@ func init() {
 	importDatabaseCmd.Flags().Bool("online", false, "Import a replica-set database that is being written; main then follows it")
 	importDatabaseCmd.Flags().Bool("follow", false, "With --online: keep following the source in the foreground after the import")
 	importDatabaseCmd.Flags().Bool("allow-inexact", false, "With --follow: see argon source follow --allow-inexact")
-	importDatabaseCmd.Flags().Bool("enable-source-images", false, "With --online: turn on changeStreamPreAndPostImages for the SOURCE collections (changes how the source stores writes)")
+	importDatabaseCmd.Flags().Bool("enable-source-images", false, "With --online: turn on changeStreamPreAndPostImages for the SOURCE collections (requires replSetGetConfig privilege)")
 	importDatabaseCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
 	importDatabaseCmd.Flags().Int("batch-size", 1000, "Number of documents to process in each batch")
 	importDatabaseCmd.Flags().StringP("output", "o", "table", "Output format: table, json")

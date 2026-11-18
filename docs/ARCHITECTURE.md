@@ -503,9 +503,12 @@ A head that moved without the follower, or a saved position another process
 replaced, ends following as degraded and requires a manual resync. Automatic
 resync handles gaps in the source stream and unfinished resyncs.
 
-Which deployment a connection leads to is decided by the replica set's ID
-when it can be read and by the set name plus member hosts otherwise, never by
-the name alone.
+The source binding in `wal_sources` keeps the identity from import. Every
+connection to an ID-bound source must prove the same replica-set ID. A
+binding by set name and member hosts supports following and resync when
+the set name and at least one recorded member still match. Write-back and
+enabling source images require a recorded ID, since distinct deployments
+can report the same name and hosts.
 
 A snapshot read at a cluster time shows a document after everything that
 committed at that time. Within a multi-document transaction an earlier change
@@ -590,16 +593,18 @@ The write is one source transaction that compares each document with the
 plan's before-image and then inserts, replaces or deletes it, in a collection
 that already exists: it never upserts, so it cannot create one. The
 comparison is on the bytes the followed branch stored for the document when
-it has them, which makes a reordered document a changed one. A replacement is
-sent with its fields in the order the source's document has them, so that
-only what the plan changed changes. Because the source and
-the metadata may be different deployments, the plan's status cannot commit
-with the documents. Instead the plan is claimed first, with the ID of a
-session used for nothing else; the follower recognises change events from
+it has them, which makes a reordered document a changed one. A replacement
+preserves the source's field order, including array elements matched by
+`_id` or value. Elements without a match keep the plan's order. Because the
+source and the metadata may be different deployments, the plan's status
+cannot commit with the documents. The writer claims the plan first with the
+ID of a session used for nothing else. The follower recognises events from
 that session, attributes their entries to the merge, appends the `merge`
 record and marks the plan applied in the same transaction that stores them.
-A crash between the source commit and its bookkeeping therefore leaves a plan
-that cannot be applied again and that the follower closes on its own.
+An acknowledged source commit also lets the writer mark the plan applied.
+The writer returns a claim to pending only when it knows the transaction
+aborted or the commit was never sent. A claim whose outcome remains unknown
+stays `writing_back` and cannot be reused.
 
 ### Limits
 
@@ -613,7 +618,8 @@ that cannot be applied again and that the follower closes on its own.
 - A resync restores the source's current state, not its history: the
   changes between the last applied one and the resync are recorded as their
   outcome only, inside a range marked inexact. A write-back that committed in
-  that gap is not attributed to its merge and its plan stays `writing_back`.
+  that gap is not attributed to its merge. If the writer had not marked its
+  plan applied, the plan stays `writing_back`.
 - A resync reads every source document once and needs the oplog to cover its
   duration. It is not incremental.
 - A resync that is interrupted leaves `main` between two states, marked as
@@ -637,9 +643,7 @@ that cannot be applied again and that the follower closes on its own.
 - Processes older than this feature do not know a followed branch is
   read-only. The follower detects that the head moved without it and stops
   as degraded; it cannot stop the older process from writing.
-- Write-back never creates a collection. A replaced document keeps the field
-  order production gave it; fields the plan adds follow in the sandbox's
-  order.
+- Write-back never creates a collection.
 
 ## Migration from schema v1
 

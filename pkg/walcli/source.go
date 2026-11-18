@@ -69,10 +69,11 @@ type SourceInfo struct {
 	Database   string `json:"database"`
 	Location   string `json:"location"`
 	ReplicaSet string `json:"replica_set"`
-	// Identity says what tells this source apart from another deployment:
-	// its replica-set ID, or, when that could not be read, its set name and
-	// member hosts.
+	// Identity is the check recorded at import: a replica-set ID or the set
+	// name and member hosts.
 	Identity string `json:"identity"`
+	// WriteBackUnavailableReason reports the restriction of a name-and-host binding.
+	WriteBackUnavailableReason string `json:"write_back_unavailable_reason,omitempty"`
 
 	// State is the follower's last report: running, catching_up, retrying,
 	// degraded or stopped. It is not proof that a follower is running now.
@@ -146,11 +147,11 @@ func (s *Services) followedBranch(ctx context.Context, projectName string) (*wal
 	return project, branch, binding, nil
 }
 
-// identifySource connects to the database and verifies the recorded binding.
-func identifySource(ctx context.Context, binding *source.Binding, uri string) (*mongo.Database, source.Identity, error) {
+// openSource connects to the database and verifies the recorded binding.
+func openSource(ctx context.Context, binding *source.Binding, uri string) (*mongo.Database, error) {
 	client, err := source.Connect(ctx, uri)
 	if err != nil {
-		return nil, source.Identity{}, err
+		return nil, err
 	}
 	identity, err := source.Identify(ctx, client)
 	if err == nil {
@@ -158,35 +159,9 @@ func identifySource(ctx context.Context, binding *source.Binding, uri string) (*
 	}
 	if err != nil {
 		disconnect(client)
-		return nil, source.Identity{}, source.RedactError(err, uri)
-	}
-	return client.Database(binding.Database), identity, nil
-}
-
-func (s *Services) openSource(ctx context.Context, binding *source.Binding, uri string) (*mongo.Database, error) {
-	db, identity, err := identifySource(ctx, binding, uri)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.Sources.AdoptID(ctx, binding, identity); err != nil {
-		disconnect(db.Client())
 		return nil, source.RedactError(err, uri)
 	}
-	return db, nil
-}
-
-// prepareSourceBinding lets a following run adopt a newly readable replica
-// set ID only inside a transaction that holds its lease.
-func (s *Services) prepareSourceBinding(binding *source.Binding, identity source.Identity) func(context.Context) error {
-	if binding.ReplicaSetID != "" || identity.ReplicaSetID == "" {
-		return nil
-	}
-	return func(ctx context.Context) error {
-		// AdoptID changes its argument. Each transaction attempt needs the
-		// original binding while the adoption is still uncommitted.
-		current := *binding
-		return s.Sources.AdoptID(ctx, &current, identity)
-	}
+	return client.Database(binding.Database), nil
 }
 
 // SourceStatus reports what a project follows and the follower's last state.
@@ -199,6 +174,9 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 		Project: project.Name, Branch: branch.Name, BranchID: branch.ID,
 		Database: binding.Database, Location: binding.Display, ReplicaSet: binding.SetName, Identity: binding.Strength(),
 		HeadLSN: branch.HeadLSN, State: "stopped", Mode: ingest.ModeExact, InexactRanges: []InexactRange{},
+	}
+	if binding.ReplicaSetID == "" {
+		info.WriteBackUnavailableReason = "requires a replica-set ID recorded at import"
 	}
 	status, err := s.Ingest.SourceStatusFor(ctx, branch.ID)
 	if err != nil {
@@ -266,12 +244,16 @@ func (s *Services) FollowSource(ctx context.Context, projectName string, opts Fo
 	if err != nil {
 		return err
 	}
-	db, identity, err := identifySource(ctx, binding, opts.URI)
+	if opts.EnableSourceImages {
+		if err := binding.RequireReplicaSetID(); err != nil {
+			return &ingest.ConfigurationError{Message: fmt.Sprintf("--enable-source-images refused: %v", err)}
+		}
+	}
+	db, err := openSource(ctx, binding, opts.URI)
 	if err != nil {
 		return err
 	}
 	defer disconnect(db.Client())
-	prepare := s.prepareSourceBinding(binding, identity)
 	var beforeStream func(context.Context) error
 	if opts.EnableSourceImages {
 		beforeStream = func(ctx context.Context) error {
@@ -297,7 +279,7 @@ func (s *Services) FollowSource(ctx context.Context, projectName string, opts Fo
 	var lastResync time.Time
 	for {
 		err := s.Ingest.Follow(ctx, branch.ID, db, ingest.FollowOptions{
-			AllowInexact: opts.AllowInexact, OnReady: onReady, Prepare: prepare, BeforeStream: beforeStream,
+			AllowInexact: opts.AllowInexact, OnReady: onReady, BeforeStream: beforeStream,
 			WriteBacks: writeBackLedger{s.Merge}, Redact: redact, Watch: opts.Watch,
 		})
 		if !opts.AutoResync || ctx.Err() != nil {
@@ -311,7 +293,7 @@ func (s *Services) FollowSource(ctx context.Context, projectName string, opts Fo
 		if !lastResync.IsZero() && time.Since(lastResync) < autoResyncSpacing {
 			return fmt.Errorf("another automatic resync was needed within %s of the previous one: %w", autoResyncSpacing, err)
 		}
-		info, resyncErr := s.resyncSource(ctx, branch, db, ResyncSourceOptions{URI: opts.URI}, prepare)
+		info, resyncErr := s.resyncSource(ctx, branch, db, ResyncSourceOptions{URI: opts.URI})
 		if resyncErr != nil {
 			return fmt.Errorf("automatic resync failed after following stopped (%v): %w", err, resyncErr)
 		}
@@ -370,23 +352,23 @@ func (s *Services) ResyncSource(ctx context.Context, projectName string, opts Re
 	if err != nil {
 		return nil, err
 	}
-	db, identity, err := identifySource(ctx, binding, opts.URI)
+	db, err := openSource(ctx, binding, opts.URI)
 	if err != nil {
 		return nil, err
 	}
 	defer disconnect(db.Client())
-	info, err := s.resyncSource(ctx, branch, db, opts, s.prepareSourceBinding(binding, identity))
+	info, err := s.resyncSource(ctx, branch, db, opts)
 	if info != nil {
 		info.Project = projectName
 	}
 	return info, err
 }
 
-func (s *Services) resyncSource(ctx context.Context, branch *wal.Branch, db *mongo.Database, opts ResyncSourceOptions, prepare func(context.Context) error) (*ResyncInfo, error) {
+func (s *Services) resyncSource(ctx context.Context, branch *wal.Branch, db *mongo.Database, opts ResyncSourceOptions) (*ResyncInfo, error) {
 	started := time.Now()
 	result, err := s.Ingest.Resync(ctx, branch.ID, db, ingest.ResyncOptions{
 		State: s.Materializer, Force: opts.Force, BatchSize: opts.BatchSize, Progress: opts.Progress,
-		WriteBacks: writeBackLedger{s.Merge}, Watch: opts.Watch, Prepare: prepare,
+		WriteBacks: writeBackLedger{s.Merge}, Watch: opts.Watch,
 		Redact: func(text string) string { return source.Redact(text, opts.URI) },
 	})
 	if err != nil {
@@ -435,12 +417,18 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	if err != nil {
 		return nil, err
 	}
+	if err := plan.RequirePending(); err != nil {
+		return nil, err
+	}
 	binding, err := s.Sources.Get(ctx, plan.TargetBranchID)
 	if err != nil {
 		return nil, err
 	}
 	if binding == nil {
 		return nil, errors.New("this plan's target branch does not follow an external database; apply it without --write-back")
+	}
+	if err := binding.RequireReplicaSetID(); err != nil {
+		return nil, fmt.Errorf("write-back refused: %w", err)
 	}
 	// A plan is reviewed against the followed branch. When following has
 	// ended on a gap, or a resync is under way, that branch is known not to
@@ -455,7 +443,7 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 			return nil, errors.New("write-back refused: a resync of the followed branch has not finished. Complete it with `argon source resync`, then preview again")
 		}
 	}
-	db, err := s.openSource(ctx, binding, uri)
+	db, err := openSource(ctx, binding, uri)
 	if err != nil {
 		return nil, err
 	}
@@ -476,10 +464,6 @@ func (l writeBackLedger) Lookup(ctx context.Context, branchID string, session pr
 		return nil, err
 	}
 	return &ingest.WriteBack{PlanID: plan.ID.Hex(), SourceBranchID: plan.SourceBranchID, SourceBranch: plan.SourceBranch}, nil
-}
-
-func (l writeBackLedger) Release(ctx context.Context, branchID string, claimedBefore time.Time) error {
-	return l.merge.ReleaseWriteBacks(ctx, branchID, claimedBefore)
 }
 
 func (l writeBackLedger) Settle(ctx context.Context, planID string) error {

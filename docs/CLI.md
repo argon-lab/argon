@@ -59,9 +59,10 @@ needs one of two flags, and `--yes` replaces neither:
   command prints, and the project's `main` then follows that database (next
   section). `--follow` keeps following in the foreground once the import is
   done, and `--allow-inexact` (only with `--follow`) means what it means for
-  `argon source follow`. Nothing is written to the source. `--enable-source-images` is the one
-  exception and has to be asked for: it switches on
-  `changeStreamPreAndPostImages` for the source's collections.
+  `argon source follow`. To switch on `changeStreamPreAndPostImages` for
+  the source's collections, pass `--enable-source-images` and import as
+  a user allowed to run `replSetGetConfig`, such as one with the
+  `clusterMonitor` role.
 - `--source-quiesced` is for a database nobody is writing to: pause its
   writers and DDL for the whole import. The result is a one-time copy.
 
@@ -85,22 +86,31 @@ argon merge apply <plan-id> --write-back [--uri U] [--strategy theirs|ours]
 A project imported with `--online` has a `main` that mirrors its source.
 `source follow` applies the source's changes to it until interrupted and
 resumes where it stopped. The connection string comes from `--uri` or
-`ARGON_SOURCE_URI` on every command and is never stored; a string that leads
-to a different deployment than the one imported from is refused.
+`ARGON_SOURCE_URI` on every command and is never stored. Each connection
+must match the identity recorded at import. If the import could read the
+replica-set ID, each connection must prove the same ID. Otherwise following
+and resync match on the set name and at least one member host.
+
+`--write-back` and `--enable-source-images` require a replica-set ID recorded
+at import. Separate deployments can report the same set name and member
+hosts. For a project bound by name and hosts, detach it with
+`argon source detach -p P --yes`, then import the source online into a new
+project as a user allowed to run `replSetGetConfig`, such as one with the
+`clusterMonitor` role.
 
 While `main` follows a source, the source is the only thing that changes it:
 `merge apply` without `--write-back`, `undo`, `restore reset`, `checkout` and
 programmatic writes on `main` are refused. Sandboxes forked from it work as
 usual. To bring a sandbox's changes back, `merge apply <plan-id> --write-back`
-writes the reviewed plan to the source database in one transaction, after
-checking every document against the state the plan was reviewed with; one
-mismatch aborts all of it. `main` shows the result once following has read it
-back from the source. `--write-back` is the only way Argon writes to a
-source, it has to be given on the call, and the MCP server and REST API do
-not offer it.
+writes the plan to the source database in one transaction after checking
+every document against the plan's before-image. One mismatch aborts the
+transaction. `main` shows the result once following has read it back from
+the source. The MCP server and REST API do not offer write-back.
 
 `source status` exits nonzero when following is degraded or a resync is
 unfinished, and lists the ranges of `main`'s history that are not exact.
+It shows the binding's identity check and reports when that check rules
+out write-back (`write_back_unavailable_reason` in JSON).
 It reports the lease owner's run type, host, process ID and last heartbeat
 in both table and JSON output. Only one follower or resync can hold the
 lease for a project at a time.
@@ -170,6 +180,10 @@ Plans apply exactly once and refuse stale parent heads; conflicts fail
 loudly unless a strategy resolves them. Merges are undoable like any range.
 When the parent follows an external database, a plan is applied with
 `--write-back` instead; see [Follow a live database](#follow-a-live-database).
+A write-back plan in `writing_back` is claimed and cannot be used again.
+Check the affected documents on the source, let following catch up, then
+run `argon merge preview` again for the sandbox. `merge list` prints this
+guidance and includes it as `writing_back_advice` in JSON output.
 
 ## Pins — immutable datasets
 

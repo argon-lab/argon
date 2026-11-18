@@ -39,11 +39,12 @@ entry — a synchronization barrier, not in-proxy capture).
   source, and when something other than the follower wrote to `main`. A
   follower's writes are conditional on the branch still following its source,
   so `source detach` stops a follower in another process as well.
-- A source is identified by its replica-set ID when the importing user may
-  read it, and otherwise by its set name together with its member hosts; a
-  matching set name alone is never accepted, for following, resync,
-  write-back or `--enable-source-images`. `argon source status` shows which
-  applies.
+- An online import binds the source by replica-set ID when the importing user
+  can run `replSetGetConfig`. Otherwise, following and resync require the set
+  name and at least one recorded member host to match. The binding stays as
+  recorded at import. Write-back and `--enable-source-images` require a
+  replica-set ID. `argon source status` shows the identity check and reports
+  when the binding rules out write-back.
 - Resync: `argon source resync` repairs a project whose follower ended as
   degraded, in place, instead of importing the database again: after a
   collection was dropped or renamed on the source, after the database was
@@ -67,11 +68,12 @@ entry — a synchronization barrier, not in-proxy capture).
   document with the plan's before-image and writes nothing if one differs.
   It happens only when the flag is given on the call; the MCP server and the
   REST API do not offer it. It writes single documents into collections the
-  source already has and never creates one; a replaced document keeps the
-  field order production gave it; a document whose fields were reordered
-  since the review counts as changed; and it is refused while following is
-  degraded. A plan whose write-back was interrupted before it committed is
-  pending again.
+  source already has and never creates one. A replacement preserves field
+  order in matching subdocuments, including array elements that moved.
+  Field order changes on the source after preview count as conflicts.
+  Write-back is refused while following is degraded. An unresolved claim
+  stays `writing_back`. Check the affected documents on the source, let
+  following catch up, and preview a new plan.
 - `--enable-source-images` on `import database --online` and `source follow`
   switches on `changeStreamPreAndPostImages` for the source's collections.
   Argon does not alter a source's collections without it, makes the change

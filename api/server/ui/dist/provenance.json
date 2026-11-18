@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "source": "web/",
-  "source_sha256": "5b224248b7ec14748673fbbb32464f28a8bdc70b41cdf3db89a8196529948146",
+  "source_sha256": "3ffb32e6f90516db8ff63b6dddcd738e01a182e21a57ac5e4a4d5d6982e6debb",
   "source_file_count": 23,
   "source_hash_algorithm": "sha256 of sorted UTF-8 relative path + NUL + file bytes + NUL; excludes node_modules, dist, .git, .env*, .DS_Store",
   "package_lock_sha256": "e07fefa2e27bd0e0c7ccee03d7193b9e1cce1f72aaa3b4fddf3c304c4fbbd54e",
   "assets_sha256": {
-    "assets/index-DjYOpeOV.js": "c0df24e17b503938a479a07d4c17b7a0fc0ef9a8b0913ddfac92c6fc090843fa",
+    "assets/index-B91p-N5M.js": "9faa182ca61c657b0f42ab0370bcd6a824d56f0837691d9ceda6c2a4db5e0c33",
     "assets/index-eEBoXYst.css": "5f75bd3e56d7584b3d3ceebc98bc2ea3c465f1bd0f636bb78fcdc812b3f0fd28",
-    "index.html": "cb9aae74e8a97f2d1dad4763689898983bb7fedf580cbbb47f321cd28471f165"
+    "index.html": "18f4e5196b8daf3d579fa2a5080fa4d63dd20e61d81f35fa89de4eaa0c30e04b"
   }
 }

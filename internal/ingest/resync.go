@@ -99,8 +99,6 @@ type ResyncOptions struct {
 	BatchSize int
 	// Progress is optional.
 	Progress func(ResyncProgress)
-	// Prepare updates metadata in the transaction that records the start.
-	Prepare func(context.Context) error
 	// WriteBacks and Redact are as in FollowOptions.
 	WriteBacks WriteBackLedger
 	Redact     func(string) string
@@ -263,13 +261,7 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 		if err := s.updateSourceLease(sc, run.lease, bson.M{"$set": fields, "$unset": bson.M{"resume_token": ""}}); err != nil {
 			return nil, err
 		}
-		if err := s.branches.FollowerCheckpoint(sc, branch.ID, branch.Follows, branch.HeadLSN); err != nil {
-			return nil, err
-		}
-		if opts.Prepare != nil {
-			return nil, opts.Prepare(sc)
-		}
-		return nil, nil
+		return nil, s.branches.FollowerCheckpoint(sc, branch.ID, branch.Follows, branch.HeadLSN)
 	}); err != nil {
 		if fenced := followerWriteError(branch, err); fenced != err {
 			return fenced

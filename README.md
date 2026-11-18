@@ -105,12 +105,16 @@ argon merge apply <plan-id> --write-back  # one transaction on the source
 ```
 
 The import is the source at one cluster time, which it prints. `--write-back`
-checks every document against the state the plan was reviewed with and writes
-nothing if one has changed. It is the only way Argon writes to the source, it
-must be given on the call, and the MCP server and REST API do not offer it.
-Argon never drops, renames or rewrites anything in a source database. What is
-and is not guaranteed is in
+checks every document against the plan's before-image and aborts the
+transaction if one has changed. Write-back and `--enable-source-images`
+require importing with a user allowed to run `replSetGetConfig`, such as one
+with the `clusterMonitor` role. Use `argon source status` to see which identity
+check applies. The MCP server and REST API do not offer write-back. Argon
+never drops, renames or rewrites a source database. See
 [the operations guide](docs/OPERATIONS.md#following-a-source-database).
+
+If a plan stays `writing_back`, check the affected documents on the source,
+let following catch up, and run `argon merge preview` again for the sandbox.
 
 Each project can run one follower or resync at a time. `argon source status`
 shows the lease owner's host, process ID and last heartbeat. Run

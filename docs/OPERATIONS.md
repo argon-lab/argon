@@ -137,23 +137,33 @@ A project imported with `--online` stays tied to its source: `main` follows
 that database. Argon keeps a record of which deployment and database that is
 (`wal_sources`: replica-set name and ID, database name, hosts) but not how to
 log in to it. Every command that reaches the source takes the connection
-string again, from `--uri` or `ARGON_SOURCE_URI`, and refuses a deployment
-other than the recorded one.
+string again, from `--uri` or `ARGON_SOURCE_URI`, and checks it against the
+binding recorded at import.
 
 What "the recorded one" rests on depends on what the importing user could
 read, and `argon source status` shows which (`identity`):
 
 - **The replica set's ID**, when the import could run `replSetGetConfig`.
   Every later connection then has to show the same ID. One that cannot read
-  it is refused, however well the names match: grant the user
-  `replSetGetConfig` (the `clusterMonitor` role has it).
+  it is refused. Grant the user `replSetGetConfig` (the `clusterMonitor`
+  role has it). A file-level or volume snapshot clone keeps the ID, so a
+  matching ID identifies the deployment or a file-level clone of it. Check
+  where the connection string leads when the same ID exists on a clone.
 - **The set name and member hosts**, when it could not. A later connection
   has to report the same set name and at least one of the hosts recorded at
-  import. A matching name alone is never accepted: separate deployments
-  routinely share one, and a staging set is often a restore of production.
-  The first verified connection that can read the ID records it, and the
-  stronger check applies from then on. This weaker check cannot tell two
-  deployments apart if they share a set name and a member host name.
+  import. Later connections leave that binding in place, even if they can
+  read the ID. Two deployments can present the same set name and member
+  hosts, for example through a tunnel or in clusters with the same internal
+  names. This check supports following and resync. Write-back and
+  `--enable-source-images` require an ID recorded at import, and
+  `argon source status` reports when the binding rules out write-back.
+
+If all recorded member hosts have changed for a project bound by name and
+hosts, Argon can no longer verify its source. To resume following in that
+case, or to enable source writes for a project bound by name and hosts,
+detach it with `argon source detach -p <project> --yes` and import the
+source online into a new project. Use a source user allowed to run
+`replSetGetConfig` for the import.
 
 ### What `argon source follow` guarantees
 
@@ -210,9 +220,10 @@ before the problem:
   - `--enable-source-images` (on `import database --online` or
     `source follow`) switches on `changeStreamPreAndPostImages` for the
     source's existing collections, so updates carry their own documents for
-    as long as the oplog keeps them and no reads are needed. **This changes
-    the source.** MongoDB then stores a pre-image of every updated or deleted
-    document in `config.system.preimages` until it expires with the oplog (or
+    as long as the oplog keeps them and no reads are needed. This requires
+    a replica-set ID at import and changes the source. MongoDB then stores
+    a pre-image of every updated or deleted document in
+    `config.system.preimages` until it expires with the oplog (or
     after `changeStreamOptions.preAndPostImages.expireAfterSeconds`): more
     writes and more storage on the source for every update and delete, a
     `collMod` on each collection, and the source user needs the privilege to
@@ -308,8 +319,8 @@ What it guarantees, and what it cannot:
   Between the last change the follower applied and the resync, only the
   outcome is recorded: one put or delete per document that differs, not the
   individual changes, their order or their times. A write-back whose
-  transaction fell into that gap is not attributed to its merge, and its plan
-  stays `writing_back`.
+  transaction fell into that gap is not attributed to its merge. If the
+  writer had not marked the plan applied, it stays `writing_back`.
 - **An unfinished resync is never reported as healthy.** The status is
   marked before the first write to `main`. If the resync is interrupted or
   fails after that, the status keeps `resync_unfinished`, mode `catch_up`
@@ -367,8 +378,11 @@ argon merge apply <plan-id> --write-back
   would be created again by an insert.
 - A replacement keeps production's layout. Fields the document already had
   stay in the order production has them, at every level of nesting, and
-  fields the plan adds follow. An inserted document has the order the sandbox
-  stored, or sorted fields when the sandbox was written through the SDK.
+  fields the plan adds follow. Within an array, a subdocument takes its field
+  order from the matching source element, by `_id` when both elements have
+  one and otherwise by value. Unmatched elements keep the plan's field
+  order. An inserted document has the order the sandbox stored, or sorted
+  fields when the sandbox was written through the SDK.
 - The comparison with the before-image is byte for byte when `main` holds the
   source's own bytes for that document, which it does for everything the
   import copied or following stored: a document whose fields production
@@ -381,15 +395,19 @@ argon merge apply <plan-id> --write-back
 - `main` is not written by the write-back. It receives the change through
   following, like any other change to the source, attributed to the merge
   (`actor: merge:<sandbox>`) with a `merge` record carrying the plan ID.
-- The plan is claimed in the metadata before the transaction starts and
-  cannot be applied twice. If the process dies after the source commit and
-  before recording it, the plan stays `writing_back`; the follower closes it
-  as applied when it sees the transaction in the stream. A claim whose
-  transaction never committed (the process died first, or was interrupted
-  before the commit) is returned to pending: at once when the interruption is
-  seen, otherwise by the follower once `main` has passed the claim by ten
-  minutes without that transaction appearing. This relies on the clocks of
-  the writing host and the source agreeing to within minutes.
+- The writer claims the plan before starting the source transaction. It
+  marks the plan applied after an acknowledged commit and returns it to
+  pending if it knows the transaction aborted or the commit was never sent.
+  The follower marks it applied if it sees the transaction in the change
+  stream. Otherwise, the plan stays `writing_back` with an unknown outcome.
+  You cannot reuse that plan. Check the affected documents on the source,
+  let following catch up, then run `argon merge preview` again for the sandbox.
+- A fresh preview against a caught-up `main` omits changes that the earlier
+  transaction already made and that the source still holds. It surfaces
+  conflicts where both sides changed a document differently. Before writing
+  the new plan, write-back still checks every planned document against the
+  source's current state. If a source commit succeeds but Argon cannot mark
+  the plan applied, the error reports the committed transaction and plan ID.
 - Undoing a write-back means writing another plan back. `argon undo` does not
   apply to a branch that follows a source.
 
@@ -417,10 +435,10 @@ not what a future one would do; a reviewer still has to look.
 ### Source permissions
 
 Reading and following need `find` and `changeStream` on the source database
-and the ability to run `hello`. `replSetGetConfig` is what identifies the
-deployment for certain (see above); once a project has recorded the ID, every
-user that reaches the source for it needs that privilege too. `--write-back`
-needs `readWrite` on the database. `--enable-source-images` needs `collMod`.
+and the ability to run `hello`. Import with `replSetGetConfig` to record the
+replica-set ID. Every later connection to an ID-bound source also needs
+that privilege. `--write-back` also needs `readWrite` on the database.
+`--enable-source-images` also needs `collMod`.
 
 ## Snapshot chunk stores
 

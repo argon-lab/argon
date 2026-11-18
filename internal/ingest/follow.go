@@ -113,10 +113,6 @@ type WriteBackLedger interface {
 	Lookup(ctx context.Context, branchID string, session primitive.Binary) (*WriteBack, error)
 	// Settle marks the plan applied. ctx is the storing transaction.
 	Settle(ctx context.Context, planID string) error
-	// Release returns to pending the plans that were claimed for write-back
-	// before the given time and whose transaction never appeared in the
-	// stream, which by then it would have.
-	Release(ctx context.Context, branchID string, claimedBefore time.Time) error
 }
 
 // FollowOptions configures Follow.
@@ -133,8 +129,6 @@ type FollowOptions struct {
 	// Redact cleans error text before it is stored or printed. The caller
 	// knows the connection string; this package never sees it.
 	Redact func(string) string
-	// Prepare updates source binding metadata in a transaction under the lease.
-	Prepare func(context.Context) error
 	// BeforeStream runs once with the lease held, after validating the saved
 	// position and before opening the source stream.
 	BeforeStream func(context.Context) error
@@ -159,22 +153,10 @@ func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Databa
 		return redacted(err, opts.Redact)
 	}
 	defer s.releaseSourceLease(lease)
-	if prepare, before := opts.Prepare, opts.BeforeStream; prepare != nil || before != nil {
+	if before := opts.BeforeStream; before != nil {
 		opts.BeforeStream = func(ctx context.Context) error {
-			if prepare != nil {
-				if _, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
-					if err := s.renewSourceLease(sc, lease); err != nil {
-						return nil, err
-					}
-					return nil, prepare(sc)
-				}); err != nil {
-					return err
-				}
-			}
-			if before != nil {
-				if err := before(ctx); err != nil {
-					return err
-				}
+			if err := before(ctx); err != nil {
+				return err
 			}
 			opts.BeforeStream = nil
 			return nil
@@ -240,13 +222,12 @@ func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Datab
 
 // follower is one open stream's working state.
 type follower struct {
-	s        *Service
-	branch   *wal.Branch
-	src      *mongo.Database
-	session  mongo.Session
-	opts     FollowOptions
-	status   SourceStatus
-	branchID string
+	s       *Service
+	branch  *wal.Branch
+	src     *mongo.Database
+	session mongo.Session
+	opts    FollowOptions
+	status  SourceStatus
 
 	// ready holds entries of complete cluster times, in order; readyToken
 	// resumes after the last of them and readyAt is its cluster time.
@@ -278,7 +259,6 @@ type follower struct {
 	// does not exist for anyone yet, and nothing derived from it is kept.
 	unpublished bool
 	run         *running
-	lastRelease time.Time
 
 	writeBacks map[string]*WriteBack
 	lastCommit time.Time
@@ -393,7 +373,7 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	}
 	defer session.EndSession(context.Background())
 
-	f := &follower{s: s, branch: branch, src: src, session: session, opts: opts, status: status, branchID: branchID,
+	f := &follower{s: s, branch: branch, src: src, session: session, opts: opts, status: status,
 		writeBacks: make(map[string]*WriteBack), lastCommit: time.Now(), opened: opened,
 		unpublished: untilConsistent && !opts.resync, run: run}
 	if saved.Status.State == "degraded" && !opts.resync {
@@ -952,7 +932,7 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 			}
 		}
 	}
-	return f.releaseStaleWriteBacks(at)
+	return nil
 }
 
 // followerWriteError names the two ways a follower's write can find that the
@@ -967,34 +947,6 @@ func followerWriteError(branch *wal.Branch, err error) error {
 		return fmt.Errorf("%w: %w", errCommitTimeout, err)
 	}
 	return err
-}
-
-// writeBackGrace is how long after a plan was claimed its transaction can
-// still appear in the stream: the driver gives a commit up to two minutes,
-// and the clocks of the writing host and the source may differ.
-const writeBackGrace = 10 * time.Minute
-
-// releaseStaleWriteBacks returns claimed plans to pending once the branch has
-// provably passed the time their transaction could have committed. Only an
-// exact follower can say that.
-func (f *follower) releaseStaleWriteBacks(at primitive.Timestamp) error {
-	if f.opts.WriteBacks == nil || f.status.Mode != ModeExact || f.pendingOpen || time.Since(f.lastRelease) < 30*time.Second {
-		return nil
-	}
-	f.lastRelease = time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_, err := f.s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
-		if err := f.s.renewSourceLease(sc, f.run.lease); err != nil {
-			return nil, err
-		}
-		return nil, f.opts.WriteBacks.Release(sc, f.branchID, time.Unix(int64(at.T), 0).Add(-writeBackGrace))
-	})
-	var lost *ConfigurationError
-	if errors.As(err, &lost) {
-		return lost
-	}
-	return nil
 }
 
 type followState struct {

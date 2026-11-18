@@ -304,7 +304,6 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/merge/service.go:applyPhysical ReplaceOne",
 		"internal/merge/writeback.go:ApplyToSource UpdateOne",
 		"internal/merge/writeback.go:EnsureIndexes CreateOne",
-		"internal/merge/writeback.go:ReleaseWriteBacks UpdateMany",
 		"internal/merge/writeback.go:SettleWriteBack UpdateOne",
 		// WRITES TO A SOURCE: the write-back transaction body, one document
 		// at a time, into collections that exist.
@@ -312,7 +311,6 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/merge/writeback.go:writeChanges InsertOne",
 		"internal/merge/writeback.go:writeChanges ReplaceOne",
 		// Argon's wal_sources.
-		"internal/source/source.go:AdoptID UpdateOne",
 		"internal/source/source.go:Bind InsertOne",
 		// ALTERS A SOURCE, when asked for by name: collMod for images.
 		"internal/source/source.go:EnableImages RunCommand",

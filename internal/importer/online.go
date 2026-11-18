@@ -82,6 +82,11 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 	if err != nil {
 		return nil, err
 	}
+	if opts.EnableSourceImages {
+		if err := identity.RequireReplicaSetID(); err != nil {
+			return nil, fmt.Errorf("--enable-source-images refused: %w", err)
+		}
+	}
 	sourceDB := client.Database(opts.DatabaseName)
 
 	// The stream boundary comes first, and the list of collections to copy
