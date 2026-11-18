@@ -381,9 +381,11 @@ A copy made with ordinary cursors while the source is written reads different
 documents at different moments. It becomes a state of the source through the
 source's own change stream:
 
-1. Take the primary's cluster time `T0`. Start a causally consistent session
-   there and read everything in it with majority read concern.
-2. Copy every collection into put entries.
+1. Take the primary's cluster time `T0`, and only then list the collections.
+   A collection created before `T0` is in the list; one created later
+   arrives through the stream. Start a causally consistent session at `T0`
+   and read everything in it with majority read concern.
+2. Copy every listed collection into put entries.
 3. Replay the change stream from just after `T0` on top of the copy. Each
    entry is a whole document, so applying a change the copy already contained
    leaves the same document.
