@@ -449,6 +449,129 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 	return nil, nil
 }
 
+// MaterializeDocumentsAtLSN reconstructs the given documents of one
+// collection as of targetLSN. The result holds the documents that exist at
+// that point; a key that is absent from it names a document that does not.
+//
+// It answers from the documents' own histories, walking the ancestry chain
+// from the branch towards the root and settling each document at the first
+// segment that has an entry for it. The cost therefore follows the number of
+// documents asked for, not the size of the collection. A snapshot is loaded
+// only where garbage collection has deleted entries of a segment: there the
+// log can no longer show that a document went unchanged, and the snapshot is
+// the remaining record of its state.
+//
+// The result equals what MaterializeCollectionAtLSN returns for the same
+// keys. Where it cannot be established — reclaimed history without a usable
+// snapshot, or legacy entries whose document cannot be told from the entry
+// alone — an error is returned and the caller should replay the collection.
+func (s *Service) MaterializeDocumentsAtLSN(branch *wal.Branch, collection string, keys []string, targetLSN int64) (map[string]bson.M, error) {
+	result := make(map[string]bson.M, len(keys))
+	if len(keys) == 0 {
+		return result, nil
+	}
+	segments, err := s.ancestrySegments(branch, targetLSN)
+	if err != nil {
+		return nil, err
+	}
+
+	remaining := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		remaining[key] = true
+	}
+	pending := func() []string {
+		list := make([]string, 0, len(remaining))
+		for key := range remaining {
+			list = append(list, key)
+		}
+		sort.Strings(list)
+		return list
+	}
+
+	for i := len(segments) - 1; i >= 0 && len(remaining) > 0; i-- {
+		seg := segments[i]
+		entries, err := s.wal.LatestDocumentEntries(seg.branch.ID, collection, pending(), seg.fromLSN, seg.toLSN,
+			func(lsn int64) bool { return !seg.branch.IsDiscardedForRead(lsn, seg.toLSN) })
+		if err != nil {
+			return nil, fmt.Errorf("failed to get document histories for branch %s: %w", seg.branch.ID, err)
+		}
+		for key, entry := range entries {
+			state := make(map[string]bson.M, 1)
+			if err := s.ApplyEntry(state, entry); err != nil {
+				return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
+			}
+			if doc, ok := state[key]; ok {
+				result[key] = doc
+			}
+			delete(remaining, key)
+		}
+		if len(remaining) == 0 {
+			break
+		}
+
+		// The documents still pending have no entry in this segment. That
+		// proves they went unchanged here only while the segment's entries
+		// are all still in the log. Read the floor after the entries: GC
+		// records it before it deletes.
+		floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
+		if err != nil {
+			return nil, err
+		}
+		if !needsReclaimed(seg, seg.fromLSN, floor) {
+			continue
+		}
+		if s.snapshots == nil {
+			return nil, reclaimedError(seg.branch, collection, floor, targetLSN)
+		}
+		state, snapLSN, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up snapshot for branch %s: %w", seg.branch.ID, err)
+		}
+		if !ok || needsReclaimed(seg, snapLSN+1, floor) {
+			return nil, reclaimedError(seg.branch, collection, floor, targetLSN)
+		}
+		// Entries above the snapshot were looked at first, so a pending
+		// document is unchanged since the snapshot, which already holds the
+		// state inherited from the rest of the chain.
+		for key := range remaining {
+			if doc, ok := state[key]; ok {
+				result[key] = doc
+			}
+		}
+		remaining = nil
+	}
+	return result, nil
+}
+
+// EntryStateKey returns the key under which ApplyEntry stores or removes the
+// entry's document. ok is false when the entry alone does not say: an entry
+// that is not a current put or delete, one without a document ID, or a
+// legacy delete without a pre-image, which ApplyEntry resolves by searching
+// the state it is folding into.
+func EntryStateKey(entry *wal.Entry) (key string, ok bool) {
+	if entry.IsLegacy() || entry.DocumentID == "" {
+		return "", false
+	}
+	switch entry.Operation {
+	case wal.OpPut:
+		if id, err := wal.DocumentIDFromImage(entry.PostImage); err == nil {
+			return wal.DocumentIDString(id), true
+		}
+		return entry.DocumentID, true
+	case wal.OpDelete:
+		if len(entry.PreImage) > 0 {
+			if id, err := wal.DocumentIDFromImage(entry.PreImage); err == nil {
+				return wal.DocumentIDString(id), true
+			}
+			return entry.DocumentID, true
+		}
+		if entry.DocumentKeyVersion > 0 {
+			return entry.DocumentID, true
+		}
+	}
+	return "", false
+}
+
 // MaterializeDocument gets the current state of a specific document.
 func (s *Service) MaterializeDocument(branch *wal.Branch, collection, documentID string) (bson.M, error) {
 	return s.MaterializeDocumentAtLSN(branch, collection, documentID, branch.HeadLSN)

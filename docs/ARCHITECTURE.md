@@ -225,6 +225,47 @@ backups. The MCP server exposes
 `argon_pin_create` / `argon_pin_list` / `argon_pin_sandbox`, the REST API
 `/projects/:p/pins`.
 
+## Diff and merge
+
+A merge goes from a branch into its parent, through a plan that is computed,
+persisted for review, and applied once against the exact heads it was
+computed for. `argon diff` shows the plan without persisting it.
+
+The plan is a three-way comparison per document: base (the branch's
+inherited state at its fork point), ours (the parent now) and theirs (the
+branch now), by canonical BSON equality of whole documents. A document the
+branch did not change is left alone; one only the branch changed is adopted;
+one both changed the same way needs nothing; one both changed differently is
+a conflict, resolved for the whole plan by `--strategy theirs` or `ours`.
+
+**Cost follows the change.** The branch's state is its fork state with the
+branch's own entries folded on top, so the two can differ only in documents
+those entries are about. The plan is therefore built from the documents
+named by the branch's own visible entries in `(base_lsn, head_lsn]`. For
+each, theirs is the newest of those entries, and base and ours are point
+reads along the ancestry chain: each segment is asked for the document's
+newest visible entry through the `(branch_id, collection, document_id, lsn)`
+index, and the first segment that has one answers. Ancestry bounds,
+discarded ranges and reclaim floors apply exactly as in a full replay, and
+the test suite holds this path to a reference that materializes all three
+states, on randomized histories with resets, nested branches, snapshots,
+garbage collection and look-alike `_id` values.
+
+What it does not avoid:
+
+- **Reclaimed history.** A point read that finds no entry for a document in
+  a segment has shown the document unchanged there only while that segment's
+  entries are all in the log. Where garbage collection has deleted some, the
+  segment's snapshot is the record, and it is loaded once per collection —
+  a read the size of the collection. Snapshot chunks are sorted by key but
+  the manifest does not index them, so one document cannot be fetched alone.
+- **A reclaimed or legacy branch log.** If garbage collection has deleted
+  entries of the branch being merged, its log no longer names every document
+  it changed. The same holds for a delete written before typed document keys
+  that kept no pre-image: it does not say which document it removed. In both
+  cases the plan is computed by materializing the three states in full.
+- **Applying.** Apply writes each change; that is proportional to the plan.
+
 ## Garbage collection (retention window)
 
 `argon gc` (and `Services.RunGC`) deletes WAL entries that no reader can

@@ -313,19 +313,148 @@ func (s *Service) GetDocumentHistory(branchID, collection, documentID string, st
 	}
 	filtered := entries[:0]
 	for _, entry := range entries {
-		if len(entry.PostImage) > 0 || len(entry.PreImage) > 0 {
-			if err := entry.NormalizeDocumentKey(); err != nil {
-				return nil, err
-			}
-			if entry.DocumentID != documentID {
-				continue
-			}
-		} else if entry.Operation == OpDelete && entry.DocumentKeyVersion == 0 && DocumentIDString(entry.DocumentID) != entry.DocumentID {
-			return nil, fmt.Errorf("legacy delete at LSN %d has an ambiguous BSON ID and no pre-image; full collection replay is required", entry.LSN)
+		if err := settleDocumentKey(entry); err != nil {
+			return nil, err
+		}
+		if entry.DocumentID != documentID {
+			continue
 		}
 		filtered = append(filtered, entry)
 	}
 	return filtered, nil
+}
+
+// settleDocumentKey makes a stored entry's DocumentID the current key of the
+// document it is about. Entries are found by their stored key, and history
+// written before typed keys stored one that two different BSON IDs can share
+// (an ObjectID and the string of its hex form, for example), so a lookup by
+// stored key can return another document's entries. An image settles it: the
+// image carries the real _id. A delete without an image is trusted when it
+// was written with a current key, and refused when it predates them and its
+// key reads as more than one ID.
+func settleDocumentKey(entry *Entry) error {
+	if len(entry.PostImage) > 0 || len(entry.PreImage) > 0 {
+		return entry.NormalizeDocumentKey()
+	}
+	if entry.Operation == OpDelete && entry.DocumentKeyVersion == 0 && DocumentIDString(entry.DocumentID) != entry.DocumentID {
+		return fmt.Errorf("legacy delete at LSN %d has an ambiguous BSON ID and no pre-image; full collection replay is required", entry.LSN)
+	}
+	return nil
+}
+
+// documentLookupBatch bounds how many documents one history query names.
+const documentLookupBatch = 500
+
+// LatestDocumentEntries returns, for each of the given document keys, the
+// branch's newest data entry in [startLSN, endLSN] that the caller can see,
+// keyed by document key. A document without such an entry is absent from the
+// result. visible reports whether an LSN counts for this reader (nil means
+// every LSN does); it is how discarded ranges are skipped.
+//
+// The cost follows the number of documents asked for and the length of their
+// own histories in the range, not the size of the collection: each batch is
+// served by the (branch, collection, document, lsn) index.
+func (s *Service) LatestDocumentEntries(branchID, collection string, keys []string, startLSN, endLSN int64, visible func(lsn int64) bool) (map[string]*Entry, error) {
+	latest := make(map[string]*Entry)
+	if startLSN > endLSN {
+		return latest, nil
+	}
+	ctx := context.Background()
+	for start := 0; start < len(keys); start += documentLookupBatch {
+		end := start + documentLookupBatch
+		if end > len(keys) {
+			end = len(keys)
+		}
+		wanted := make(map[string]bool, end-start)
+		seen := make(map[string]bool, 2*(end-start))
+		stored := make([]string, 0, 2*(end-start))
+		for _, key := range keys[start:end] {
+			id, err := DocumentIDValue(key)
+			if err != nil {
+				return nil, err
+			}
+			wanted[key] = true
+			for _, k := range []string{key, LegacyDocumentIDString(id)} {
+				if !seen[k] {
+					seen[k] = true
+					stored = append(stored, k)
+				}
+			}
+		}
+		cursor, err := s.collection.Find(ctx, bson.M{
+			"branch_id":   branchID,
+			"collection":  collection,
+			"document_id": bson.M{"$in": stored},
+			"lsn":         bson.M{"$gte": startLSN, "$lte": endLSN},
+		})
+		if err != nil {
+			return nil, err
+		}
+		err = func() error {
+			defer func() { _ = cursor.Close(ctx) }()
+			for cursor.Next(ctx) {
+				entry := new(Entry)
+				if err := cursor.Decode(entry); err != nil {
+					return err
+				}
+				if !entry.IsData() || (visible != nil && !visible(entry.LSN)) {
+					continue
+				}
+				if err := s.compressor.DecompressEntry(entry); err != nil {
+					return fmt.Errorf("failed to decompress WAL entry LSN %d: %w", entry.LSN, err)
+				}
+				if err := settleDocumentKey(entry); err != nil {
+					return err
+				}
+				if !wanted[entry.DocumentID] {
+					continue
+				}
+				if current := latest[entry.DocumentID]; current == nil || entry.LSN > current.LSN {
+					latest[entry.DocumentID] = entry
+				}
+			}
+			return cursor.Err()
+		}()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return latest, nil
+}
+
+// ScanBranchDataEntries calls fn for every data entry of the branch's own
+// log in [startLSN, endLSN], in no particular order, one entry at a time.
+// It is for callers that fold over a branch's changes without holding them
+// all in memory. An error from fn ends the scan and is returned.
+func (s *Service) ScanBranchDataEntries(branchID string, startLSN, endLSN int64, fn func(*Entry) error) error {
+	if startLSN > endLSN {
+		return nil
+	}
+	ctx := context.Background()
+	cursor, err := s.collection.Find(ctx, bson.M{
+		"branch_id": branchID,
+		"lsn":       bson.M{"$gte": startLSN, "$lte": endLSN},
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+	for cursor.Next(ctx) {
+		entry := new(Entry)
+		if err := cursor.Decode(entry); err != nil {
+			return err
+		}
+		if !entry.IsData() {
+			continue
+		}
+		if err := s.compressor.DecompressEntry(entry); err != nil {
+			return fmt.Errorf("failed to decompress WAL entry LSN %d: %w", entry.LSN, err)
+		}
+		if err := fn(entry); err != nil {
+			return err
+		}
+	}
+	return cursor.Err()
 }
 
 // DistinctCollections returns the collections touched by a branch's own

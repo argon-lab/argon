@@ -1,0 +1,694 @@
+package wal_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math/rand"
+	"testing"
+
+	"github.com/argon-lab/argon/v2/internal/gc"
+	"github.com/argon-lab/argon/v2/internal/materializer"
+	"github.com/argon-lab/argon/v2/internal/merge"
+	"github.com/argon-lab/argon/v2/internal/mongoexpr"
+	"github.com/argon-lab/argon/v2/internal/wal"
+	"github.com/argon-lab/argon/v2/internal/walwriter"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+// A merge plan is computed from the documents the source branch wrote since
+// its fork (merge.Service.ComputeChanged). The tests here hold that path to
+// the reference that rebuilds all three states in full (ComputeFull): for
+// every history they build, the two must produce the same plan.
+
+// countingSnapshots counts snapshot loads, to show which reads touch a
+// collection-sized object and which do not.
+type countingSnapshots struct {
+	materializer.SnapshotSource
+	loads int
+}
+
+func (c *countingSnapshots) FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (map[string]bson.M, int64, bool, error) {
+	state, lsn, ok, err := c.SnapshotSource.FindUsable(branch, collection, minLSN, maxLSN, readUpperBound)
+	if ok {
+		c.loads++
+	}
+	return state, lsn, ok, err
+}
+
+func sameDocument(t *testing.T, want, got bson.M, label string) {
+	t.Helper()
+	if want == nil || got == nil {
+		require.Equal(t, want == nil, got == nil, "%s: one side is absent", label)
+		return
+	}
+	equal, err := mongoexpr.CanonicalEqual(want, got)
+	require.NoError(t, err, label)
+	require.True(t, equal, "%s:\nwant %v\ngot  %v", label, want, got)
+}
+
+func requireSamePlan(t *testing.T, want, got *merge.Plan, label string) {
+	t.Helper()
+	require.Equal(t, want.SourceBranchID, got.SourceBranchID, label)
+	require.Equal(t, want.TargetBranchID, got.TargetBranchID, label)
+	require.Equal(t, want.SourceHead, got.SourceHead, label)
+	require.Equal(t, want.TargetHead, got.TargetHead, label)
+	require.Equal(t, want.BaseLSN, got.BaseLSN, label)
+
+	require.Len(t, got.Changes, len(want.Changes), "%s: changes", label)
+	for i, w := range want.Changes {
+		g := got.Changes[i]
+		at := fmt.Sprintf("%s: change %d (%s/%s)", label, i, w.Collection, w.DocumentID)
+		require.Equal(t, w.Collection, g.Collection, at)
+		require.Equal(t, w.DocumentID, g.DocumentID, at)
+		require.Equal(t, w.Delete, g.Delete, at)
+		require.Equal(t, wal.DocumentIDString(w.ID), wal.DocumentIDString(g.ID), at)
+		sameDocument(t, w.Document, g.Document, at+" document")
+		sameDocument(t, w.Before, g.Before, at+" before")
+	}
+	require.Len(t, got.Conflicts, len(want.Conflicts), "%s: conflicts", label)
+	for i, w := range want.Conflicts {
+		g := got.Conflicts[i]
+		at := fmt.Sprintf("%s: conflict %d (%s/%s)", label, i, w.Collection, w.DocumentID)
+		require.Equal(t, w.Collection, g.Collection, at)
+		require.Equal(t, w.DocumentID, g.DocumentID, at)
+		sameDocument(t, w.Base, g.Base, at+" base")
+		sameDocument(t, w.Ours, g.Ours, at+" ours")
+		sameDocument(t, w.Theirs, g.Theirs, at+" theirs")
+	}
+}
+
+// requirePlansAgree checks the changed-documents path and the default entry
+// point against the full reference, and returns the plan.
+func requirePlansAgree(t *testing.T, svc *merge.Service, sourceID, label string) *merge.Plan {
+	t.Helper()
+	full, err := svc.ComputeFull(sourceID)
+	require.NoError(t, err, "%s: full", label)
+	changed, err := svc.ComputeChanged(sourceID)
+	require.NoError(t, err, "%s: changed-documents path", label)
+	requireSamePlan(t, full, changed, label+": changed vs full")
+	plan, err := svc.Compute(sourceID)
+	require.NoError(t, err, "%s: compute", label)
+	requireSamePlan(t, full, plan, label+": compute vs full")
+	return full
+}
+
+// typedIDs is a key space whose members are easy to confuse: an ObjectID and
+// the string of its hex form, the same number in two widths, a string that
+// reads as extended JSON, and embedded documents that differ only in field
+// order.
+func typedIDs() []interface{} {
+	oid, _ := primitive.ObjectIDFromHex("507f1f77bcf86cd799439011")
+	return []interface{}{
+		oid,
+		oid.Hex(),
+		int32(7),
+		int64(7),
+		"{\"$numberInt\":\"7\"}",
+		bson.D{{Key: "a", Value: int32(1)}, {Key: "b", Value: int32(2)}},
+		bson.D{{Key: "b", Value: int32(2)}, {Key: "a", Value: int32(1)}},
+		"plain",
+	}
+}
+
+// applyMixedWorkload issues seeded puts and deletes over string and typed
+// IDs in a few collections.
+func applyMixedWorkload(t *testing.T, rng *rand.Rand, writer *walwriter.Writer, numOps int) {
+	t.Helper()
+	ctx := context.Background()
+	collections := []string{"users", "orders", "typed"}
+	typed := typedIDs()
+
+	for i := 0; i < numOps; i++ {
+		coll := collections[rng.Intn(len(collections))]
+		var id interface{} = fmt.Sprintf("doc-%d", rng.Intn(25))
+		if coll == "typed" {
+			id = typed[rng.Intn(len(typed))]
+		}
+		switch rng.Intn(10) {
+		case 0, 1, 2, 3, 4:
+			_, err := writer.Put(ctx, coll, bson.M{
+				"_id":    id,
+				"n":      int32(rng.Intn(4)), // few values: both sides often land on the same one
+				"nested": bson.M{"z": rng.Intn(3), "a": []interface{}{rng.Intn(2)}},
+			})
+			require.NoError(t, err)
+		case 5, 6:
+			batch := make([]bson.M, 0, 3)
+			for j := 0; j < 3; j++ {
+				batch = append(batch, bson.M{"_id": fmt.Sprintf("batch-%d", rng.Intn(12)), "n": int32(rng.Intn(3))})
+			}
+			_, err := writer.PutMany(ctx, coll, batch)
+			require.NoError(t, err)
+		default:
+			_, _, err := writer.Delete(ctx, coll, id)
+			require.NoError(t, err)
+		}
+	}
+}
+
+func TestMergeChanged_MatchesFullOnRandomHistories(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	for seed := int64(1); seed <= 40; seed++ {
+		seed := seed
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			rng := rand.New(rand.NewSource(seed))
+			f := newSnapshotFixture(t, db)
+			svc := merge.NewService(db, f.wal, f.branches, f.mat, db.Client())
+			gcService := gc.NewService(f.wal, f.branches, f.snapshots)
+			project := fmt.Sprintf("merge-changed-%d", seed)
+
+			reload := func(b *wal.Branch) *wal.Branch {
+				fresh, err := f.branches.GetBranchByID(b.ID)
+				require.NoError(t, err)
+				return fresh
+			}
+			writer := func(b *wal.Branch) *walwriter.Writer {
+				return walwriter.New(f.wal, f.branches, f.mat, reload(b))
+			}
+			snapshotHead := func(b *wal.Branch) {
+				b = reload(b)
+				if b.HeadLSN > b.BaseLSN {
+					_, err := f.snapshots.CreateSnapshot(ctx, b.ID, b.HeadLSN)
+					require.NoError(t, err)
+				}
+			}
+			// resetSomewhere rewinds a branch to a random earlier position of
+			// its own timeline, when it has one.
+			resetSomewhere := func(b *wal.Branch) {
+				b = reload(b)
+				if b.HeadLSN-b.BaseLSN < 3 {
+					return
+				}
+				target := b.BaseLSN + 1 + rng.Int63n(b.HeadLSN-b.BaseLSN-1)
+				if b.ValidateResetTarget(target) != nil {
+					return
+				}
+				_, err := f.restore.ResetBranchToLSN(b.ID, target)
+				require.NoError(t, err)
+			}
+
+			main, err := f.branches.CreateBranch(project, "main", "")
+			require.NoError(t, err)
+			applyMixedWorkload(t, rng, writer(main), 40)
+			if rng.Intn(2) == 0 {
+				snapshotHead(main)
+			}
+
+			// The target is main, or a branch one level down, so the fork
+			// state is read through one or two inherited segments.
+			target := main
+			if rng.Intn(2) == 0 {
+				target, err = f.branches.CreateBranch(project, "mid", main.ID)
+				require.NoError(t, err)
+				applyMixedWorkload(t, rng, writer(target), 25)
+				// Later work on main is not part of mid's history.
+				applyMixedWorkload(t, rng, writer(main), 10)
+			}
+			if rng.Intn(3) == 0 {
+				snapshotHead(target)
+			}
+
+			if rng.Intn(4) == 0 {
+				resetSomewhere(target)
+				applyMixedWorkload(t, rng, writer(target), rng.Intn(8))
+			}
+
+			// The source forks from the target's head, or from a point of
+			// its history — which after a reset can be history the target
+			// itself no longer has.
+			var source *wal.Branch
+			if rng.Intn(3) == 0 {
+				fresh := reload(target)
+				at := fresh.BaseLSN + rng.Int63n(fresh.HistoryHighWater()-fresh.BaseLSN+1)
+				source, err = f.restore.CreateBranchAtLSN(project, target.ID, "feature", at)
+			} else {
+				source, err = f.branches.CreateBranch(project, "feature", target.ID)
+			}
+			require.NoError(t, err)
+
+			for round := 0; round < 3; round++ {
+				applyMixedWorkload(t, rng, writer(source), 5+rng.Intn(15))
+				if rng.Intn(4) == 0 {
+					resetSomewhere(source)
+					applyMixedWorkload(t, rng, writer(source), rng.Intn(6))
+				}
+				if rng.Intn(2) == 0 {
+					applyMixedWorkload(t, rng, writer(target), rng.Intn(12))
+				}
+				if rng.Intn(5) == 0 {
+					// A reset of the target can reach below the fork point:
+					// the fork keeps the history it captured, the target no
+					// longer has it.
+					resetSomewhere(target)
+					applyMixedWorkload(t, rng, writer(target), rng.Intn(6))
+				}
+				if rng.Intn(4) == 0 {
+					snapshotHead(target)
+				}
+				requirePlansAgree(t, svc, source.ID, fmt.Sprintf("round %d", round))
+			}
+
+			// Reclaim what snapshots cover on the inherited chain. The plan
+			// must not change; the changed-documents path now reads the
+			// snapshots where the log no longer holds the entries.
+			before := requirePlansAgree(t, svc, source.ID, "before GC")
+			snapshotHead(main)
+			snapshotHead(target)
+			_, err = gcService.RunProject(ctx, project, zeroRetention)
+			require.NoError(t, err)
+			after := requirePlansAgree(t, svc, source.ID, "after GC")
+			requireSamePlan(t, before, after, "GC changed the plan")
+			t.Logf("final plan: %d change(s), %d conflict(s)", len(after.Changes), len(after.Conflicts))
+		})
+	}
+}
+
+// seedImported builds a main branch that looks like an imported database:
+// many documents, and a snapshot at the head.
+func seedImported(t *testing.T, f *snapshotFixture, project string, docs int) *wal.Branch {
+	t.Helper()
+	ctx := context.Background()
+	main, err := f.branches.CreateBranch(project, "main", "")
+	require.NoError(t, err)
+	writer := walwriter.New(f.wal, f.branches, f.mat, main)
+	batch := make([]bson.M, 0, docs)
+	for i := 0; i < docs; i++ {
+		batch = append(batch, bson.M{"_id": fmt.Sprintf("p%04d", i), "price": int32(i)})
+	}
+	_, err = writer.PutMany(ctx, "products", batch)
+	require.NoError(t, err)
+	main, err = f.branches.GetBranchByID(main.ID)
+	require.NoError(t, err)
+	_, err = f.snapshots.CreateSnapshot(ctx, main.ID, main.HeadLSN)
+	require.NoError(t, err)
+	return main
+}
+
+func newCountingMergeFixture(t *testing.T, db *mongo.Database) (*snapshotFixture, *merge.Service, *countingSnapshots) {
+	t.Helper()
+	f := newSnapshotFixture(t, db)
+	counter := &countingSnapshots{SnapshotSource: f.snapshots}
+	f.mat.SetSnapshotSource(counter)
+	return f, merge.NewService(db, f.wal, f.branches, f.mat, db.Client()), counter
+}
+
+// The common case — a sandbox forked from a large parent, a few documents
+// changed — must be answered from those documents' own histories: no
+// snapshot of the parent is loaded, which is the collection-sized read.
+func TestMergeChanged_ReadsOnlyChangedDocuments(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, counter := newCountingMergeFixture(t, db)
+	main := seedImported(t, f, "merge-changed-small", 600)
+
+	feature, err := f.branches.CreateBranch("merge-changed-small", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "p0001", "price": int32(15)}) // update
+	require.NoError(t, err)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "brand-new", "price": int32(30)}) // insert
+	require.NoError(t, err)
+	_, _, err = fw.Delete(ctx, "products", "p0002") // delete
+	require.NoError(t, err)
+	_, err = fw.Put(ctx, "notes", bson.M{"_id": "n1", "text": "a collection the parent never had"})
+	require.NoError(t, err)
+	// The parent moved on too: one overlapping document, one unrelated.
+	mw := walwriter.New(f.wal, f.branches, f.mat, main)
+	_, err = mw.Put(ctx, "products", bson.M{"_id": "p0001", "price": int32(99)})
+	require.NoError(t, err)
+	_, err = mw.Put(ctx, "products", bson.M{"_id": "p0500", "price": int32(1)})
+	require.NoError(t, err)
+
+	// The writes above read pre-images; count from here.
+	counter.loads = 0
+	changed, err := svc.ComputeChanged(feature.ID)
+	require.NoError(t, err)
+	assert.Zero(t, counter.loads, "no snapshot is loaded while the log still holds every entry")
+	require.Len(t, changed.Changes, 3, "insert, delete and the new collection's document")
+	require.Len(t, changed.Conflicts, 1, "both sides changed p0001")
+	assert.Equal(t, "p0001", changed.Conflicts[0].DocumentID)
+	assert.EqualValues(t, 1, changed.Conflicts[0].Base["price"])
+	assert.EqualValues(t, 99, changed.Conflicts[0].Ours["price"])
+	assert.EqualValues(t, 15, changed.Conflicts[0].Theirs["price"])
+
+	full, err := svc.ComputeFull(feature.ID)
+	require.NoError(t, err)
+	assert.NotZero(t, counter.loads, "the full reference does load the parent's snapshot")
+	requireSamePlan(t, full, changed, "changed vs full")
+}
+
+// Once garbage collection has deleted the parent's entries, a document
+// without an entry may still have had one. The snapshot is then the record
+// of its state, and the plan is unchanged.
+func TestMergeChanged_ReclaimedParentHistory(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, counter := newCountingMergeFixture(t, db)
+	main := seedImported(t, f, "merge-changed-gc", 200)
+
+	feature, err := f.branches.CreateBranch("merge-changed-gc", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "p0003", "price": int32(1000)})
+	require.NoError(t, err)
+	_, _, err = fw.Delete(ctx, "products", "p0004")
+	require.NoError(t, err)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "added", "price": int32(5)})
+	require.NoError(t, err)
+
+	before := requirePlansAgree(t, svc, feature.ID, "before GC")
+	require.Len(t, before.Changes, 3)
+
+	report, err := gc.NewService(f.wal, f.branches, f.snapshots).RunProject(ctx, "merge-changed-gc", zeroRetention)
+	require.NoError(t, err)
+	require.NotZero(t, report.EntriesRemoved, "the parent's imported entries were reclaimed")
+
+	counter.loads = 0
+	changed, err := svc.ComputeChanged(feature.ID)
+	require.NoError(t, err)
+	assert.NotZero(t, counter.loads, "reclaimed history is read from the snapshot")
+	requireSamePlan(t, before, changed, "after GC")
+	requirePlansAgree(t, svc, feature.ID, "after GC")
+}
+
+// When garbage collection has deleted entries of the source branch itself,
+// its log no longer names every document it changed. The changed-documents
+// path says so, and Compute answers from a full replay.
+func TestMergeChanged_ReclaimedSourceHistoryFallsBack(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, _ := newCountingMergeFixture(t, db)
+	main := seedImported(t, f, "merge-changed-src-gc", 50)
+
+	feature, err := f.branches.CreateBranch("merge-changed-src-gc", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "p0001", "price": int32(77)})
+	require.NoError(t, err)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "added", "price": int32(5)})
+	require.NoError(t, err)
+	feature, err = f.branches.GetBranchByID(feature.ID)
+	require.NoError(t, err)
+
+	want, err := svc.ComputeFull(feature.ID)
+	require.NoError(t, err)
+	require.Len(t, want.Changes, 2)
+
+	_, err = f.snapshots.CreateSnapshot(ctx, feature.ID, feature.HeadLSN)
+	require.NoError(t, err)
+	_, err = gc.NewService(f.wal, f.branches, f.snapshots).RunProject(ctx, "merge-changed-src-gc", zeroRetention)
+	require.NoError(t, err)
+	require.Zero(t, countBranchEntriesIn(t, f, feature.ID, "products"), "the source's own entries were reclaimed")
+
+	_, err = svc.ComputeChanged(feature.ID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, merge.ErrFullReplayRequired), "got: %v", err)
+
+	plan, err := svc.Compute(feature.ID)
+	require.NoError(t, err)
+	requireSamePlan(t, want, plan, "compute after the source was reclaimed")
+}
+
+func countBranchEntriesIn(t *testing.T, f *snapshotFixture, branchID, collection string) int {
+	t.Helper()
+	entries, err := f.wal.GetBranchEntries(branchID, collection, 0, int64(1)<<62)
+	require.NoError(t, err)
+	n := 0
+	for _, e := range entries {
+		if e.IsData() {
+			n++
+		}
+	}
+	return n
+}
+
+// A reset takes writes off the branch's timeline. A document touched only by
+// discarded writes is not a change; one written again afterwards is judged
+// by the later write.
+func TestMergeChanged_SourceReset(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, _ := newCountingMergeFixture(t, db)
+	main := seedImported(t, f, "merge-changed-reset", 20)
+
+	feature, err := f.branches.CreateBranch("merge-changed-reset", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	keep, err := fw.Put(ctx, "products", bson.M{"_id": "p0001", "price": int32(11)})
+	require.NoError(t, err)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "p0002", "price": int32(22)}) // discarded below
+	require.NoError(t, err)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "p0003", "price": int32(33)}) // discarded, then rewritten
+	require.NoError(t, err)
+	_, _, err = fw.Delete(ctx, "products", "p0001") // discarded: the kept put stands
+	require.NoError(t, err)
+
+	feature, err = f.restore.ResetBranchToLSN(feature.ID, keep)
+	require.NoError(t, err)
+	fw = walwriter.New(f.wal, f.branches, f.mat, feature)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "p0003", "price": int32(333)})
+	require.NoError(t, err)
+
+	plan := requirePlansAgree(t, svc, feature.ID, "after reset")
+	require.Len(t, plan.Changes, 2)
+	assert.Equal(t, "p0001", plan.Changes[0].DocumentID)
+	assert.False(t, plan.Changes[0].Delete, "the discarded delete does not count")
+	assert.EqualValues(t, 11, plan.Changes[0].Document["price"])
+	assert.Equal(t, "p0003", plan.Changes[1].DocumentID)
+	assert.EqualValues(t, 333, plan.Changes[1].Document["price"])
+}
+
+// An ObjectID and the string of its hex form are two documents. A change to
+// one must be read against the history of that one.
+func TestMergeChanged_LookalikeIDs(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, _ := newCountingMergeFixture(t, db)
+
+	oid, _ := primitive.ObjectIDFromHex("507f1f77bcf86cd799439011")
+	main, err := f.branches.CreateBranch("merge-changed-ids", "main", "")
+	require.NoError(t, err)
+	mw := walwriter.New(f.wal, f.branches, f.mat, main)
+	_, err = mw.PutMany(ctx, "docs", []bson.M{
+		{"_id": oid, "who": "objectid"},
+		{"_id": oid.Hex(), "who": "string"},
+		{"_id": int32(7), "who": "int32"},
+		{"_id": int64(7), "who": "int64"},
+	})
+	require.NoError(t, err)
+
+	feature, err := f.branches.CreateBranch("merge-changed-ids", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	_, err = fw.Put(ctx, "docs", bson.M{"_id": oid.Hex(), "who": "string, edited"})
+	require.NoError(t, err)
+	_, _, err = fw.Delete(ctx, "docs", int64(7))
+	require.NoError(t, err)
+	// The parent edits the look-alikes, which must not read as conflicts.
+	mw = walwriter.New(f.wal, f.branches, f.mat, main)
+	_, err = mw.Put(ctx, "docs", bson.M{"_id": oid, "who": "objectid, edited on main"})
+	require.NoError(t, err)
+	_, err = mw.Put(ctx, "docs", bson.M{"_id": int32(7), "who": "int32, edited on main"})
+	require.NoError(t, err)
+
+	plan := requirePlansAgree(t, svc, feature.ID, "lookalike ids")
+	assert.Empty(t, plan.Conflicts)
+	require.Len(t, plan.Changes, 2)
+	for _, c := range plan.Changes {
+		switch id := c.ID.(type) {
+		case string:
+			assert.Equal(t, oid.Hex(), id)
+			assert.Equal(t, "string, edited", c.Document["who"])
+			assert.Equal(t, "string", c.Before["who"])
+		case int64:
+			assert.True(t, c.Delete)
+			assert.Equal(t, "int64", c.Before["who"])
+		default:
+			t.Fatalf("unexpected change for _id %#v", c.ID)
+		}
+	}
+}
+
+// A branch with no writes of its own has nothing to merge, whatever its
+// parent did.
+func TestMergeChanged_EmptySource(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, counter := newCountingMergeFixture(t, db)
+	main := seedImported(t, f, "merge-changed-empty", 30)
+	feature, err := f.branches.CreateBranch("merge-changed-empty", "feature", main.ID)
+	require.NoError(t, err)
+	_, err = walwriter.New(f.wal, f.branches, f.mat, main).Put(ctx, "products", bson.M{"_id": "p0001", "price": int32(5)})
+	require.NoError(t, err)
+
+	counter.loads = 0
+	plan, err := svc.ComputeChanged(feature.ID)
+	require.NoError(t, err)
+	assert.Empty(t, plan.Changes)
+	assert.Empty(t, plan.Conflicts)
+	assert.Zero(t, counter.loads)
+	requirePlansAgree(t, svc, feature.ID, "empty source")
+}
+
+// downgradeToLegacyKeys rewrites a branch's stored entries the way releases
+// before typed document keys wrote them: the key is the legacy string form
+// of the _id and carries no key version. In that form an ObjectID and the
+// string of its hex share one stored key. stripPreImage additionally removes
+// the pre-image of the delete entries of the named document.
+func downgradeToLegacyKeys(t *testing.T, db *mongo.Database, f *snapshotFixture, branchID string, stripPreImage interface{}) {
+	t.Helper()
+	ctx := context.Background()
+	entries, err := f.wal.GetBranchEntries(branchID, "", 0, int64(1)<<62)
+	require.NoError(t, err)
+	for _, e := range entries {
+		if !e.IsData() {
+			continue
+		}
+		image := e.PostImage
+		if e.Operation == wal.OpDelete {
+			image = e.PreImage
+		}
+		id, err := wal.DocumentIDFromImage(image)
+		require.NoError(t, err)
+		update := bson.M{
+			"$set":   bson.M{"document_id": wal.LegacyDocumentIDString(id)},
+			"$unset": bson.M{"key_v": ""},
+		}
+		if e.Operation == wal.OpDelete && stripPreImage != nil && wal.DocumentIDString(id) == wal.DocumentIDString(stripPreImage) {
+			update["$unset"] = bson.M{"key_v": "", "pre": ""}
+		}
+		res, err := db.Collection("wal_log").UpdateOne(ctx, bson.M{"_id": e.ID}, update)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, res.MatchedCount)
+	}
+}
+
+// History written before typed keys is found by its legacy stored key and
+// attributed by the _id in its image, so look-alike IDs stay apart.
+func TestMergeChanged_LegacyStoredKeys(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, _ := newCountingMergeFixture(t, db)
+
+	oid, _ := primitive.ObjectIDFromHex("507f1f77bcf86cd799439011")
+	main, err := f.branches.CreateBranch("merge-changed-legacy", "main", "")
+	require.NoError(t, err)
+	mw := walwriter.New(f.wal, f.branches, f.mat, main)
+	_, err = mw.PutMany(ctx, "docs", []bson.M{
+		{"_id": oid, "who": "objectid"},
+		{"_id": oid.Hex(), "who": "string"},
+		{"_id": int32(7), "who": "int32"},
+		{"_id": int64(7), "who": "int64"},
+		{"_id": "plain", "who": "plain"},
+		{"_id": "gone-on-main", "who": "deleted by the parent before the fork"},
+	})
+	require.NoError(t, err)
+	_, _, err = mw.Delete(ctx, "docs", "gone-on-main")
+	require.NoError(t, err)
+
+	feature, err := f.branches.CreateBranch("merge-changed-legacy", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	_, err = fw.Put(ctx, "docs", bson.M{"_id": oid.Hex(), "who": "string, edited"})
+	require.NoError(t, err)
+	_, _, err = fw.Delete(ctx, "docs", int64(7))
+	require.NoError(t, err)
+	_, err = fw.Put(ctx, "docs", bson.M{"_id": "plain", "who": "plain, edited"})
+	require.NoError(t, err)
+	_, err = fw.Put(ctx, "docs", bson.M{"_id": "gone-on-main", "who": "created again on the branch"})
+	require.NoError(t, err)
+	mw = walwriter.New(f.wal, f.branches, f.mat, main)
+	_, err = mw.Put(ctx, "docs", bson.M{"_id": oid, "who": "objectid, edited on main"})
+	require.NoError(t, err)
+	_, err = mw.Put(ctx, "docs", bson.M{"_id": int32(7), "who": "int32, edited on main"})
+	require.NoError(t, err)
+
+	want := requirePlansAgree(t, svc, feature.ID, "current keys")
+	require.Len(t, want.Changes, 4)
+	require.Empty(t, want.Conflicts)
+
+	// The parent's delete keeps no pre-image: with a plain string key it
+	// still names exactly one document.
+	downgradeToLegacyKeys(t, db, f, main.ID, "gone-on-main")
+	downgradeToLegacyKeys(t, db, f, feature.ID, nil)
+
+	got := requirePlansAgree(t, svc, feature.ID, "legacy keys")
+	requireSamePlan(t, want, got, "legacy keys vs current keys")
+}
+
+// A legacy delete without a pre-image does not say which document it removed
+// when its key reads as more than one _id. Neither path may guess: the
+// changed-documents path declines, and the answer is whatever a full replay
+// gives.
+func TestMergeChanged_AmbiguousLegacyDeleteIsNotGuessed(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	oid, _ := primitive.ObjectIDFromHex("507f1f77bcf86cd799439011")
+
+	build := func(project string) (*snapshotFixture, *merge.Service, *wal.Branch, *wal.Branch) {
+		f, svc, _ := newCountingMergeFixture(t, db)
+		main, err := f.branches.CreateBranch(project, "main", "")
+		require.NoError(t, err)
+		mw := walwriter.New(f.wal, f.branches, f.mat, main)
+		_, err = mw.PutMany(ctx, "docs", []bson.M{
+			{"_id": oid, "who": "objectid"},
+			{"_id": "other", "who": "other"},
+		})
+		require.NoError(t, err)
+		feature, err := f.branches.CreateBranch(project, "feature", main.ID)
+		require.NoError(t, err)
+		return f, svc, main, feature
+	}
+
+	t.Run("on the source branch", func(t *testing.T) {
+		f, svc, _, feature := build("merge-changed-ambiguous-src")
+		fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+		_, _, err := fw.Delete(ctx, "docs", oid)
+		require.NoError(t, err)
+		downgradeToLegacyKeys(t, db, f, feature.ID, oid)
+
+		_, err = svc.ComputeChanged(feature.ID)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, merge.ErrFullReplayRequired), "got: %v", err)
+
+		// One document matches the legacy key, so a full replay resolves it.
+		full, err := svc.ComputeFull(feature.ID)
+		require.NoError(t, err)
+		plan, err := svc.Compute(feature.ID)
+		require.NoError(t, err)
+		requireSamePlan(t, full, plan, "fallback")
+		require.Len(t, plan.Changes, 1)
+		assert.True(t, plan.Changes[0].Delete)
+	})
+
+	t.Run("on the inherited chain", func(t *testing.T) {
+		f, svc, main, feature := build("merge-changed-ambiguous-parent")
+		// After the fork the parent deletes the ObjectID document; the
+		// branch edits it. A full replay sees delete-versus-edit.
+		mw := walwriter.New(f.wal, f.branches, f.mat, main)
+		_, _, err := mw.Delete(ctx, "docs", oid)
+		require.NoError(t, err)
+		fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+		_, err = fw.Put(ctx, "docs", bson.M{"_id": oid, "who": "objectid, edited"})
+		require.NoError(t, err)
+		downgradeToLegacyKeys(t, db, f, main.ID, oid)
+
+		_, err = svc.ComputeChanged(feature.ID)
+		require.Error(t, err, "the delete's key reads as an ObjectID or a string")
+
+		full, err := svc.ComputeFull(feature.ID)
+		require.NoError(t, err)
+		plan, err := svc.Compute(feature.ID)
+		require.NoError(t, err)
+		requireSamePlan(t, full, plan, "fallback")
+		require.Len(t, plan.Conflicts, 1)
+		assert.Nil(t, plan.Conflicts[0].Ours, "the parent's delete")
+	})
+}

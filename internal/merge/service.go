@@ -23,6 +23,7 @@ package merge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -112,35 +113,70 @@ func NewService(db *mongo.Database, walService *wal.Service, branches *branchwal
 	}
 }
 
+// ErrFullReplayRequired reports that the changed-documents path cannot
+// produce a plan for these branches and the states must be rebuilt in full.
+var ErrFullReplayRequired = errors.New("merge plan needs a full replay of the branch states")
+
 // Compute builds a merge plan for merging a branch into its parent,
 // without persisting it (the diff view).
+//
+// Only a document the source branch wrote since its fork can end up in a
+// plan, so the plan is computed from those documents alone and its cost
+// follows the size of the change, not the size of the database (see
+// ComputeChanged). When that path cannot answer, the three states are
+// rebuilt in full instead (ComputeFull). Both produce the same plan.
 func (s *Service) Compute(sourceBranchID string) (*Plan, error) {
-	source, err := s.branches.GetBranchByID(sourceBranchID)
+	source, target, err := s.endpoints(sourceBranchID)
 	if err != nil {
-		return nil, fmt.Errorf("source branch not found: %w", err)
+		return nil, err
+	}
+	if plan, err := s.computeChanged(source, target); err == nil {
+		return plan, nil
+	}
+	// The full path is the reference: it either builds the plan or returns
+	// the error that describes what is wrong with the history.
+	return s.computeFull(source, target)
+}
+
+// ComputeChanged builds the plan from the documents the source branch wrote
+// since its fork, and fails with ErrFullReplayRequired (or the underlying
+// read error) instead of falling back to a full replay.
+func (s *Service) ComputeChanged(sourceBranchID string) (*Plan, error) {
+	source, target, err := s.endpoints(sourceBranchID)
+	if err != nil {
+		return nil, err
+	}
+	return s.computeChanged(source, target)
+}
+
+// ComputeFull builds the plan by materializing the fork state, the source
+// and the target in full and comparing every document. It is the reference
+// the changed-documents path is tested against.
+func (s *Service) ComputeFull(sourceBranchID string) (*Plan, error) {
+	source, target, err := s.endpoints(sourceBranchID)
+	if err != nil {
+		return nil, err
+	}
+	return s.computeFull(source, target)
+}
+
+func (s *Service) endpoints(sourceBranchID string) (source, target *wal.Branch, err error) {
+	source, err = s.branches.GetBranchByID(sourceBranchID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("source branch not found: %w", err)
 	}
 	if source.ParentID == "" {
-		return nil, fmt.Errorf("branch %s has no parent to merge into", source.Name)
+		return nil, nil, fmt.Errorf("branch %s has no parent to merge into", source.Name)
 	}
-	target, err := s.branches.GetBranchByID(source.ParentID)
+	target, err = s.branches.GetBranchByID(source.ParentID)
 	if err != nil {
-		return nil, fmt.Errorf("target branch not found: %w", err)
+		return nil, nil, fmt.Errorf("target branch not found: %w", err)
 	}
+	return source, target, nil
+}
 
-	base, err := s.materializer.MaterializeBranchAtLSN(source, source.BaseLSN)
-	if err != nil {
-		return nil, fmt.Errorf("failed to materialize fork state: %w", err)
-	}
-	theirs, err := s.materializer.MaterializeBranch(source)
-	if err != nil {
-		return nil, fmt.Errorf("failed to materialize source: %w", err)
-	}
-	ours, err := s.materializer.MaterializeBranch(target)
-	if err != nil {
-		return nil, fmt.Errorf("failed to materialize target: %w", err)
-	}
-
-	plan := &Plan{
+func newPlan(source, target *wal.Branch) *Plan {
+	return &Plan{
 		FormatVersion:  2,
 		SourceVersion:  source.MutationVersion,
 		TargetVersion:  target.MutationVersion,
@@ -155,62 +191,173 @@ func (s *Service) Compute(sourceBranchID string) (*Plan, error) {
 		Status:         StatusPending,
 		CreatedAt:      time.Now(),
 	}
+}
 
-	for _, collection := range unionKeys3(base, ours, theirs) {
-		baseDocs := base[collection]
-		ourDocs := ours[collection]
-		theirDocs := theirs[collection]
-
-		for _, docID := range unionKeys3(baseDocs, ourDocs, theirDocs) {
-			b, o, th := baseDocs[docID], ourDocs[docID], theirDocs[docID]
-
-			theirsChanged, err := docsUnequal(b, th)
-			if err != nil {
-				return nil, err
-			}
-			if !theirsChanged {
-				continue // Source did nothing; ours stands either way.
-			}
-			oursChanged, err := docsUnequal(b, o)
-			if err != nil {
-				return nil, err
-			}
-			if oursChanged {
-				identical, err := docsUnequal(o, th)
-				if err != nil {
-					return nil, err
-				}
-				if !identical {
-					continue // Both sides made the same change.
-				}
-				plan.Conflicts = append(plan.Conflicts, Conflict{
-					Collection: collection,
-					DocumentID: docID,
-					Base:       b,
-					Ours:       o,
-					Theirs:     th,
-				})
-				continue
-			}
-			plan.Changes = append(plan.Changes, Change{
-				Collection: collection,
-				DocumentID: docID,
-				Delete:     th == nil,
-				Document:   th,
-				ID:         imageID(th, o, b),
-				Before:     o,
-			})
-		}
+// consider classifies one document from its three states — base (at the
+// fork), ours (target) and theirs (source), nil meaning absent — and records
+// the change or conflict it amounts to, if any.
+func (p *Plan) consider(collection, docID string, b, o, th bson.M) error {
+	theirsChanged, err := docsUnequal(b, th)
+	if err != nil {
+		return err
 	}
+	if !theirsChanged {
+		return nil // Source did nothing; ours stands either way.
+	}
+	oursChanged, err := docsUnequal(b, o)
+	if err != nil {
+		return err
+	}
+	if oursChanged {
+		differ, err := docsUnequal(o, th)
+		if err != nil {
+			return err
+		}
+		if !differ {
+			return nil // Both sides made the same change.
+		}
+		p.Conflicts = append(p.Conflicts, Conflict{
+			Collection: collection,
+			DocumentID: docID,
+			Base:       b,
+			Ours:       o,
+			Theirs:     th,
+		})
+		return nil
+	}
+	p.Changes = append(p.Changes, Change{
+		Collection: collection,
+		DocumentID: docID,
+		Delete:     th == nil,
+		Document:   th,
+		ID:         imageID(th, o, b),
+		Before:     o,
+	})
+	return nil
+}
 
-	sortChanges(plan.Changes)
-	sort.Slice(plan.Conflicts, func(i, j int) bool {
-		a, b := plan.Conflicts[i], plan.Conflicts[j]
+func (p *Plan) sort() {
+	sortChanges(p.Changes)
+	sort.Slice(p.Conflicts, func(i, j int) bool {
+		a, b := p.Conflicts[i], p.Conflicts[j]
 		if a.Collection != b.Collection {
 			return a.Collection < b.Collection
 		}
 		return a.DocumentID < b.DocumentID
 	})
+}
+
+func (s *Service) computeFull(source, target *wal.Branch) (*Plan, error) {
+	base, err := s.materializer.MaterializeBranchAtLSN(source, source.BaseLSN)
+	if err != nil {
+		return nil, fmt.Errorf("failed to materialize fork state: %w", err)
+	}
+	theirs, err := s.materializer.MaterializeBranch(source)
+	if err != nil {
+		return nil, fmt.Errorf("failed to materialize source: %w", err)
+	}
+	ours, err := s.materializer.MaterializeBranch(target)
+	if err != nil {
+		return nil, fmt.Errorf("failed to materialize target: %w", err)
+	}
+
+	plan := newPlan(source, target)
+	for _, collection := range unionKeys3(base, ours, theirs) {
+		baseDocs := base[collection]
+		ourDocs := ours[collection]
+		theirDocs := theirs[collection]
+		for _, docID := range unionKeys3(baseDocs, ourDocs, theirDocs) {
+			if err := plan.consider(collection, docID, baseDocs[docID], ourDocs[docID], theirDocs[docID]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	plan.sort()
+	return plan, nil
+}
+
+// computeChanged rests on one observation. The source's state is the fork
+// state with the source's own entries folded on top, so a document differs
+// between the two only if one of those entries is about it — and a document
+// that does not differ there is never part of a plan, whatever the target
+// did to it. The candidates are therefore the documents named by the
+// source's own visible entries, and for each of them the three states are
+// read from the document's own history:
+//
+//   - theirs: the newest of the source's own entries for it;
+//   - base:   the document at the fork point, read along the source's
+//     inherited chain;
+//   - ours:   the document at the target's head.
+//
+// Everything is read through the same visibility rules as a full replay
+// (ancestry bounds, discarded ranges, reclaim floors), so a plan built here
+// equals the one ComputeFull builds.
+func (s *Service) computeChanged(source, target *wal.Branch) (*Plan, error) {
+	// Newest visible entry of the source's own log, per collection and
+	// document. Folding the source's entries in LSN order leaves exactly
+	// this entry's outcome for each key.
+	latest := make(map[string]map[string]*wal.Entry)
+	err := s.wal.ScanBranchDataEntries(source.ID, source.BaseLSN+1, source.HeadLSN, func(entry *wal.Entry) error {
+		if source.IsDiscardedForRead(entry.LSN, source.HeadLSN) {
+			return nil
+		}
+		key, ok := materializer.EntryStateKey(entry)
+		if !ok {
+			return fmt.Errorf("%w: entry at LSN %d does not identify its document on its own", ErrFullReplayRequired, entry.LSN)
+		}
+		docs := latest[entry.Collection]
+		if docs == nil {
+			docs = make(map[string]*wal.Entry)
+			latest[entry.Collection] = docs
+		}
+		if current := docs[key]; current == nil || entry.LSN > current.LSN {
+			docs[key] = entry
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The scan names every candidate only while the source's own entries
+	// are all still in the log. Read the floors after the scan: GC records
+	// a floor before it deletes.
+	floors, err := s.wal.ReclaimFloors(source.ID)
+	if err != nil {
+		return nil, err
+	}
+	for collection, floor := range floors {
+		if floor > source.BaseLSN {
+			return nil, fmt.Errorf("%w: garbage collection deleted entries of %q on the source branch", ErrFullReplayRequired, collection)
+		}
+	}
+
+	plan := newPlan(source, target)
+	for collection, entries := range latest {
+		keys := make([]string, 0, len(entries))
+		for key := range entries {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		base, err := s.materializer.MaterializeDocumentsAtLSN(source, collection, keys, source.BaseLSN)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read fork state: %w", err)
+		}
+		ours, err := s.materializer.MaterializeDocumentsAtLSN(target, collection, keys, target.HeadLSN)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read target: %w", err)
+		}
+		for _, key := range keys {
+			state := make(map[string]bson.M, 1)
+			if err := s.materializer.ApplyEntry(state, entries[key]); err != nil {
+				return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entries[key].LSN, err)
+			}
+			if err := plan.consider(collection, key, base[key], ours[key], state[key]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	plan.sort()
 	return plan, nil
 }
 
