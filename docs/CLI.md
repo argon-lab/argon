@@ -56,14 +56,16 @@ Imports auto-snapshot, so reads never replay the whole import. A real import
 needs one of two flags, and `--yes` replaces neither:
 
 - `--online` (releases after 2.5.0) imports a replica-set database while it
-  is being written. The result is the source at one cluster time, which the
-  command prints, and the project's `main` then follows that database (next
-  section). `--follow` keeps following in the foreground once the import is
-  done, and `--allow-inexact` (only with `--follow`) means what it means for
-  `argon source follow`. To switch on `changeStreamPreAndPostImages` for
-  the source's collections, pass `--enable-source-images` and import as
-  a user allowed to run `replSetGetConfig`, such as one with the
-  `clusterMonitor` role.
+  is being written. It is experimental, off by default, and has known open
+  issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. The result is the
+  source at one cluster time, which the command prints, and the project's
+  `main` then follows that database (next section). `--follow` keeps following
+  in the foreground once the import is done, and `--allow-inexact` (only with
+  `--follow`) means what it means for `argon source follow`. Nothing is written
+  to the source. `--enable-source-images` is the one exception and has to be
+  asked for: it switches on `changeStreamPreAndPostImages` for the source's
+  collections, and needs an import by a user allowed to run
+  `replSetGetConfig`, such as one with the `clusterMonitor` role.
 - `--source-quiesced` is for a database nobody is writing to: pause its
   writers and DDL for the whole import. The result is a one-time copy.
 
@@ -83,6 +85,10 @@ retrying the same name. Completed projects cannot be removed by cleanup. See
 [the import contract](OPERATIONS.md#importing-existing-data).
 
 ## Follow a live database
+
+The `argon source` commands and `merge apply --write-back` are experimental
+and off by default. They have known open issues. Set
+`ARGON_EXPERIMENTAL_SOURCE=1` to enable them.
 
 ```
 argon source follow -p P [--uri U] [--allow-inexact] [--enable-source-images] [--auto-resync]
@@ -200,7 +206,9 @@ argon merge list    -p P
 Plans apply exactly once and refuse stale parent heads; conflicts fail
 loudly unless a strategy resolves them. Merges are undoable like any range.
 When the parent follows an external database, a plan is applied with
-`--write-back` instead; see [Follow a live database](#follow-a-live-database).
+`--write-back`. Write-back is experimental, off by default, and has known
+open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See
+[Follow a live database](#follow-a-live-database).
 A write-back plan in `writing_back` is claimed and cannot be used again.
 Check the affected documents on the source, let following catch up, then
 run `argon merge preview` again for the sandbox. `merge list` prints this

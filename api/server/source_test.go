@@ -16,6 +16,7 @@ import (
 // apply endpoint is refused for such a plan, whatever the body asks for, and
 // both the source and the followed branch are left as they were.
 func TestAPI_MergeApplyNeverReachesAFollowedSource(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	const deployment = "mongodb://localhost:27017"
 	id := time.Now().UnixNano()
 	dbName := fmt.Sprintf("argon_api_follow_test_%d", id)
@@ -33,6 +34,7 @@ func TestAPI_MergeApplyNeverReachesAFollowedSource(t *testing.T) {
 	require.NoError(t, err)
 	_, err = services.ImportDatabaseOnline(ctx, walcli.OnlineImport{URI: deployment, Database: source.Name(), Project: "followed"})
 	require.NoError(t, err)
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "")
 
 	router := NewRouter(services)
 	t.Cleanup(router.Shutdown)

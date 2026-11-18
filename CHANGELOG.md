@@ -11,99 +11,180 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+The experimental source features (online import, `argon source`, write-back;
+behind `ARGON_EXPERIMENTAL_SOURCE=1`) change as follows. They stay
+experimental and off by default.
+
+### Changed
+
+- One follower or resync per project. A run takes a lease in Argon's
+  metadata, judged by the metadata deployment's clock, and every write it
+  makes is conditional on still holding it. A second `source follow` or
+  `source resync` ends at once and names the run that holds the lease
+  instead of marking the project degraded; a run that was paused past the
+  lease and replaced stops without writing. `argon source status` shows the
+  owner (kind, host, process ID, last heartbeat).
+- A write-back claim is settled only on evidence: the writer knows its
+  transaction's outcome, or following sees the transaction. The follower no
+  longer returns a claimed plan to pending after a waiting time. A plan that
+  stays `writing_back` is not written again; check the source, let following
+  catch up and preview a new plan, which finds nothing left to write if the
+  earlier transaction committed. `merge list` prints this guidance.
+- The source identity recorded at import is kept. A project bound by set name
+  and member hosts is no longer upgraded to a replica-set ID by a later
+  connection. Such a project can be followed and resynced, but write-back
+  and `--enable-source-images` are refused for it: import as a user allowed
+  to run `replSetGetConfig` (for example with the `clusterMonitor` role).
+- `import database --online --dry-run` runs the online import's own checks
+  (replica set, collection rules, the change stream the replay will open) and
+  lists what an online import would copy. `import preview` skips views, and
+  `import preview --online` applies the online collection rules.
+- `source follow --auto-resync` completes an interrupted resync when it
+  starts, and resyncs only when the source's stream can no longer be
+  followed. A head moved by something other than the follower needs an
+  explicit `source resync`.
+- A resync batch is bounded by size (16 MiB of documents) as well as by
+  count.
+- `connect` returns a connection string only for the branch's own physical
+  database, and the console omits it for a sandbox whose record names
+  another database.
+
+### Fixed
+
+- A second resync started while one was running replaced the first one's
+  replay position; the first could then finish as exact with changes
+  missing.
+- A committed write-back whose record was not updated could be returned to
+  pending after a resync or a long pause and applied a second time. A
+  successful write-back that could not mark its plan now returns an error.
+- A deployment presenting the same set name and member host strings as the
+  source could be adopted as the project's identity, after which the real
+  source was refused.
+- Dropping, creating or modifying a view on the source ended following as
+  degraded. Views are ignored. A resync now removes from `main` the
+  documents of a collection the source has replaced by a view of the same
+  name.
+- A second follower left the project reported as degraded while the first
+  kept following correctly. A resync that failed its first checks reset a
+  degraded state to stopped, which allowed write-back again.
+- A followed `main` checked out by Argon 2.5.0 was reported as healthy while
+  following could not continue. It is reported as degraded; release its
+  physical database, then resync.
+- `source follow --enable-source-images` altered the source's collections
+  before refusals it could have known beforehand. It alters nothing until
+  following can start.
+- Write-back reordered the fields of untouched array elements when an element
+  before them was added or removed.
+- The check of the change stream before an online import's copy did not use
+  the replay's options, so a source that rejects them failed only after the
+  copy.
+- Repeated updates to a capped collection pushed the import's and resyncs'
+  inexact ranges off the list `source status` shows. A recurring cause now
+  displaces its own oldest range first.
+- A status write from a follower or resync could recreate the state of a
+  project that had been detached, or change the capture status of a branch
+  checked out afterwards.
+
+## [2.6.0] - 2026-11-18
+
+The first diff after a checkout no longer scans the copy, and three experimental
+features arrive switched off: online import, following a source database, and
+write-back. No data format changes since 2.5.0 for projects that do not use
+them.
+
 ### Added
 
-- Online import: `argon import database --online` imports a replica-set
-  database while it is being written. The copy is followed by the source's
-  change stream until the project equals the source at one cluster time,
-  which the command reports with the LSN it corresponds to. Writes made
-  during the import are not lost and not blocked. `--online --dry-run` runs
-  the same preflight and estimates the copy without making changes.
-  `argon import preview --online` uses the online collection rules. Both
-  preview modes skip views. `--source-quiesced` imports are unchanged.
-- Following: a project imported online keeps its `main` branch tied to the
-  source. `argon source follow` applies the source's changes and resumes from
-  its saved position after a restart without skipping or repeating one;
-  `argon source status` reports the position, the newest point at which
-  `main` equalled the source, and which ranges of its history are not exact;
+- Online import is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. `argon import database --online` imports a
+  replica-set database while it is being written. The copy is followed by the
+  source's change stream until the project equals the source at one cluster
+  time, which the command reports with the LSN it corresponds to. Writes made
+  during the import are not lost and not blocked. `--source-quiesced`
+  imports are unchanged.
+- The `argon source` commands are experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. A project imported online keeps its `main`
+  branch tied to the source. `argon source follow` applies the source's
+  changes and resumes from its saved position after a restart without
+  skipping or repeating one. `argon source status` reports the position, the
+  newest point at which `main` equalled the source, and which ranges of its
+  history are not exact.
   `argon source detach` ends the tie. Nothing is written to the source.
-  A lease on the metadata deployment allows one follower or resync per
-  project. Status shows the owner's run type, host, process ID and heartbeat.
   Updates are stored as the source held them, read back at their own cluster
   time. A position the oplog no longer holds, a dropped or renamed
   collection, and an update older than MongoDB's snapshot history are
   reported as degraded; `--allow-inexact` converges past the last of these
-  and records the range, and has to be given on each run. When the range list
-  is full, a recurring reason displaces its own oldest range first. The
-  source may be a different deployment from the Argon metadata. Following
-  also ends as degraded when the source keeps answering one position with
-  an error (an event too large to return,
+  and records the range, and has to be given on each run. The source may be a
+  different deployment from the Argon metadata. Following also ends as
+  degraded, instead of retrying without end or carrying on, when the source
+  keeps answering one position with an error (an event too large to return,
   a missing privilege), when a time-series collection is created on the
   source, and when something other than the follower wrote to `main`. A
   follower's writes are conditional on the branch still following its source,
   so `source detach` stops a follower in another process as well.
-  Status reports a followed `main` checked out by Argon 2.5.0 as degraded.
-  Release its own physical database before resyncing.
-- An online import binds the source by replica-set ID when the importing user
-  can run `replSetGetConfig`. Otherwise, following and resync require the set
-  name and at least one recorded member host to match. The binding stays as
-  recorded at import. Write-back and `--enable-source-images` require a
-  replica-set ID. `argon source status` shows the identity check and reports
-  when the binding rules out write-back.
-- `argon source resync` repairs degraded following in place, without
-  importing the database again. It repairs gaps after a
+- The source commands, write-back and `--enable-source-images` are
+  experimental and off by default behind `ARGON_EXPERIMENTAL_SOURCE=1`. A
+  source is identified by its replica-set ID when the importing user may
+  read it, and otherwise by its set name together with its member hosts; a
+  matching set name alone is never accepted, for following, resync,
+  write-back or `--enable-source-images`. `argon source status` shows which
+  applies.
+- Resync is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. `argon source resync` repairs a project whose follower ended as
+  degraded, in place, instead of importing the database again: after a
   collection was dropped or renamed on the source, after the database was
   dropped, or when the oplog no longer holds the saved position. It compares
-  the source with `main` in batches, stores what differs, deletes documents
-  the source no longer has (including a collection replaced by a view),
-  replays the changes made meanwhile and reports the
+  the source with `main` in batches, stores what differs, deletes what the
+  source no longer has, replays the changes made meanwhile and reports the
   cluster time at which `main` equals the source again. Nothing is written to
-  the source. The LSNs it writes are recorded as an inexact range. An
-  interrupted resync is reported as unfinished and blocks plain `source follow`.
-  Running `source resync` again completes it. `argon source follow --auto-resync`
-  can also complete it on startup or repair a source stream gap during following.
-  A head moved outside the follower requires an explicit resync. Resync probes
-  the source's change stream with the replay's options and start position before
-  recording its start. A failed check preserves the previous status. A detach
-  at that point leaves no marker.
+  the source; the LSNs it writes are recorded as an inexact range; an
+  interrupted resync is reported as unfinished, blocks `source follow`, and
+  is completed by running it again. `argon source follow --auto-resync` runs
+  it when following ends as degraded and continues. Before it writes
+  anything it opens the source's change stream once, so a source user who
+  may not read it is told at the start, and it records its start only while
+  the project still follows the source, so a detach in that instant leaves
+  nothing behind.
   The consistent point reported on a source nobody is writing to is now the
   source's current cluster time; it could be one tick later, a time a later
   write might still be given. Dropping a collection Argon does not follow
   (`system.*`) no longer ends following.
-- Write-back: `argon merge apply <plan> --write-back` writes a reviewed plan
-  to the database its target follows, in one transaction that compares every
-  document with the plan's before-image and writes nothing if one differs.
+- Write-back is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. `argon merge apply <plan> --write-back` writes
+  a reviewed plan to the database its target follows, in one transaction that
+  compares every document with the plan's before-image and writes nothing if
+  one differs.
   It happens only when the flag is given on the call; the MCP server and the
   REST API do not offer it. It writes single documents into collections the
-  source already has and never creates one. A replacement preserves field
-  order in matching subdocuments, including array elements that moved.
-  Field order changes on the source after preview count as conflicts.
-  Write-back is refused while following is degraded. An unresolved claim
-  stays `writing_back`. Check the affected documents on the source, let
-  following catch up, and preview a new plan.
-- `--enable-source-images` on `import database --online` and `source follow`
-  switches on `changeStreamPreAndPostImages` for the source's collections.
+  source already has and never creates one; a replaced document keeps the
+  field order production gave it; a document whose fields were reordered
+  since the review counts as changed; and it is refused while following is
+  degraded. A plan whose write-back was interrupted before it committed is
+  pending again.
+- `--enable-source-images` is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. `--enable-source-images` on `import database
+  --online` and `source follow` switches on `changeStreamPreAndPostImages` for
+  the source's collections.
   Argon does not alter a source's collections without it, makes the change
-  once the import has reserved and bound the project or the follower has
-  verified it can resume, and names the altered collections if the import or
-  follower subsequently fails.
-- An online import copies and follows every collection of the source except
-  `system.*`, including ones named `config.*`, `admin.*` or `local.*`. It
-  skips views and refuses time-series collections. View creation,
-  modification and removal are ignored during replay and following.
+  only once the import or the follower can actually start, and names the
+  altered collections in the error if the import then fails.
+- Online import is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. An online import copies and follows every
+  collection of the source except `system.*`, including ones named `config.*`,
+  `admin.*` or `local.*`. It skips views and refuses time-series collections.
   A failed or cancelled import, and `argon import cleanup`, remove the
   snapshots taken of the unpublished project as well as its rows.
 
 ### Changed
 
 - The first `argon diff` or `argon merge preview` of a new branch no longer
-  takes time that grows with the database when the parent is checked out and
-  nothing is watching it. Both drain the parent's capture first, and the
-  parent's stream position was from before the branch's checkout, so MongoDB
-  scanned the oplog of that whole copy. A checkout (and a sandbox, which
-  includes one) now reads a checked-out parent's stream while it copies and
-  leaves the parent's position after the copy. A parent that is not checked
-  out, or whose capture cannot start, is left as before (#120).
+  takes time that grows with the database when the parent is checked out,
+  has a saved capture actor and nothing is watching it. Both drain the
+  parent's capture first, and the parent's stream position was from before
+  the branch's checkout, so MongoDB scanned the oplog of that whole copy.
+  A checkout (and a sandbox, which includes one) now reads a checked-out
+  parent's stream while it copies and leaves the parent's position after the
+  copy. A parent that is not checked out, or whose capture cannot start, is
+  left as before (#120).
 - A branch that follows an external database accepts changes only from its
   source: `merge apply` without `--write-back`, `undo`, `restore reset`,
   `checkout` and programmatic writes on it are refused, with the alternatives
@@ -115,14 +196,21 @@ entry — a synchronization barrier, not in-proxy capture).
   any other database as its physical database.
 - Source connection strings are removed from import errors before they are
   printed, and `--uri` may be given as `ARGON_SOURCE_URI`.
-- `checkout` and `connect` return a connection string only for the branch's
-  own physical database. The console omits the connection string for a
-  sandbox whose record names another database.
+- `checkout` of an already checked-out branch whose record names a database
+  other than the one Argon created for it is refused instead of returning
+  that database's connection string.
 - The README, the npm package description and the MCP Registry description
   name what is underneath a sandbox as Git for MongoDB. The README sets seven
   Git commands beside the Argon command that does the same job and says where
   the comparison stops. "MongoDB sandboxes for AI agents" remains the first
   line everywhere.
+
+### Fixed
+
+- Checking out a child branch no longer assigns the default capture actor to
+  a parent without a saved actor. A later `argon watch -b main --actor etl`
+  can choose its actor and capture the parent's pending writes under that
+  label.
 
 ## [2.5.0] - 2026-11-17
 

@@ -22,6 +22,7 @@ func TestCLIOnlineImportPreviewAndDryRun(t *testing.T) {
 	id := primitive.NewObjectID().Hex()
 	metadata := "argon_cli_import_meta_" + id
 	t.Setenv("ARGON_METADATA_DB", metadata)
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))

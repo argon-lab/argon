@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/argon-lab/argon/v2/internal/mongoexpr"
+	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -140,6 +141,9 @@ func resolveChanges(plan *Plan, strategy string) ([]Change, int, error) {
 // ApplyToSource writes a pending plan to the external database its target
 // branch follows. It is never reached implicitly: the caller names it.
 func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, strategy string, target WriteBackTarget) (*ApplyResult, error) {
+	if err := source.RequireExperimental(); err != nil {
+		return nil, err
+	}
 	plan, err := s.GetPlan(ctx, planID)
 	if err != nil {
 		return nil, err

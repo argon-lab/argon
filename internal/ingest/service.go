@@ -592,6 +592,12 @@ func (s *Service) loadResumeState(ctx context.Context, branchID string) (bson.Ra
 	return doc.ResumeToken, doc.StartAt, doc.Actor, nil
 }
 
+// PersistedActor returns the branch's capture label if one has been set.
+func (s *Service) PersistedActor(ctx context.Context, branchID string) (actor string, found bool, err error) {
+	_, _, actor, err = s.loadResumeState(ctx, branchID)
+	return actor, actor != "", err
+}
+
 // ClearResumeState drops the persisted token (used when a branch is
 // re-checked out from scratch, which invalidates the old stream position).
 func (s *Service) ClearResumeState(ctx context.Context, branchID string) error {

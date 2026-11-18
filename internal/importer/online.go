@@ -98,6 +98,9 @@ func prepareOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Data
 
 // DryRunOnline checks the same source preconditions as an online import and estimates its copy size.
 func DryRunOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Database) (_ *ImportResult, err error) {
+	if err := source.RequireExperimental(); err != nil {
+		return nil, err
+	}
 	started := time.Now()
 	defer func() { err = source.RedactError(err, opts.MongoURI) }()
 	if err := validateImportOptions(opts); err != nil {
