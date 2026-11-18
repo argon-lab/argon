@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Sandboxes and checkouts work on MongoDB Atlas free (M0) clusters. Checkout
+  read its capture boundary from the reply to `ping`, which a free cluster
+  answers without `operationTime`, so `argon sandbox create` and
+  `argon checkout` failed with "missing operationTime" although `argon doctor`
+  passed. The boundary now comes from `hello`.
 - Engine warnings go to stderr. A failed storage reclaim after a branch was
   deleted, a failed post-import snapshot and a branch that could not be deleted
   with its project were reported on stdout. Under `argon mcp` stdout is the
