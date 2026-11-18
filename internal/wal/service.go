@@ -2,6 +2,7 @@ package wal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -337,20 +338,59 @@ func (s *Service) GetDocumentHistory(branchID, collection, documentID string, st
 //
 // named is true when the entry itself says: an image carries the real _id
 // (DocumentID is set from it), and a delete written with a current key is
-// trusted as it stands. A legacy delete without an image names no document:
-// it is refused when its key reads as more than one ID, and otherwise left
-// to the caller, which matched it by a stored key.
+// trusted as it stands. Anything else names no document and is left to the
+// caller, which matched it by a stored key — except a legacy delete whose
+// key reads as more than one ID, which is refused.
 func settleDocumentKey(entry *Entry) (named bool, err error) {
 	if len(entry.PostImage) > 0 || len(entry.PreImage) > 0 {
 		return true, entry.NormalizeDocumentKey()
 	}
-	if entry.Operation == OpDelete && entry.DocumentKeyVersion == 0 {
+	if entry.Operation != OpDelete {
+		return false, nil
+	}
+	if entry.DocumentKeyVersion == 0 {
 		if DocumentIDString(entry.DocumentID) != entry.DocumentID {
 			return false, fmt.Errorf("legacy delete at LSN %d has an ambiguous BSON ID and no pre-image; full collection replay is required", entry.LSN)
 		}
 		return false, nil
 	}
 	return true, nil
+}
+
+// ErrLegacyDocumentKeys reports history written before typed document keys
+// (releases up to 2.0.x, and entries rewritten by the schema-v1 migration).
+// Its stored keys take several forms, some shared between different _id
+// values and some unrelated to the current key, so it cannot be read
+// reliably one document at a time.
+var ErrLegacyDocumentKeys = errors.New("history predates typed document keys; replay the collection")
+
+var dataOperations = []OperationType{OpPut, OpDelete, LegacyOpInsert, LegacyOpUpdate}
+
+// HasLegacyKeyedEntries reports whether the branch's log may hold, for one
+// collection in [startLSN, endLSN], data entries written before typed
+// document keys. Entries are appended in time order and every current
+// release writes typed keys, so the oldest data entry in the range decides:
+// if it has a typed key, so do all later ones. One indexed read.
+func (s *Service) HasLegacyKeyedEntries(branchID, collection string, startLSN, endLSN int64) (bool, error) {
+	if startLSN > endLSN {
+		return false, nil
+	}
+	var oldest struct {
+		KeyVersion int `bson:"key_v"`
+	}
+	err := s.collection.FindOne(context.Background(), bson.M{
+		"branch_id":  branchID,
+		"collection": collection,
+		"lsn":        bson.M{"$gte": startLSN, "$lte": endLSN},
+		"operation":  bson.M{"$in": dataOperations},
+	}, options.FindOne().SetSort(bson.D{{Key: "lsn", Value: 1}}).SetProjection(bson.M{"key_v": 1})).Decode(&oldest)
+	if err == mongo.ErrNoDocuments {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return oldest.KeyVersion < 1, nil
 }
 
 // HasUnkeyedDataEntries reports whether the branch's log holds, for one
@@ -368,7 +408,7 @@ func (s *Service) HasUnkeyedDataEntries(branchID, collection string, startLSN, e
 		"collection":  collection,
 		"document_id": bson.M{"$in": bson.A{nil, ""}},
 		"lsn":         bson.M{"$gte": startLSN, "$lte": endLSN},
-		"operation":   bson.M{"$in": []OperationType{OpPut, OpDelete, LegacyOpInsert, LegacyOpUpdate}},
+		"operation":   bson.M{"$in": dataOperations},
 	}, options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
 	if err == mongo.ErrNoDocuments {
 		return false, nil
@@ -385,83 +425,61 @@ const documentLookupBatch = 500
 // result. visible reports whether an LSN counts for this reader (nil means
 // every LSN does); it is how discarded ranges are skipped.
 //
-// The cost follows the number of documents asked for and the length of their
-// own histories in the range, not the size of the collection: each batch is
-// served by the (branch, collection, document, lsn) index.
+// It reads in two steps so that the cost follows the number of documents
+// asked for, not the size of the collection or how often a document was
+// rewritten: the positions of the documents' entries come from the (branch,
+// collection, document, lsn) index alone, and only the newest visible entry
+// of each document is then fetched.
+//
+// The range must hold typed document keys only; otherwise it fails with
+// ErrLegacyDocumentKeys (see HasLegacyKeyedEntries).
 func (s *Service) LatestDocumentEntries(branchID, collection string, keys []string, startLSN, endLSN int64, visible func(lsn int64) bool) (map[string]*Entry, error) {
 	latest := make(map[string]*Entry)
-	if startLSN > endLSN {
+	if startLSN > endLSN || len(keys) == 0 {
 		return latest, nil
 	}
+	legacy, err := s.HasLegacyKeyedEntries(branchID, collection, startLSN, endLSN)
+	if err != nil {
+		return nil, err
+	}
+	if legacy {
+		return nil, fmt.Errorf("collection %q: %w", collection, ErrLegacyDocumentKeys)
+	}
+
 	ctx := context.Background()
 	for start := 0; start < len(keys); start += documentLookupBatch {
 		end := start + documentLookupBatch
 		if end > len(keys) {
 			end = len(keys)
 		}
-		wanted := make(map[string]bool, end-start)
-		// byStored maps every key an entry may be stored under to the
-		// requested documents it can belong to.
-		byStored := make(map[string][]string, 2*(end-start))
-		stored := make([]string, 0, 2*(end-start))
-		for _, key := range keys[start:end] {
-			id, err := DocumentIDValue(key)
-			if err != nil {
-				return nil, err
-			}
-			wanted[key] = true
-			legacy := LegacyDocumentIDString(id)
-			for _, k := range []string{key, legacy} {
-				if _, known := byStored[k]; !known {
-					stored = append(stored, k)
-				}
-				byStored[k] = append(byStored[k], key)
-				if legacy == key {
-					break
-				}
-			}
-		}
+		batch := keys[start:end]
+
+		// Step one: where each document's newest visible entry is.
 		cursor, err := s.collection.Find(ctx, bson.M{
 			"branch_id":   branchID,
 			"collection":  collection,
-			"document_id": bson.M{"$in": stored},
+			"document_id": bson.M{"$in": batch},
 			"lsn":         bson.M{"$gte": startLSN, "$lte": endLSN},
-		})
+		}, options.Find().SetProjection(bson.M{"_id": 0, "document_id": 1, "lsn": 1}))
 		if err != nil {
 			return nil, err
 		}
+		newest := make(map[string]int64, len(batch))
 		err = func() error {
 			defer func() { _ = cursor.Close(ctx) }()
 			for cursor.Next(ctx) {
-				entry := new(Entry)
-				if err := cursor.Decode(entry); err != nil {
+				var position struct {
+					DocumentID string `bson:"document_id"`
+					LSN        int64  `bson:"lsn"`
+				}
+				if err := cursor.Decode(&position); err != nil {
 					return err
 				}
-				if !entry.IsData() || (visible != nil && !visible(entry.LSN)) {
+				if visible != nil && !visible(position.LSN) {
 					continue
 				}
-				if err := s.compressor.DecompressEntry(entry); err != nil {
-					return fmt.Errorf("failed to decompress WAL entry LSN %d: %w", entry.LSN, err)
-				}
-				storedKey := entry.DocumentID
-				named, err := settleDocumentKey(entry)
-				if err != nil {
-					return err
-				}
-				// An entry that names its document counts for that one. A
-				// legacy delete without an image counts for every requested
-				// document its stored key can describe, as in a replay.
-				targets := byStored[storedKey]
-				if named {
-					targets = nil
-					if wanted[entry.DocumentID] {
-						targets = []string{entry.DocumentID}
-					}
-				}
-				for _, key := range targets {
-					if current := latest[key]; current == nil || entry.LSN > current.LSN {
-						latest[key] = entry
-					}
+				if position.LSN > newest[position.DocumentID] {
+					newest[position.DocumentID] = position.LSN
 				}
 			}
 			return cursor.Err()
@@ -469,8 +487,45 @@ func (s *Service) LatestDocumentEntries(branchID, collection string, keys []stri
 		if err != nil {
 			return nil, err
 		}
+		if len(newest) == 0 {
+			continue
+		}
+
+		// Step two: those entries. LSNs are unique within a project.
+		lsns := make([]int64, 0, len(newest))
+		for _, lsn := range newest {
+			lsns = append(lsns, lsn)
+		}
+		entries, err := s.GetEntries(bson.M{
+			"branch_id":  branchID,
+			"collection": collection,
+			"lsn":        bson.M{"$in": lsns},
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if !entry.IsData() || entry.DocumentKeyVersion < 1 {
+				return nil, fmt.Errorf("collection %q, LSN %d: %w", collection, entry.LSN, ErrLegacyDocumentKeys)
+			}
+			if newest[entry.DocumentID] == entry.LSN {
+				latest[entry.DocumentID] = entry
+			}
+		}
 	}
 	return latest, nil
+}
+
+// CountBranchEntries counts the branch's entries in [startLSN, endLSN], and
+// stops counting at limit.
+func (s *Service) CountBranchEntries(branchID string, startLSN, endLSN, limit int64) (int64, error) {
+	if startLSN > endLSN {
+		return 0, nil
+	}
+	return s.collection.CountDocuments(context.Background(), bson.M{
+		"branch_id": branchID,
+		"lsn":       bson.M{"$gte": startLSN, "$lte": endLSN},
+	}, options.Count().SetLimit(limit))
 }
 
 // ScanBranchDataEntries calls fn for every data entry of the branch's own

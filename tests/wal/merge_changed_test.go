@@ -586,8 +586,9 @@ func downgradeToLegacyKeys(t *testing.T, db *mongo.Database, f *snapshotFixture,
 	}
 }
 
-// History written before typed keys is found by its legacy stored key and
-// attributed by the _id in its image, so look-alike IDs stay apart.
+// History written before typed keys is declined by the changed-documents
+// path as a whole, and the plan comes from a full replay, which attributes
+// each entry by the _id in its image.
 func TestMergeChanged_LegacyStoredKeys(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
@@ -635,7 +636,15 @@ func TestMergeChanged_LegacyStoredKeys(t *testing.T) {
 	downgradeToLegacyKeys(t, db, f, main.ID, "gone-on-main")
 	downgradeToLegacyKeys(t, db, f, feature.ID, nil)
 
-	got := requirePlansAgree(t, svc, feature.ID, "legacy keys")
+	// Keys of that time take several stored forms; the changed-documents
+	// path does not try to read them one document at a time.
+	_, err = svc.ComputeChanged(feature.ID)
+	require.Error(t, err)
+	full, err := svc.ComputeFull(feature.ID)
+	require.NoError(t, err)
+	got, err := svc.Compute(feature.ID)
+	require.NoError(t, err)
+	requireSamePlan(t, full, got, "legacy keys: compute vs full")
 	requireSamePlan(t, want, got, "legacy keys vs current keys")
 }
 
@@ -890,7 +899,13 @@ func TestMergeChanged_LegacyImagelessDeleteOfBooleanID(t *testing.T) {
 	require.NoError(t, err)
 	downgradeToLegacyKeys(t, db, f, main.ID, true)
 
-	plan := requirePlansAgree(t, svc, feature.ID, "legacy delete of _id true")
+	_, err = svc.ComputeChanged(feature.ID)
+	require.Error(t, err, "legacy keys are not read one document at a time")
+	full, err := svc.ComputeFull(feature.ID)
+	require.NoError(t, err)
+	plan, err := svc.Compute(feature.ID)
+	require.NoError(t, err)
+	requireSamePlan(t, full, plan, "legacy delete of _id true")
 	require.Empty(t, plan.Changes)
 	require.Len(t, plan.Conflicts, 1, "the parent deleted the document the branch edited")
 	assert.Nil(t, plan.Conflicts[0].Ours)
@@ -936,4 +951,152 @@ func TestMergeChanged_ImagelessDeleteWithCurrentKey(t *testing.T) {
 	plan := requirePlansAgree(t, svc, feature.ID, "image-less deletes")
 	require.Empty(t, plan.Conflicts, "the parent deleted the ObjectID document, not the string one")
 	require.Len(t, plan.Changes, 2)
+}
+
+// The same unrecorded deletion on the branch being merged: its log may no
+// longer name every document it changed, so the changed-documents path
+// declines and the plan comes from a full replay.
+func TestMergeChanged_SourceReclaimedWithoutFloor(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, _ := newCountingMergeFixture(t, db)
+	main := seedImported(t, f, "merge-changed-src-nofloor", 20)
+
+	feature, err := f.branches.CreateBranch("merge-changed-src-nofloor", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	_, err = fw.Put(ctx, "products", bson.M{"_id": "p0001", "price": int32(-1)})
+	require.NoError(t, err)
+	_, _, err = fw.Delete(ctx, "products", "p0002")
+	require.NoError(t, err)
+	feature, err = f.branches.GetBranchByID(feature.ID)
+	require.NoError(t, err)
+	_, err = f.snapshots.CreateSnapshot(ctx, feature.ID, feature.HeadLSN)
+	require.NoError(t, err)
+	_, err = walwriter.New(f.wal, f.branches, f.mat, feature).Put(ctx, "products", bson.M{"_id": "p0003", "price": int32(-3)})
+	require.NoError(t, err)
+	want := requirePlansAgree(t, svc, feature.ID, "before")
+	require.Len(t, want.Changes, 3)
+
+	// A 2.1.5 run: legacy manifest, entries up to it gone, no floor.
+	_, err = db.Collection("wal_snapshots").UpdateMany(ctx, bson.M{"branch_id": feature.ID}, bson.M{"$unset": bson.M{"visibility_rules": ""}})
+	require.NoError(t, err)
+	removed, err := f.wal.DeleteDataEntriesUpTo(feature.ID, "products", feature.HeadLSN)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, removed)
+
+	_, err = svc.ComputeChanged(feature.ID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, merge.ErrFullReplayRequired), "got: %v", err)
+	plan, err := svc.Compute(feature.ID)
+	require.NoError(t, err)
+	requireSamePlan(t, want, plan, "after unrecorded deletion on the source")
+}
+
+// More documents than one lookup batch, several versions of each on both
+// sides, and a plan that must still be exact.
+func TestMergeChanged_ManyDocumentsAndVersions(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, counter := newCountingMergeFixture(t, db)
+	main := seedImported(t, f, "merge-changed-many", 1500)
+
+	feature, err := f.branches.CreateBranch("merge-changed-many", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	mw := walwriter.New(f.wal, f.branches, f.mat, main)
+	for round := int32(1); round <= 3; round++ {
+		branchDocs := make([]bson.M, 0, 1200)
+		for i := 0; i < 1200; i++ {
+			branchDocs = append(branchDocs, bson.M{"_id": fmt.Sprintf("p%04d", i), "price": -round})
+		}
+		_, err = fw.PutMany(ctx, "products", branchDocs)
+		require.NoError(t, err)
+		// The parent rewrites a hot set, overlapping the branch's.
+		parentDocs := make([]bson.M, 0, 100)
+		for i := 1150; i < 1250; i++ {
+			parentDocs = append(parentDocs, bson.M{"_id": fmt.Sprintf("p%04d", i), "price": 1000 * round})
+		}
+		_, err = mw.PutMany(ctx, "products", parentDocs)
+		require.NoError(t, err)
+	}
+
+	counter.loads = 0
+	plan, err := svc.Compute(feature.ID)
+	require.NoError(t, err)
+	assert.Zero(t, counter.loads, "Compute, the entry point the CLI and API use, took the changed-documents path")
+	require.Len(t, plan.Changes, 1150)
+	require.Len(t, plan.Conflicts, 50)
+	assert.EqualValues(t, -3, plan.Changes[0].Document["price"], "the newest version on the branch")
+	assert.EqualValues(t, 3000, plan.Conflicts[0].Ours["price"], "the newest version on the parent")
+	requirePlansAgree(t, svc, feature.ID, "many documents")
+}
+
+// A branch whose own log is very long is read as states instead.
+func TestMergeChanged_LongSourceLogFallsBack(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	f, svc, _ := newCountingMergeFixture(t, db)
+	main := seedImported(t, f, "merge-changed-long", 10)
+	feature, err := f.branches.CreateBranch("merge-changed-long", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	for i := int32(0); i < 6; i++ {
+		_, err = fw.Put(ctx, "products", bson.M{"_id": "p0001", "price": -i})
+		require.NoError(t, err)
+	}
+
+	limit := merge.MaxChangedEntries
+	merge.MaxChangedEntries = 5
+	t.Cleanup(func() { merge.MaxChangedEntries = limit })
+	_, err = svc.ComputeChanged(feature.ID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, merge.ErrFullReplayRequired), "got: %v", err)
+	plan, err := svc.Compute(feature.ID)
+	require.NoError(t, err)
+	require.Len(t, plan.Changes, 1)
+	assert.EqualValues(t, -5, plan.Changes[0].Document["price"])
+}
+
+// Entries written by live capture: a checked-out parent fed by its change
+// stream, with updates, a replace and a delete made through the driver.
+func TestMergeChanged_CapturedHistory(t *testing.T) {
+	f := newIngestFixture(t, "merge-changed-live")
+	svc := merge.NewService(f.metaDB, f.wal, f.branches, f.mat, f.client)
+	ctx := context.Background()
+	stop := f.startIngester(t)
+	defer stop()
+
+	docs := f.physical.Collection("docs")
+	_, err := docs.InsertMany(ctx, []interface{}{
+		bson.M{"_id": "a", "v": int32(1)}, bson.M{"_id": "b", "v": int32(1)},
+		bson.M{"_id": "c", "v": int32(1)}, bson.M{"_id": primitive.NewObjectID(), "v": int32(1)},
+	})
+	require.NoError(t, err)
+	f.waitForEntries(t, "docs", 4)
+
+	main, err := f.branches.GetBranchByID(f.branchID)
+	require.NoError(t, err)
+	feature, err := f.branches.CreateBranch("merge-changed-live", "feature", main.ID)
+	require.NoError(t, err)
+	fw := walwriter.New(f.wal, f.branches, f.mat, feature)
+	for _, id := range []string{"a", "b", "c"} {
+		_, err = fw.Put(ctx, "docs", bson.M{"_id": id, "v": int32(-1)})
+		require.NoError(t, err)
+	}
+	_, err = fw.Put(ctx, "docs", bson.M{"_id": "new", "v": int32(-1)})
+	require.NoError(t, err)
+
+	// The parent moves on through the driver.
+	_, err = docs.UpdateOne(ctx, bson.M{"_id": "a"}, bson.M{"$set": bson.M{"v": int32(2)}, "$unset": bson.M{"gone": ""}})
+	require.NoError(t, err)
+	_, err = docs.ReplaceOne(ctx, bson.M{"_id": "b"}, bson.M{"v": int32(-1)}) // the branch's own value
+	require.NoError(t, err)
+	_, err = docs.DeleteOne(ctx, bson.M{"_id": "c"})
+	require.NoError(t, err)
+	f.waitForEntries(t, "docs", 7)
+
+	plan := requirePlansAgree(t, svc, feature.ID, "captured history")
+	require.Len(t, plan.Changes, 1, "only the new document merges cleanly")
+	require.Len(t, plan.Conflicts, 2, "a: both edited; c: deleted by the parent, edited by the branch; b: same value on both sides")
 }

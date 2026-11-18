@@ -39,6 +39,7 @@ type SnapshotSource interface {
 	// UnrecordedReclaimBound returns the highest LSN at or below which the
 	// branch's entries of a collection may have been deleted by a release
 	// that recorded no reclaim floor, or 0 when that cannot have happened.
+	// An empty collection name asks about every collection of the branch.
 	UnrecordedReclaimBound(branchID, collection string) (int64, error)
 }
 
@@ -582,6 +583,16 @@ func (s *Service) MaterializeDocumentsAtLSN(branch *wal.Branch, collection strin
 		remaining = nil
 	}
 	return result, nil
+}
+
+// UnrecordedReclaimBound returns the highest LSN at or below which entries of
+// the branch's own log, in any collection, may have been deleted without a
+// reclaim floor (see SnapshotSource), or 0.
+func (s *Service) UnrecordedReclaimBound(branch *wal.Branch) (int64, error) {
+	if s.snapshots == nil {
+		return 0, nil
+	}
+	return s.snapshots.UnrecordedReclaimBound(branch.ID, "")
 }
 
 // EntryStateKey returns the key under which ApplyEntry stores or removes the

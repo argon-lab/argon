@@ -40,7 +40,8 @@ entry — a synchronization barrier, not in-proxy capture).
   at the fork and on the parent comes from the parent's snapshot, which is
   loaded for each. When it has deleted entries of the branch itself, or the
   history holds entries from before 2.1 that do not identify their document,
-  the plan is computed the previous way.
+  or the branch holds more than 200,000 entries of its own, the plan is
+  computed the previous way.
 
 - CI's audit of the console's dependencies can excuse an advisory by name. The
   whole tree is still audited, a production install must be clean, and an

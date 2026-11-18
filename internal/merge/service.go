@@ -276,6 +276,36 @@ func (s *Service) computeFull(source, target *wal.Branch) (*Plan, error) {
 	return plan, nil
 }
 
+// MaxChangedEntries is the most entries a source branch may hold in its own
+// log for a plan to be computed from them. Beyond it the three states are
+// materialized instead, which reads each document once however often it was
+// rewritten and starts from the branch's snapshots.
+var MaxChangedEntries int64 = 200000
+
+// sourceLogComplete reports, as ErrFullReplayRequired, that the source's own
+// log may no longer name every document the branch changed: garbage
+// collection deleted entries of it, with a recorded floor or, in releases up
+// to 2.1.5, without one (bounded by the snapshot manifests of that time).
+func (s *Service) sourceLogComplete(source *wal.Branch) error {
+	floors, err := s.wal.ReclaimFloors(source.ID)
+	if err != nil {
+		return err
+	}
+	for collection, floor := range floors {
+		if floor > source.BaseLSN {
+			return fmt.Errorf("%w: garbage collection deleted entries of %q on the source branch", ErrFullReplayRequired, collection)
+		}
+	}
+	unrecorded, err := s.materializer.UnrecordedReclaimBound(source)
+	if err != nil {
+		return err
+	}
+	if unrecorded > source.BaseLSN {
+		return fmt.Errorf("%w: entries of the source branch may have been deleted by a release that kept no record of it", ErrFullReplayRequired)
+	}
+	return nil
+}
+
 // computeChanged rests on one observation. The source's state is the fork
 // state with the source's own entries folded on top, so a document differs
 // between the two only if one of those entries is about it — and a document
@@ -296,12 +326,29 @@ func (s *Service) computeChanged(source, target *wal.Branch) (*Plan, error) {
 	// Newest visible entry of the source's own log, per collection and
 	// document. Folding the source's entries in LSN order leaves exactly
 	// this entry's outcome for each key.
+	if err := s.sourceLogComplete(source); err != nil {
+		return nil, err
+	}
+	// A branch that rewrote more than this is cheaper to read as states.
+	count, err := s.wal.CountBranchEntries(source.ID, source.BaseLSN+1, source.HeadLSN, MaxChangedEntries+1)
+	if err != nil {
+		return nil, err
+	}
+	if count > MaxChangedEntries {
+		return nil, fmt.Errorf("%w: the source branch holds more than %d entries of its own", ErrFullReplayRequired, MaxChangedEntries)
+	}
+
 	latest := make(map[string]map[string]*wal.Entry)
-	err := s.wal.ScanBranchDataEntries(source.ID, source.BaseLSN+1, source.HeadLSN, func(entry *wal.Entry) error {
+	err = s.wal.ScanBranchDataEntries(source.ID, source.BaseLSN+1, source.HeadLSN, func(entry *wal.Entry) error {
 		if source.IsDiscardedForRead(entry.LSN, source.HeadLSN) {
 			return nil
 		}
 		key, ok := materializer.EntryStateKey(entry)
+		if entry.DocumentKeyVersion < 1 {
+			ok = false // Legacy keys: see wal.ErrLegacyDocumentKeys.
+		}
+		// Only the outcome is needed from here on.
+		entry.PreImage, entry.CompressedPreImage = nil, nil
 		if !ok {
 			return fmt.Errorf("%w: entry at LSN %d does not identify its document on its own", ErrFullReplayRequired, entry.LSN)
 		}
@@ -318,17 +365,9 @@ func (s *Service) computeChanged(source, target *wal.Branch) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The scan names every candidate only while the source's own entries
-	// are all still in the log. Read the floors after the scan: GC records
-	// a floor before it deletes.
-	floors, err := s.wal.ReclaimFloors(source.ID)
-	if err != nil {
+	// Checked again after the scan: GC records a floor before it deletes.
+	if err := s.sourceLogComplete(source); err != nil {
 		return nil, err
-	}
-	for collection, floor := range floors {
-		if floor > source.BaseLSN {
-			return nil, fmt.Errorf("%w: garbage collection deleted entries of %q on the source branch", ErrFullReplayRequired, collection)
-		}
 	}
 
 	plan := newPlan(source, target)

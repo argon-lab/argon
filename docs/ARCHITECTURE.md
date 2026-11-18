@@ -263,13 +263,19 @@ What it does not avoid:
   to 2.1.5 recorded none, so below the newest snapshot manifest of that time
   the log is treated as possibly incomplete as well. An entry at or below a
   floor is never used as evidence: a deletion may have removed a newer one.
-- **A reclaimed or legacy branch log.** If garbage collection has deleted
-  entries of the branch being merged, its log no longer names every document
-  it changed. The same holds for a delete written before typed document keys
-  that kept no pre-image: it does not say which document it removed. And a
-  schema-v1 entry that names no document cannot be found by document key at
-  all. In these cases the plan is computed by materializing the three states
-  in full, with the errors that path has always reported.
+- **A reclaimed branch log.** If garbage collection has deleted entries of
+  the branch being merged, its log no longer names every document it
+  changed, and the plan is computed by materializing the three states in
+  full.
+- **History from before typed document keys.** Entries written up to 2.0.x,
+  and entries rewritten by the schema-v1 migration, store document keys in
+  several forms, some shared between different `_id` values. They are not
+  read one document at a time: where a branch's entries of a collection
+  start with such an entry, the plan is computed in full, with the errors
+  that path has always reported.
+- **A very long branch log.** The branch's own entries are scanned once. Past
+  200,000 of them the states are materialized instead, which reads each
+  document once however often it was rewritten.
 - **Applying.** Apply writes each change; that is proportional to the plan.
 
 ## Garbage collection (retention window)

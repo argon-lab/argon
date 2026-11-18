@@ -199,17 +199,21 @@ func (s *Service) UsableLSN(branch *wal.Branch, collection string, minLSN, maxLS
 // reclaim floor. It could delete only what a snapshot covered, and the
 // manifests those releases wrote are the ones without VisibilityRules, so
 // the newest of them bounds what such a run can have deleted: nothing above
-// its LSN. Zero means no such manifest exists.
+// its LSN. Zero means no such manifest exists. An empty collection name
+// asks about every collection of the branch.
 func (s *Service) UnrecordedReclaimBound(branchID, collection string) (int64, error) {
 	var snap struct {
 		LSN int64 `bson:"lsn"`
 	}
+	filter := bson.M{
+		"branch_id":        branchID,
+		"visibility_rules": bson.M{"$not": bson.M{"$gte": CurrentVisibilityRules}},
+	}
+	if collection != "" {
+		filter["collection"] = collection
+	}
 	err := s.manifests.FindOne(context.Background(),
-		bson.M{
-			"branch_id":        branchID,
-			"collection":       collection,
-			"visibility_rules": bson.M{"$not": bson.M{"$gte": CurrentVisibilityRules}},
-		},
+		filter,
 		options.FindOne().SetSort(bson.M{"lsn": -1}).SetProjection(bson.M{"lsn": 1}),
 	).Decode(&snap)
 	if err == mongo.ErrNoDocuments {
