@@ -23,6 +23,8 @@ changes since 2.4.0.
   answers without `operationTime`, so `argon sandbox create` and
   `argon checkout` failed with "missing operationTime" although `argon doctor`
   passed. The boundary now comes from `hello`.
+- `examples/boxd-sandbox`: the host script reviews a sandbox the agent wrote
+  nothing to instead of stopping with a TypeError.
 - Engine warnings go to stderr. A failed storage reclaim after a branch was
   deleted, a failed post-import snapshot and a branch that could not be deleted
   with its project were reported on stdout. Under `argon mcp` stdout is the
