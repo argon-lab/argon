@@ -170,7 +170,7 @@ func (f *followFixture) followUntilItStops(t *testing.T, opts walcli.FollowSourc
 func (f *followFixture) sourceTime(t *testing.T) primitive.Timestamp {
 	t.Helper()
 	var reply bson.Raw
-	require.NoError(t, f.source.RunCommand(context.Background(), bson.D{{Key: "ping", Value: 1}},
+	require.NoError(t, f.source.RunCommand(context.Background(), bson.D{{Key: "hello", Value: 1}},
 		options.RunCmd().SetReadPreference(readpref.Primary())).Decode(&reply))
 	seconds, ordinal, ok := reply.Lookup("operationTime").TimestampOK()
 	require.True(t, ok)

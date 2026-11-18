@@ -782,15 +782,17 @@ func (s *Service) SourceStatusFor(ctx context.Context, branchID string) (*Status
 }
 
 // primaryTime is the primary's current cluster time. Nothing any node has
-// majority-committed is later.
+// majority-committed is later. It is read from hello: every replica set
+// answers hello with operationTime, while some hosted deployments (Atlas
+// free clusters) answer ping without it.
 func primaryTime(ctx context.Context, db *mongo.Database) (primitive.Timestamp, error) {
 	var reply bson.Raw
-	if err := db.RunCommand(ctx, bson.D{{Key: "ping", Value: 1}}, options.RunCmd().SetReadPreference(readpref.Primary())).Decode(&reply); err != nil {
+	if err := db.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}, options.RunCmd().SetReadPreference(readpref.Primary())).Decode(&reply); err != nil {
 		return primitive.Timestamp{}, fmt.Errorf("failed to read the source's cluster time: %w", err)
 	}
 	t, i, ok := reply.Lookup("operationTime").TimestampOK()
 	if !ok {
-		return primitive.Timestamp{}, &ConfigurationError{"the source reports no operationTime; a replica set is required"}
+		return primitive.Timestamp{}, &ConfigurationError{"the source's hello reply has no operationTime; a replica set is required"}
 	}
 	return primitive.Timestamp{T: t, I: i}, nil
 }
