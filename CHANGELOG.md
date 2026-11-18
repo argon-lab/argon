@@ -31,6 +31,21 @@ entry — a synchronization barrier, not in-proxy capture).
   reported as degraded; `--allow-inexact` converges past the last of these
   and records the range. The source may be a different deployment from the
   Argon metadata.
+- Resync: `argon source resync` repairs a project whose follower ended as
+  degraded, in place, instead of importing the database again: after a
+  collection was dropped or renamed on the source, after the database was
+  dropped, or when the oplog no longer holds the saved position. It compares
+  the source with `main` in batches, stores what differs, deletes what the
+  source no longer has, replays the changes made meanwhile and reports the
+  cluster time at which `main` equals the source again. Nothing is written to
+  the source; the LSNs it writes are recorded as an inexact range; an
+  interrupted resync is reported as unfinished, blocks `source follow`, and
+  is completed by running it again. `argon source follow --auto-resync` runs
+  it when following ends as degraded and continues.
+  The consistent point reported on a source nobody is writing to is now the
+  source's current cluster time; it could be one tick later, a time a later
+  write might still be given. Dropping a collection Argon does not follow
+  (`system.*`) no longer ends following.
 - Write-back: `argon merge apply <plan> --write-back` writes a reviewed plan
   to the database its target follows, in one transaction that compares every
   document with the plan's before-image and writes nothing if one differs.

@@ -563,6 +563,40 @@ func (s *Service) ScanBranchDataEntries(branchID string, startLSN, endLSN int64,
 	return cursor.Err()
 }
 
+// ScanDocumentKeys calls fn once for every document key that the branch's own
+// entries of a collection name in [startLSN, endLSN], in key order. It reads
+// the (branch, collection, document, lsn) index alone and holds one key at a
+// time, so the collection's size does not matter to the caller's memory. A
+// key is reported whether its newest entry is a put or a delete.
+func (s *Service) ScanDocumentKeys(ctx context.Context, branchID, collection string, startLSN, endLSN int64, fn func(key string) error) error {
+	if startLSN > endLSN {
+		return nil
+	}
+	cursor, err := s.collection.Find(ctx, bson.M{
+		"branch_id":  branchID,
+		"collection": collection,
+		"lsn":        bson.M{"$gte": startLSN, "$lte": endLSN},
+	}, options.Find().
+		SetProjection(bson.M{"_id": 0, "document_id": 1}).
+		SetSort(bson.D{{Key: "branch_id", Value: 1}, {Key: "collection", Value: 1}, {Key: "document_id", Value: 1}, {Key: "lsn", Value: 1}}))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = cursor.Close(context.Background()) }()
+	last, first := "", true
+	for cursor.Next(ctx) {
+		key, ok := cursor.Current.Lookup("document_id").StringValueOK()
+		if !ok || key == "" || (!first && key == last) {
+			continue
+		}
+		last, first = key, false
+		if err := fn(key); err != nil {
+			return err
+		}
+	}
+	return cursor.Err()
+}
+
 // DistinctCollections returns the collections touched by a branch's own
 // entries within an LSN range.
 func (s *Service) DistinctCollections(branchID string, startLSN, endLSN int64) ([]string, error) {

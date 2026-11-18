@@ -14,6 +14,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // SourceURIEnv names the environment variable a source connection string is
@@ -89,6 +90,12 @@ type SourceInfo struct {
 	InexactRangesDropped int            `json:"inexact_ranges_dropped,omitempty"`
 	InexactOpenFromLSN   int64          `json:"inexact_open_from_lsn,omitempty"`
 	InexactOpenReason    string         `json:"inexact_open_reason,omitempty"`
+
+	// ResyncUnfinished is set while a resync has written to main and has not
+	// yet brought it to a state of the source; ResyncStartedAt says since
+	// when. Only `argon source resync` continues from here.
+	ResyncUnfinished bool       `json:"resync_unfinished,omitempty"`
+	ResyncStartedAt  *time.Time `json:"resync_started_at,omitempty"`
 
 	UpdatedAt      time.Time `json:"updated_at"`
 	LastCapturedAt time.Time `json:"last_captured_at,omitempty"`
@@ -175,6 +182,10 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 		}
 		info.InexactRangesDropped = src.InexactRangesDropped
 		info.InexactOpenFromLSN, info.InexactOpenReason = src.InexactFromLSN, src.InexactReason
+		if src.Resync != nil {
+			started := src.Resync.StartedAt
+			info.ResyncUnfinished, info.ResyncStartedAt = true, &started
+		}
 	}
 	return info, nil
 }
@@ -191,7 +202,19 @@ type FollowSourceOptions struct {
 	EnableSourceImages bool
 	// Ready is closed once the stream is open.
 	Ready chan<- struct{}
+	// AutoResync runs a resync when following ends as degraded and then
+	// follows again, instead of returning. See ResyncSource for what a
+	// resync does to the branch's history.
+	AutoResync bool
+	// OnResync is called after each automatic resync. Optional.
+	OnResync func(*ResyncInfo)
+	// Watch replaces the source's Watch call; see ingest.FollowOptions.
+	Watch func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error)
 }
+
+// autoResyncSpacing is the least time between two automatic resyncs. A
+// source that ends following again sooner than this needs a person.
+const autoResyncSpacing = time.Minute
 
 // FollowSource keeps a project's main branch up with the database it was
 // imported from until ctx ends, resuming from the saved position.
@@ -214,11 +237,115 @@ func (s *Services) FollowSource(ctx context.Context, projectName string, opts Fo
 			return source.RedactError(err, opts.URI)
 		}
 	}
-	return s.Ingest.Follow(ctx, branch.ID, db, ingest.FollowOptions{
-		AllowInexact: opts.AllowInexact, Ready: opts.Ready,
+	redact := func(text string) string { return source.Redact(text, opts.URI) }
+	var lastResync time.Time
+	for {
+		err := s.Ingest.Follow(ctx, branch.ID, db, ingest.FollowOptions{
+			AllowInexact: opts.AllowInexact, Ready: opts.Ready,
+			WriteBacks: writeBackLedger{s.Merge}, Redact: redact, Watch: opts.Watch,
+		})
+		var gap *ingest.CaptureError
+		if !opts.AutoResync || ctx.Err() != nil || !errors.As(err, &gap) {
+			return err
+		}
+		if !lastResync.IsZero() && time.Since(lastResync) < autoResyncSpacing {
+			return fmt.Errorf("following ended as degraded again within %s of an automatic resync; not resyncing in a loop: %w", autoResyncSpacing, err)
+		}
+		info, resyncErr := s.resyncSource(ctx, branch, db, ResyncSourceOptions{URI: opts.URI})
+		if resyncErr != nil {
+			return fmt.Errorf("following ended as degraded (%v) and the automatic resync failed: %w", err, resyncErr)
+		}
+		lastResync = time.Now()
+		if opts.OnResync != nil {
+			opts.OnResync(info)
+		}
+		// The channel was closed when the first stream opened.
+		opts.Ready = nil
+	}
+}
+
+// ResyncProgress is reported after every batch of a resync's comparison.
+type ResyncProgress = ingest.ResyncProgress
+
+// ResyncSourceOptions configures ResyncSource.
+type ResyncSourceOptions struct {
+	// URI is the source connection string. It is not stored.
+	URI string
+	// Force resyncs a project whose follower did not end as degraded.
+	Force bool
+	// BatchSize is the number of documents per batch (default 500).
+	BatchSize int
+	// Progress is called after every batch. Optional.
+	Progress func(ResyncProgress)
+}
+
+// ResyncInfo describes a finished resync.
+type ResyncInfo struct {
+	Project  string `json:"project"`
+	Database string `json:"database"`
+	// Main at ConsistentLSN is the source at ConsistentTime. The LSNs from
+	// InexactFromLSN to ConsistentLSN are recorded as an inexact range,
+	// unless the resync had nothing to write.
+	InexactFromLSN int64       `json:"inexact_from_lsn"`
+	ConsistentLSN  int64       `json:"consistent_lsn"`
+	ConsistentTime ClusterTime `json:"consistent_cluster_time"`
+	// Compared counts the source documents read; Unchanged those main
+	// already held; Puts and Deletes the entries the comparison wrote.
+	Compared           int64    `json:"compared"`
+	Unchanged          int64    `json:"unchanged"`
+	Puts               int64    `json:"puts"`
+	Deletes            int64    `json:"deletes"`
+	Collections        []string `json:"collections"`
+	RemovedCollections []string `json:"removed_collections"`
+	DurationMS         int64    `json:"duration_ms"`
+}
+
+// ResyncSource brings a project's main branch to the current state of the
+// database it follows, in place, after following has ended as degraded: a
+// collection dropped or renamed on the source, or a saved position the
+// source's oplog no longer holds. It reads the source and writes nothing to
+// it. Afterwards FollowSource continues from the resync's end.
+func (s *Services) ResyncSource(ctx context.Context, projectName string, opts ResyncSourceOptions) (*ResyncInfo, error) {
+	_, branch, binding, err := s.followedBranch(ctx, projectName)
+	if err != nil {
+		return nil, err
+	}
+	client, db, err := s.openSource(ctx, binding, opts.URI)
+	if err != nil {
+		return nil, err
+	}
+	defer disconnect(client)
+	info, err := s.resyncSource(ctx, branch, db, opts)
+	if info != nil {
+		info.Project = projectName
+	}
+	return info, err
+}
+
+func (s *Services) resyncSource(ctx context.Context, branch *wal.Branch, db *mongo.Database, opts ResyncSourceOptions) (*ResyncInfo, error) {
+	started := time.Now()
+	result, err := s.Ingest.Resync(ctx, branch.ID, db, ingest.ResyncOptions{
+		State: s.Materializer, Force: opts.Force, BatchSize: opts.BatchSize, Progress: opts.Progress,
 		WriteBacks: writeBackLedger{s.Merge},
 		Redact:     func(text string) string { return source.Redact(text, opts.URI) },
 	})
+	if err != nil {
+		return nil, source.RedactError(err, opts.URI)
+	}
+	info := &ResyncInfo{
+		Database: db.Name(), InexactFromLSN: result.FromLSN,
+		ConsistentLSN: result.Point.LSN, ConsistentTime: clusterTime(result.Point.ClusterTime),
+		Compared: result.Compared, Unchanged: result.Unchanged, Puts: result.Puts, Deletes: result.Deletes,
+		Collections: result.SourceCollections, RemovedCollections: result.RemovedCollections,
+		DurationMS: time.Since(started).Milliseconds(),
+	}
+	if info.Collections == nil {
+		info.Collections = []string{}
+	}
+	if info.RemovedCollections == nil {
+		info.RemovedCollections = []string{}
+	}
+	return info, nil
 }
 
 // DetachSource stops a project from following its source for good. Its main
