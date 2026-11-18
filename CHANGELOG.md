@@ -11,6 +11,11 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.5.0] - 2026-11-17
+
+Diff and merge preview do work in proportion to what a branch changed. No
+data format changes since 2.4.1.
+
 ### Changed
 
 - `argon diff` and `argon merge preview` do work in proportion to what the
