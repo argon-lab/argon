@@ -22,7 +22,7 @@ import (
 // Follower is the part of the ingest service an online import needs.
 type Follower interface {
 	InitSourceState(ctx context.Context, branchID string) error
-	CatchUp(ctx context.Context, branchID string, src *mongo.Database, startAt primitive.Timestamp, firstLSN int64, reason string, redact func(string) string) (*ingest.ConsistentPoint, error)
+	CatchUp(ctx context.Context, branchID string, src *mongo.Database, startAt primitive.Timestamp, expectedHead, firstLSN int64, reason string, redact func(string) string) (*ingest.ConsistentPoint, error)
 }
 
 // EnableOnline wires what an online import needs beyond a quiesced one.
@@ -36,6 +36,13 @@ type onlineSource struct {
 	boundary    primitive.Timestamp
 	replayAt    primitive.Timestamp
 	collections []string
+}
+
+func (opts ImportOptions) requireSourceImagesOptIn() error {
+	if opts.EnableSourceImages {
+		return source.RequireExperimentalImages()
+	}
+	return nil
 }
 
 func disconnectSource(client *mongo.Client) {
@@ -98,6 +105,9 @@ func prepareOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Data
 
 // DryRunOnline checks the same source preconditions as an online import and estimates its copy size.
 func DryRunOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Database) (_ *ImportResult, err error) {
+	if err := opts.requireSourceImagesOptIn(); err != nil {
+		return nil, err
+	}
 	if err := source.RequireExperimental(); err != nil {
 		return nil, err
 	}
@@ -243,7 +253,7 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 		result.Collections = append(result.Collections, name)
 	}
 
-	point, err := s.follower.CatchUp(ctx, branch.ID, sourceDB, prepared.replayAt, result.StartLSN+1,
+	point, err := s.follower.CatchUp(ctx, branch.ID, sourceDB, prepared.replayAt, branch.HeadLSN, result.StartLSN+1,
 		"online import: the source was written while it was copied", redact)
 	if err != nil {
 		return nil, fmt.Errorf("the copy finished, but catching up with the changes made during it did not: %w. Nothing was published. If the source's oplog no longer reaches back to the start of the copy, the copy took longer than the oplog window; retry when the source is quieter or give it a larger oplog", err)

@@ -457,12 +457,15 @@ source's own change stream:
 2. Start a causally consistent session at `T0` and copy every listed collection
    into put entries with majority read concern. The document key preserves
    the BSON type of `_id`, including an explicit null.
-3. Replay the change stream from just after `T0` on top of the copy. Each
+3. Verify that the branch still has the head written by the copy, then
+   replay the change stream from just after `T0` on top of the copy. Each
    entry is a whole document, so applying a change the copy already contained
    leaves the same document.
 4. Stop when the stream's position has passed the primary's cluster time
    taken after the last read. The branch now holds what the source held at
-   that position, and that pair (LSN, cluster time) is published.
+   that position, and that pair (LSN, cluster time) is published. Deployment
+   capture health checks publication in the same metadata snapshot as the
+   branch and checkpoint.
 
 A write made during the import is in the copy, in the replayed stream, or in
 both; it cannot be in neither, because the reads cannot show less than `T0`
@@ -513,6 +516,18 @@ A follower stops after a full lease period without a successful renewal.
 Source status reads the saved position, branch head and server-clock
 lease freshness from one metadata snapshot. An expired live state is
 reported as stopped while retaining the last position and consistent point.
+Lease acquisition records an expired owner or an orphaned live report in
+the same metadata update as the new owner. A fresh heartbeat does not
+verify the saved position. The follower clears the loss record only in an
+exact checkpoint transaction once the stream reaches the source primary's
+cluster time observed after lease acquisition. A resync clears it in the
+transaction that completes replay. Source status, deployment health and
+write-back preflight report the unverified position until then. Deployment
+and source status also report a retry with a capture error as unhealthy
+until the stream reopens and the follower reports progress.
+A subsequent ordinary resync uses its stream preflight to check whether
+the saved position can still be resumed. A confirmed stream gap allows the
+comparison, after the usual preflight on the new boundary.
 A head that moved without the follower, or a saved position another process
 replaced, ends following as degraded and requires a manual resync. Automatic
 resync handles gaps in the source stream and unfinished resyncs.
@@ -552,8 +567,8 @@ with the copy replaced by a comparison, because the branch already has
 documents:
 
 1. Acquire the branch's lease, take the source primary's cluster time `T0`,
-   list its collections and probe the change stream with the replay's options
-   and start position.
+   probe the change stream with the replay's options and start position,
+   then list the source's collections.
 2. Record mode `catch_up`, the LSN the inexact range starts at, the resync
    marker and the stream's start position before writing any branch entries.
    Clear the previous resume token in the same transaction. If a preflight
@@ -569,9 +584,11 @@ documents:
    documents on the source; a renamed one is that plus step 3's puts under
    the new name. Collection-level changes thus become the document-level
    operations the WAL has.
-5. Replay the change stream from the `T0` boundary held in memory until it
-   has passed every read. The transaction that stores the first head proven
-   equal to the source also clears the marker and records the range.
+5. Check that the branch still has the head from the comparison's last
+   batch. A mismatch leaves the resync unfinished. Replay the change stream
+   from the `T0` boundary held in memory until it has passed every read.
+   The transaction that stores the first head proven equal to the source
+   also clears the marker and records the range.
 
 The deletes are covered by the import's argument. A document found missing in
 step 4 was either removed before `T0` (the delete is the only record of it)
@@ -641,9 +658,11 @@ stays `writing_back` and cannot be reused.
   temporary collections) needs a resync each time.
 - Following runs through `argon source follow`. The MCP server and the REST
   control plane do not supervise it, and neither offers write-back.
-- To enable source images, the follower first checks the binding, lease and
-  saved position and opens the change stream. If the saved position is
-  degraded, replay must clear the gap or a resync must finish before the
+- The source-images option has its own experimental gate. Operators can
+  enable `changeStreamPreAndPostImages` directly on MongoDB. To enable it
+  through Argon, the follower first checks the binding, lease and saved
+  position and opens the change stream. If the saved position is degraded,
+  replay must clear the gap or a resync must finish before the
   follower issues `collMod`. The follower checks its lease before each
   collection, and an error after a change lists the collections it altered.
   The metadata check and source alteration run separately, so a source

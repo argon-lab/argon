@@ -48,6 +48,8 @@ experimental and off by default.
 - `connect` returns a connection string only for the branch's own physical
   database, and the console omits it for a sandbox whose record names
   another database.
+- `--enable-source-images` has its own experimental gate. Operators can
+  enable `changeStreamPreAndPostImages` directly on MongoDB.
 
 ### Fixed
 
@@ -97,6 +99,14 @@ experimental and off by default.
   `_id`. Following tracks inserts, updates and deletes of those documents.
 - The follower checks its lease before enabling images on each collection.
   If its lease expires, the error identifies which collections changed.
+- Taking over an expired lease keeps source and deployment health failing
+  and blocks write-back until the replacement verifies a checkpoint. Status
+  retains the last saved position and consistent point during recovery.
+- Resync and online import verify the head written by the preceding batch
+  before replay. A head moved by another process fails the handoff.
+- Source and deployment health fail while following reports a retry with a
+  capture error. The follower keeps retrying from the saved position.
+- Deployment capture health skips projects until their imports publish.
 
 ## [2.6.0] - 2026-11-18
 

@@ -66,10 +66,13 @@ type Status struct {
 	// Source is set for a branch that follows an external database.
 	Source *SourceStatus `bson:"source,omitempty" json:"source,omitempty"`
 	Owner  *SourceOwner  `bson:"owner,omitempty" json:"-"`
+	// SourceUnverified records a lost owner until a replacement verifies a checkpoint.
+	SourceUnverified *unverifiedSource `bson:"unverified,omitempty" json:"-"`
 	// SourceLeaseExpired is evaluated against the metadata server's clock.
 	SourceLeaseExpired bool `bson:"-" json:"-"`
 
 	hasResumeToken         bool
+	resumeToken            bson.Raw
 	synthesizedDegradation bool
 }
 

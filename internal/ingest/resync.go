@@ -151,8 +151,12 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 	if stored == nil {
 		return nil, s.sourceLeaseMiss(ctx, lease)
 	}
+	var resumeAfter bson.Raw
 	if stored.State != "degraded" && !stored.ResyncUnfinished() && !lease.replacedExpiredRun && !opts.Force {
-		return nil, &ConfigurationError{"following has not ended as degraded, so there is nothing a resync has to repair; `argon source follow` continues from the saved position. A resync compares the whole source with the branch and records the range it writes as inexact history; pass --force to run one anyway"}
+		if stored.SourceUnverified == nil {
+			return nil, &ConfigurationError{"following has not ended as degraded, so there is nothing a resync has to repair; `argon source follow` continues from the saved position. A resync compares the whole source with the branch and records the range it writes as inexact history; pass --force to run one anyway"}
+		}
+		resumeAfter = stored.resumeToken
 	}
 
 	cfg := runConfig{actor: sourceActor, redact: opts.Redact, lease: lease, resync: true}
@@ -162,7 +166,7 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 	}
 	result := &ResyncResult{}
 	cfg.stream = func(ctx context.Context, run *running) error {
-		return s.resync(ctx, branchID, src, opts, run, stored, result)
+		return s.resync(ctx, branchID, src, opts, run, stored, result, resumeAfter)
 	}
 	// No retries: every attempt compares the whole source again, and whether
 	// that is worth repeating is the operator's call.
@@ -178,7 +182,7 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 	return result, nil
 }
 
-func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Database, opts ResyncOptions, run *running, stored *Status, result *ResyncResult) error {
+func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Database, opts ResyncOptions, run *running, stored *Status, result *ResyncResult, resumeAfter bson.Raw) error {
 	branch, err := s.branches.GetBranchByIDContext(ctx, branchID)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -200,21 +204,10 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 		status = *stored.Source
 	}
 
-	// Boundary, then the list of collections, then the reads: the order the
-	// online import uses, for the same reason.
+	// Read the boundary before listing or reading any source collection.
 	boundary, err := primaryTime(ctx, src)
 	if err != nil {
 		return err
-	}
-	collections, err := source.Collections(ctx, src.Client().Database(src.Name(), options.Database().SetReadPreference(readpref.Primary())))
-	if err != nil {
-		return fmt.Errorf("failed to list the source's collections: %w", err)
-	}
-	result.SourceCollections = collections
-	if series, err := source.TimeSeries(ctx, src); err != nil {
-		return fmt.Errorf("failed to list the source's collections: %w", err)
-	} else if len(series) > 0 {
-		return &ConfigurationError{fmt.Sprintf("the source has time-series collection(s) %s; their measurements cannot be followed, so the branch could not be made equal to the source. A source with time-series collections cannot be followed", strings.Join(series, ", "))}
 	}
 
 	// The status goes first. From here until the replay ends the branch is
@@ -244,11 +237,38 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	// only starts after the whole comparison; a user without the changeStream
 	// privilege should learn that now, with the branch untouched and no
 	// unfinished resync on record.
-	if err := probeStream(ctx, src, startAt, opts.Watch); err != nil {
+	probes := []*options.ChangeStreamOptions{sourceStreamOptions().SetStartAtOperationTime(&startAt)}
+	if len(resumeAfter) != 0 {
+		probes = append([]*options.ChangeStreamOptions{sourceStreamOptions().SetResumeAfter(resumeAfter)}, probes...)
+	}
+	for _, probe := range probes {
+		err := probeStream(ctx, src, probe, opts.Watch)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return &ConfigurationError{fmt.Sprintf("%v. Nothing was written to the branch history", err)}
+		if probe.ResumeAfter != nil {
+			if err == nil {
+				return &ConfigurationError{"`argon source follow` can resume from the saved position. Start it to catch up and verify a checkpoint; pass --force to compare the whole source now"}
+			}
+			var gap *CaptureError
+			if errors.As(streamCaptureError(err, true), &gap) && gap.AutoResyncAllowed() {
+				continue
+			}
+			return &ConfigurationError{fmt.Sprintf("could not verify whether `argon source follow` can resume from the saved position: %v. Nothing was written to the branch history", err)}
+		}
+		if err != nil {
+			return &ConfigurationError{fmt.Sprintf("%v. Nothing was written to the branch history", err)}
+		}
+	}
+	collections, err := source.Collections(ctx, src.Client().Database(src.Name(), options.Database().SetReadPreference(readpref.Primary())))
+	if err != nil {
+		return fmt.Errorf("failed to list the source's collections: %w", err)
+	}
+	result.SourceCollections = collections
+	if series, err := source.TimeSeries(ctx, src); err != nil {
+		return fmt.Errorf("failed to list the source's collections: %w", err)
+	} else if len(series) > 0 {
+		return &ConfigurationError{fmt.Sprintf("the source has time-series collection(s) %s; their measurements cannot be followed, so the branch could not be made equal to the source. A source with time-series collections cannot be followed", strings.Join(series, ", "))}
 	}
 	stored.BranchID, stored.State, stored.Actor, stored.Error = branchID, "resyncing", sourceActor, ""
 	stored.UpdatedAt, stored.Source = time.Now(), &status
@@ -313,8 +333,9 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 		return err
 	}
 
+	expectedHead := branch.HeadLSN
 	point, err := s.followStream(ctx, branchID, src, FollowOptions{
-		AllowInexact: true, WriteBacks: opts.WriteBacks, Redact: opts.Redact, resync: true, startAt: &startAt,
+		AllowInexact: true, WriteBacks: opts.WriteBacks, Redact: opts.Redact, resync: true, startAt: &startAt, expectedHead: &expectedHead,
 	}, run, true)
 	if err != nil {
 		return err

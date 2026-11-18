@@ -131,7 +131,11 @@ let following catch up, and run `argon merge preview` again for the sandbox.
 Each project can run one follower or resync at a time. `argon source status`
 shows the lease owner's host, process ID and last heartbeat. When the lease
 expires, the run loses ownership and status reports the saved position with
-an error. Restart `argon source follow` from that position. Run
+an error. The error stays visible until a replacement follower catches up
+and commits a verified checkpoint or a resync completes. Restart
+`argon source follow` from the saved position. A nonzero status while
+following is retrying means it is behind the source and currently unable to
+read it. Run
 `argon source follow --auto-resync` to complete an unfinished resync or
 repair a gap in the source stream before continuing to follow.
 A head moved by another process is reported as degraded and requires an
@@ -141,10 +145,11 @@ it as degraded. Upgrade the older processes, stop writes to the checkout,
 release it with `argon release -p myapp -b main`, then run
 `argon source resync -p myapp`.
 
-When requested, `source follow --enable-source-images` alters existing
-source collections after the saved position is followable. It checks the
-lease before each collection. An error after a change lists the affected
-collections.
+`--enable-source-images` is separately experimental and requires
+`ARGON_EXPERIMENTAL_SOURCE=1`. Operators can enable
+`changeStreamPreAndPostImages` directly on MongoDB. When requested,
+`source follow --enable-source-images` checks the lease before altering each
+collection. An error after a change lists the affected collections.
 
 Prefer clicking? `argon console` serves a local web console (UI + REST API),
 supervises capture, reaps expired sandboxes every minute, and opens your browser.

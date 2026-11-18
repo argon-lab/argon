@@ -12,11 +12,13 @@ import (
 
 // HealthError reports a problem with the source position or its owner.
 func (info *SourceInfo) HealthError() error {
-	return captureHealthError(info.Project, info.State, info.Error, info.ResyncUnfinished, info.LeaseExpired)
+	return captureHealthError(info.Project, info.State, info.Error, info.ResyncUnfinished, info.LeaseExpired, info.Unverified, true)
 }
 
-func captureHealthError(project, state, detail string, unfinished, expired bool) error {
+func captureHealthError(project, state, detail string, unfinished, expired, unverified, following bool) error {
 	switch {
+	case unverified:
+		return fmt.Errorf("following has an unverified checkpoint: %s", detail)
 	case unfinished && project != "":
 		return fmt.Errorf("a resync of main has not finished. If it was interrupted, run `argon source resync -p %s` again", project)
 	case unfinished:
@@ -28,6 +30,8 @@ func captureHealthError(project, state, detail string, unfinished, expired bool)
 		return fmt.Errorf("following is degraded: %s", detail)
 	case expired:
 		return fmt.Errorf("following is stopped: %s", detail)
+	case following && state == "retrying" && detail != "":
+		return fmt.Errorf("following is behind the source and currently unable to read it: %s", detail)
 	default:
 		return nil
 	}
@@ -52,7 +56,7 @@ func InspectCaptureHealth(ctx context.Context, metadata *mongo.Database) ([]bson
 			fields["lease_expired"] = true
 		}
 		detail := status.Error
-		if problem := captureHealthError("", status.State, detail, unfinished, status.SourceLeaseExpired); problem != nil {
+		if problem := captureHealthError("", status.State, detail, unfinished, status.SourceLeaseExpired, status.SourceUnverified != nil, status.Source != nil); problem != nil {
 			healthy = false
 			if detail == "" {
 				detail = problem.Error()

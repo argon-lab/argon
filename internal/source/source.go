@@ -426,6 +426,9 @@ func SkipCollection(name string) bool {
 // setting off again. If supplied, checkLease confirms ownership immediately
 // before each collMod. The collMod itself is on a separate connection.
 func EnableImages(ctx context.Context, db *mongo.Database, collections []string, checkLease func(context.Context) error) ([]string, error) {
+	if err := RequireExperimentalImages(); err != nil {
+		return nil, err
+	}
 	var changed []string
 	for _, name := range collections {
 		if checkLease != nil {
