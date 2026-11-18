@@ -50,6 +50,16 @@ const (
 	StrategyOurs   = "ours"
 )
 
+// ValidateStrategy checks an explicit resolution choice before loading a plan.
+func ValidateStrategy(strategy string) error {
+	switch strategy {
+	case "", StrategyOurs, StrategyTheirs:
+		return nil
+	default:
+		return fmt.Errorf("unknown strategy %q (want theirs or ours)", strategy)
+	}
+}
+
 // Change is one document the merge would adopt from the source branch.
 type Change struct {
 	Collection string `bson:"collection" json:"collection"`
@@ -59,6 +69,8 @@ type Change struct {
 	Document bson.M      `bson:"document,omitempty" json:"document,omitempty"`
 	ID       interface{} `bson:"document_key,omitempty" json:"document_key,omitempty"`
 	Before   bson.M      `bson:"before,omitempty" json:"before,omitempty"`
+
+	replacement bson.Raw // Prepared for ordinary apply after loading the plan.
 }
 
 // Conflict is a document both sides changed differently since the fork.
@@ -230,12 +242,16 @@ func (p *Plan) consider(collection, docID string, b, o, th bson.M) error {
 		})
 		return nil
 	}
+	id, err := wal.DocumentIDValue(docID)
+	if err != nil {
+		return err
+	}
 	p.Changes = append(p.Changes, Change{
 		Collection: collection,
 		DocumentID: docID,
 		Delete:     th == nil,
 		Document:   th,
-		ID:         imageID(th, o, b),
+		ID:         id,
 		Before:     o,
 	})
 	return nil
@@ -411,12 +427,27 @@ func (s *Service) Preview(ctx context.Context, sourceBranchID string) (*Plan, er
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.plans.InsertOne(ctx, plan)
-	if err != nil {
-		return nil, fmt.Errorf("failed to persist merge plan: %w", err)
+	if err := s.SavePlan(ctx, plan); err != nil {
+		return nil, err
 	}
-	plan.ID = result.InsertedID.(primitive.ObjectID)
 	return plan, nil
+}
+
+// SavePlan persists a computed plan. Callers can assign its ID to prepare a
+// printable response before persistence.
+func (s *Service) SavePlan(ctx context.Context, plan *Plan) error {
+	if plan.ID.IsZero() {
+		plan.ID = primitive.NewObjectID()
+	}
+	raw, err := encodePendingPlan(plan)
+	if err != nil {
+		return err
+	}
+	_, err = s.plans.InsertOne(ctx, raw)
+	if err != nil {
+		return fmt.Errorf("failed to persist merge plan: %w", err)
+	}
+	return nil
 }
 
 // GetPlan loads a persisted plan.
@@ -430,17 +461,51 @@ func (s *Service) GetPlan(ctx context.Context, planID primitive.ObjectID) (*Plan
 
 // ListPlans returns a project's plans, newest first.
 func (s *Service) ListPlans(ctx context.Context, projectID string) ([]*Plan, error) {
+	entries, err := s.ListPlanEntries(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	var plans []*Plan
+	for _, entry := range entries {
+		if entry.Err != nil {
+			return nil, entry.Err
+		}
+		plans = append(plans, entry.Plan)
+	}
+	return plans, nil
+}
+
+// PlanEntry identifies an individual plan even if its contents cannot be decoded.
+type PlanEntry struct {
+	ID   string
+	Plan *Plan
+	Err  error
+}
+
+// ListPlanEntries keeps a damaged record's error with its ID, so other plans
+// for the project can still be displayed.
+func (s *Service) ListPlanEntries(ctx context.Context, projectID string) ([]PlanEntry, error) {
 	cursor, err := s.plans.Find(ctx, bson.M{"project_id": projectID},
 		options.Find().SetSort(bson.M{"created_at": -1}))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = cursor.Close(ctx) }()
-	var plans []*Plan
-	if err := cursor.All(ctx, &plans); err != nil {
-		return nil, err
+	var entries []PlanEntry
+	for cursor.Next(ctx) {
+		var plan Plan
+		if err := cursor.Decode(&plan); err != nil {
+			key := cursor.Current.Lookup("_id")
+			id := key.String()
+			if oid, ok := key.ObjectIDOK(); ok {
+				id = oid.Hex()
+			}
+			entries = append(entries, PlanEntry{ID: id, Err: err})
+		} else {
+			entries = append(entries, PlanEntry{ID: plan.ID.Hex(), Plan: &plan})
+		}
 	}
-	return plans, nil
+	return entries, cursor.Err()
 }
 
 // ApplyResult summarizes an executed merge.
@@ -465,6 +530,9 @@ func (plan *Plan) RequirePending() error {
 // for. Conflicts require an explicit strategy; without one, a conflicted
 // plan refuses to apply.
 func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy string) (*ApplyResult, error) {
+	if err := ValidateStrategy(strategy); err != nil {
+		return nil, err
+	}
 	plan, err := s.GetPlan(ctx, planID)
 	if err != nil {
 		return nil, err
@@ -501,43 +569,50 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 		return nil, err
 	}
 
-	// Older persisted plans did not retain delete IDs or before-images.
-	// Recover them from the exact target head, refusing ambiguous legacy keys.
+	// Older plans stored ambiguous text keys. Recover the typed state keys
+	// from the original heads, including inserts that exist only on source.
 	if plan.FormatVersion < 2 {
-		state, err := s.materializer.MaterializeBranch(target)
+		ours, err := s.materializer.MaterializeBranch(target)
+		if err != nil {
+			return nil, err
+		}
+		theirs, err := s.materializer.MaterializeBranch(source)
 		if err != nil {
 			return nil, err
 		}
 		for i := range changes {
 			c := &changes[i]
-			var before bson.M
-			for key, doc := range state[c.Collection] {
-				if key == c.DocumentID || wal.LegacyDocumentIDString(doc["_id"]) == c.DocumentID {
-					if before != nil {
-						return nil, fmt.Errorf("legacy merge plan has ambiguous ID %q; run preview again", c.DocumentID)
-					}
-					before = doc
-				}
+			targetKey, err := legacyPlanKey(ours[c.Collection], c.DocumentID)
+			if err != nil {
+				return nil, err
 			}
-			c.Before = before
-			c.ID = imageID(c.Document, before)
-			if c.ID == nil {
+			sourceKey, err := legacyPlanKey(theirs[c.Collection], c.DocumentID)
+			if err != nil {
+				return nil, err
+			}
+			if targetKey != "" && sourceKey != "" && targetKey != sourceKey {
+				return nil, fmt.Errorf("legacy merge plan has ambiguous ID %q; run preview again", c.DocumentID)
+			}
+			c.Before = ours[c.Collection][targetKey]
+			key := targetKey
+			if key == "" {
+				key = sourceKey
+			}
+			if key == "" {
 				return nil, fmt.Errorf("legacy merge plan lacks BSON ID for %q; run preview again", c.DocumentID)
 			}
-			c.DocumentID = wal.DocumentIDString(c.ID)
+			c.DocumentID = key
 		}
 	}
-	for _, c := range changes {
-		if _, err := documentIDValue(c); err != nil {
-			return nil, err
-		}
+	if err := s.prepareApplyImages(source, changes); err != nil {
+		return nil, err
 	}
 
 	_, err = s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
 		// This claim is committed together with all effects. Crashes or
 		// transaction retries cannot leave a partly applied/spent plan.
 		claimed, err := s.plans.UpdateOne(sc, bson.M{"_id": plan.ID, "status": StatusPending},
-			bson.M{"$set": bson.M{"status": "applying"}})
+			bson.M{"$set": bson.M{"status": "applying"}, "$unset": bson.M{"write_back_last_error": ""}})
 		if err != nil {
 			return nil, err
 		}
@@ -588,35 +663,96 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 	return &ApplyResult{Applied: len(changes), ConflictsResolved: resolved}, nil
 }
 
-func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, changes []Change, txnID string) error {
-	entries := make([]*wal.Entry, 0, len(changes))
-	for _, c := range changes {
-		id, err := documentIDValue(c)
+// prepareApplyImages recovers the source's field order in batches. When
+// history no longer supplies a verified image, the saved plan still suffices
+// for an ordinary merge. Its maps get a deterministic encoding.
+func (s *Service) prepareApplyImages(source *wal.Branch, changes []Change) error {
+	keys := make(map[string][]string)
+	for i := range changes {
+		c := &changes[i]
+		id, err := documentIDValue(*c)
 		if err != nil {
 			return err
 		}
-		if c.Document != nil {
-			c.Document["_id"] = id
-		}
+		c.ID = id
 		if c.Before != nil {
 			c.Before["_id"] = id
 		}
-		e := &wal.Entry{ProjectID: target.ProjectID, BranchID: target.ID,
-			Collection: c.Collection, DocumentID: wal.DocumentIDString(id), Actor: "merge:" + source.Name,
-			Operation: wal.OpPut, TxnID: txnID}
-		if c.Before != nil {
-			e.PreImage, err = bson.Marshal(c.Before)
+		if !c.Delete {
+			if c.Document == nil {
+				return fmt.Errorf("merge plan has no replacement for %s/%s; run preview again", c.Collection, c.DocumentID)
+			}
+			c.Document["_id"] = id
+			keys[c.Collection] = append(keys[c.Collection], c.DocumentID)
+		}
+	}
+	replacements := make(map[string]map[string]*wal.Entry)
+	for collection, ids := range keys {
+		entries, err := s.wal.LatestDocumentEntries(source.ID, collection, ids, source.BaseLSN+1, source.HeadLSN,
+			func(lsn int64) bool { return !source.IsDiscardedForRead(lsn, source.HeadLSN) })
+		if errors.Is(err, wal.ErrLegacyDocumentKeys) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		floor, err := s.wal.ReclaimFloor(source.ID, collection)
+		if err != nil {
+			return err
+		}
+		for id, entry := range entries {
+			if entry.LSN <= floor || !verifiedReplacement(entry) {
+				delete(entries, id)
+			}
+		}
+		replacements[collection] = entries
+	}
+	for i := range changes {
+		c := &changes[i]
+		if c.Delete {
+			continue
+		}
+		if entry := replacements[c.Collection][c.DocumentID]; entry != nil {
+			var doc bson.M
+			if err := bson.Unmarshal(entry.PostImage, &doc); err != nil {
+				return err
+			}
+			same, err := mongoexpr.CanonicalEqual(c.Document, doc)
 			if err != nil {
 				return err
 			}
+			id, err := wal.DocumentIDFromImage(entry.PostImage)
+			if same && err == nil && wal.DocumentIDString(id) == c.DocumentID {
+				c.replacement = entry.PostImage
+				continue
+			}
+		}
+		raw, err := wal.MarshalDocument(c.Document)
+		if err != nil {
+			return err
+		}
+		c.replacement = raw
+	}
+	return nil
+}
+
+func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, changes []Change, txnID string) error {
+	entries := make([]*wal.Entry, 0, len(changes))
+	for _, c := range changes {
+		e := &wal.Entry{ProjectID: target.ProjectID, BranchID: target.ID,
+			Collection: c.Collection, DocumentID: c.DocumentID, Actor: "merge:" + source.Name,
+			Operation: wal.OpPut, TxnID: txnID}
+		if c.Before != nil {
+			raw, err := wal.MarshalDocument(c.Before)
+			if err != nil {
+				return err
+			}
+			e.PreImage = raw
 		}
 		if c.Delete {
 			e.Operation = wal.OpDelete
 		} else {
-			e.PostImage, err = bson.Marshal(c.Document)
-			if err != nil {
-				return err
-			}
+			e.PostImage = c.replacement
 		}
 		entries = append(entries, e)
 	}
@@ -631,16 +767,9 @@ func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes
 	}
 	physical := s.client.Database(own)
 	for _, c := range changes {
-		id, err := documentIDValue(c)
-		if err != nil {
-			return err
-		}
-		if c.Document != nil {
-			c.Document["_id"] = id
-		}
 		coll := physical.Collection(c.Collection)
 		var current bson.M
-		err = coll.FindOne(ctx, bson.M{"_id": id}).Decode(&current)
+		err = coll.FindOne(ctx, bson.M{"_id": c.ID}).Decode(&current)
 		if err != nil && err != mongo.ErrNoDocuments {
 			return err
 		}
@@ -655,35 +784,32 @@ func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes
 			return fmt.Errorf("stale merge plan: physical document %s/%s changed since preview; wait for capture and preview again", c.Collection, c.DocumentID)
 		}
 		if c.Delete {
-			if _, err := coll.DeleteOne(ctx, bson.M{"_id": id}); err != nil {
+			if _, err := coll.DeleteOne(ctx, bson.M{"_id": c.ID}); err != nil {
 				return err
 			}
-		} else if _, err := coll.ReplaceOne(ctx, bson.M{"_id": id}, c.Document, options.Replace().SetUpsert(true)); err != nil {
+		} else if _, err := coll.ReplaceOne(ctx, bson.M{"_id": c.ID}, c.replacement, options.Replace().SetUpsert(true)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func imageID(images ...bson.M) interface{} {
-	for _, image := range images {
-		if image != nil {
-			if id, ok := image["_id"]; ok {
-				return id
+func legacyPlanKey(state map[string]bson.M, stored string) (string, error) {
+	var matched string
+	for key, doc := range state {
+		if key == stored || wal.LegacyDocumentIDString(doc["_id"]) == stored {
+			if matched != "" {
+				return "", fmt.Errorf("legacy merge plan has ambiguous ID %q; run preview again", stored)
 			}
+			matched = key
 		}
 	}
-	return nil
+	return matched, nil
 }
 
 func documentIDValue(c Change) (interface{}, error) {
-	if c.ID != nil {
-		return c.ID, nil
-	}
-	if id := imageID(c.Document, c.Before); id != nil {
-		return id, nil
-	}
-	// Current keys are lossless; old persisted plans are enriched above.
+	// A saved image may decode its compound _id into an unordered map.
+	// The WAL key identifies the document with its original BSON field order.
 	return wal.DocumentIDValue(c.DocumentID)
 }
 

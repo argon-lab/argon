@@ -473,7 +473,14 @@ ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
   reserved first. Remaining subdocuments take their field order from
   an unambiguous source match by `_id` or value. Unmatched and ambiguous
   elements keep the plan's field order. An inserted document has the order
-  the sandbox stored, or sorted fields when it was written through the SDK.
+  the sandbox stored. For new writes through `WriterFor`, Go maps use
+  sorted field names at every depth, including inside arrays. Ordered BSON
+  documents, raw BSON and struct fields retain their supplied order. This
+  also determines the order of compound `_id` fields. Raw WAL reads expose
+  the stored order. A materialized Go map has no iteration-order guarantee.
+  Ordinary merges preserve verified replacement bytes when they are
+  available and encode the saved plan's map fields in sorted order otherwise.
+  Existing WAL entries keep their original bytes and remain readable.
 - The comparison with the before-image is byte for byte when `main` holds the
   source's own bytes for that document, which it does for everything the
   import copied or following stored: a document whose fields production
@@ -482,9 +489,20 @@ ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
   read or an exact before-image possibly lost to garbage collection aborts
   before claiming the plan. If garbage collection reclaimed the image,
   force a resync to capture the source's bytes again, then preview again.
-- Write-back preflight requires the healthy `exact` verdict. For a
-  refusal, use the status reason and next action in the
+- A sandbox after-image marked `attached_unverified` can contain duplicate
+  fields. Preparation refuses marked images and any replacement with
+  duplicate field names before claiming the plan. It also refuses a missing
+  replacement or one that garbage collection may have reclaimed. Run a new preview after the sandbox history is intact.
+- Preview stores the before-images, after-images and conflicts in one plan
+  document. Its encoded size plus room for the claim, outcome and failure
+  text must fit in 16 MiB. Split larger changes into smaller plans.
+- Write-back requires an `exact` capture checkpoint at preflight and again
+  in the metadata snapshot that claims the plan. For a refusal, use the
   [source status table](#what-argon-source-status-reports-and-what-to-do).
+- If the plan has no writes, including when `ours` keeps every conflict,
+  one majority-acknowledged metadata update marks it applied. There is no
+  source transaction, source commit time or claim to settle. The CLI reports
+  `written_to_source: false` in JSON.
 - `main` is not written by the write-back. It receives the change through
   following, like any other change to the source, attributed to the merge
   (`actor: merge:<sandbox>`) with a `merge` record carrying the plan ID.
@@ -494,8 +512,22 @@ ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
   pending if it knows the transaction aborted or the commit was never sent.
   The follower marks it applied if it sees the transaction in the change
   stream. Otherwise, the plan stays `writing_back` with an unknown outcome.
-  You cannot reuse that plan. Check the affected documents on the source,
-  let following catch up, then run `argon merge preview` again for the sandbox.
+  A retry of a known abort clears the previous error as it claims the plan.
+  The plan stores up to 4096 UTF-8 bytes of error text and up to 1024 bytes
+  of the source display address. You cannot reuse an unsettled plan.
+  Check the affected documents on the source, let following catch up, then run `argon merge preview` again for the sandbox.
+- The claim takes a snapshot of capture health. It does not lock the branch
+  against detach or keep the follower running through the source commit.
+  A clean stop can leave an exact checkpoint behind production. The source
+  transaction still checks each affected document. After a commit, the writer
+  can mark the plan applied even while following is stopped. On restart, the
+  follower can ingest the transaction and settle its claim with the checkpoint.
+  If a gap skips that event, an unconfirmed claim stays `writing_back`.
+- A concurrent detach can complete after the claim snapshot and the source
+  transaction can still commit. Detached `main` keeps the history it had at
+  detach. Once detached, it has no follower to ingest a later event or settle
+  its claim. If the writer cannot confirm the outcome, `merge list` continues
+  to show `writing_back` and retry is refused. Inspect the source directly.
 - A fresh preview against a caught-up `main` omits changes that the earlier
   transaction already made and that the source still holds. It surfaces
   conflicts where both sides changed a document differently. Before writing

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/argon-lab/argon/v2/pkg/walcli"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -39,6 +40,14 @@ func do(t *testing.T, router http.Handler, method, path string, body interface{}
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &decoded), "body: %s", rec.Body.String())
 	}
 	return rec.Code, decoded
+}
+
+func TestMergeApplyValidatesStrategyBeforePlanID(t *testing.T) {
+	r := &Router{Engine: gin.New()}
+	r.POST("/merge-plans/:id/apply", r.mergeApply)
+	status, body := do(t, r, http.MethodPost, "/merge-plans/invalid/apply", map[string]string{"strategy": "typo"})
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Contains(t, body["error"], "unknown strategy")
 }
 
 func TestAPI_ControlPlaneFlow(t *testing.T) {

@@ -415,6 +415,17 @@ func (s *Server) handleToolCall(ctx context.Context, req *jsonRPCRequest) {
 		s.replyError(req.ID, -32602, fmt.Sprintf("tool %q is not available: this server was started with it disabled", params.Name))
 		return
 	}
+	if params.Name == "argon_merge_apply" && params.Arguments["strategy"] != nil {
+		strategy, ok := params.Arguments["strategy"].(string)
+		if !ok {
+			s.replyToolError(req.ID, "strategy must be a string (theirs or ours)")
+			return
+		}
+		if err := walcli.ValidateMergeStrategy(strategy); err != nil {
+			s.replyToolError(req.ID, err.Error())
+			return
+		}
+	}
 
 	// Every tool works on the engine; nothing before this point does.
 	if err := s.openEngine(ctx); err != nil {

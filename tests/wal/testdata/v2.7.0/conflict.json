@@ -1,0 +1,59 @@
+{
+  "_id": {
+    "$oid": "6afe26a67432102c6f554310"
+  },
+  "format_version": {
+    "$numberInt": "2"
+  },
+  "source_version": {
+    "$numberLong": "2"
+  },
+  "target_version": {
+    "$numberLong": "4"
+  },
+  "project_id": "6afe26a2b1bfdc5d39b8a47d",
+  "source_branch_id": "6afe26a3b1bfdc5d39b8a482",
+  "source_branch": "feature",
+  "target_branch_id": "6afe26a3b1bfdc5d39b8a47f",
+  "target_branch": "main",
+  "source_head": {
+    "$numberLong": "6"
+  },
+  "target_head": {
+    "$numberLong": "5"
+  },
+  "base_lsn": {
+    "$numberLong": "3"
+  },
+  "changes": null,
+  "conflicts": [
+    {
+      "collection": "catalog",
+      "document_id": "item",
+      "base": {
+        "value": {
+          "$numberInt": "1"
+        },
+        "_id": "item"
+      },
+      "ours": {
+        "value": {
+          "$numberInt": "2"
+        },
+        "_id": "item"
+      },
+      "theirs": {
+        "_id": "item",
+        "value": {
+          "$numberInt": "3"
+        }
+      }
+    }
+  ],
+  "status": "pending",
+  "created_at": {
+    "$date": {
+      "$numberLong": "1795040934196"
+    }
+  }
+}

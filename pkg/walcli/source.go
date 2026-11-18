@@ -482,10 +482,16 @@ func (s *Services) DetachSource(ctx context.Context, projectName string) error {
 	return s.Ingest.ClearResumeState(ctx, branch.ID)
 }
 
+// ValidateMergeStrategy checks the resolution choice before opening either deployment.
+func ValidateMergeStrategy(strategy string) error { return merge.ValidateStrategy(strategy) }
+
 // WriteBackMerge writes a pending plan to the external database its target
 // branch follows, in one transaction that compares every document with the
 // plan's before-image first. Nothing calls this implicitly.
 func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID, strategy, uri string) (*merge.ApplyResult, error) {
+	if err := merge.ValidateStrategy(strategy); err != nil {
+		return nil, err
+	}
 	if err := source.RequireExperimentalWriteBack(); err != nil {
 		return nil, err
 	}

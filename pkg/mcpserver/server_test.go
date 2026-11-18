@@ -49,6 +49,21 @@ func newBareServer(opts ...Option) *Server {
 	return New(nil, bytes.NewReader(nil), &bytes.Buffer{}, opts...)
 }
 
+func TestMergeApplyValidatesStrategyBeforeOpeningEngine(t *testing.T) {
+	for _, tc := range []struct {
+		value any
+		want  string
+	}{{"typo", "unknown strategy"}, {42, "strategy must be a string"}} {
+		reply := exchange(t, newBareServer(), "tools/call", map[string]any{
+			"name": "argon_merge_apply", "arguments": map[string]any{"plan_id": "invalid", "strategy": tc.value},
+		})
+		result := reply["result"].(map[string]any)
+		require.Equal(t, true, result["isError"])
+		content := result["content"].([]any)
+		require.Contains(t, content[0].(map[string]any)["text"], tc.want)
+	}
+}
+
 func listedTools(t *testing.T, s *Server) map[string]map[string]interface{} {
 	t.Helper()
 	result := exchange(t, s, "tools/list", nil)["result"].(map[string]interface{})

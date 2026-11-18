@@ -393,7 +393,7 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 		// place. Otherwise the attached image is kept, as it always was, and
 		// marked: decoding it still yields the right values because the newer
 		// occurrence comes last.
-		if event.OperationType == "update" && !needPost && hasDuplicateFields(event.FullDocument) {
+		if event.OperationType == "update" && !needPost && HasDuplicateFields(event.FullDocument) {
 			metadata["capture_images"] = "attached_unverified"
 			if event.txnID() == "" && !changedEarlier {
 				stored, err := recoverImages(ctx, physical, raw, &event, true, false)

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"io"
+
 	"github.com/spf13/cobra"
 )
 
@@ -12,7 +14,11 @@ func jsonOutput(cmd *cobra.Command) bool {
 
 // One JSON value per successful command; diagnostics stay on stderr.
 func writeJSON(cmd *cobra.Command, value any) error {
-	encoder := json.NewEncoder(cmd.OutOrStdout())
+	return encodeJSON(cmd.OutOrStdout(), value)
+}
+
+func encodeJSON(w io.Writer, value any) error {
+	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(value)
 }

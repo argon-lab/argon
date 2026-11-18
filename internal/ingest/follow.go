@@ -266,6 +266,11 @@ type follower struct {
 	run         *running
 
 	writeBacks map[string]*WriteBack
+	// unclaimed is the last source transaction found to have no claim.
+	unclaimed struct {
+		key string
+		txn int64
+	}
 	lastCommit time.Time
 	lastToken  bson.Raw
 	recoverAt  primitive.Timestamp
@@ -624,9 +629,19 @@ func (f *follower) writeBack(ctx context.Context, event *changeEvent) (*WriteBac
 	if wb, seen := f.writeBacks[key]; seen {
 		return wb, nil
 	}
+	// A claim is acknowledged before its transaction starts, so a miss holds
+	// for the rest of that transaction. A later transaction of the same
+	// pooled session may be claimed and is looked up again.
+	if f.unclaimed.key == key && f.unclaimed.txn == event.TxnNumber {
+		return nil, nil
+	}
 	wb, err := f.opts.WriteBacks.Lookup(ctx, f.branch.ID, primitive.Binary{Subtype: subtype, Data: data})
 	if err != nil {
 		return nil, fmt.Errorf("failed to check a source transaction against pending write-backs: %w", err)
+	}
+	if wb == nil {
+		f.unclaimed.key, f.unclaimed.txn = key, event.TxnNumber
+		return nil, nil
 	}
 	if len(f.writeBacks) > 4096 {
 		clear(f.writeBacks)
@@ -688,7 +703,7 @@ func (f *follower) convert(ctx context.Context, raw bson.Raw, event *changeEvent
 		// field twice. Outside a transaction the stored document can be read
 		// back in its place; otherwise the attached one is kept and marked.
 		// It still decodes to the right values, the newer occurrence last.
-		if hasDuplicateFields(post) {
+		if HasDuplicateFields(post) {
 			metadata["capture_images"] = "attached_unverified"
 			if id, err := raw.LookupErr("documentKey", "_id"); err == nil && event.txnID() == "" {
 				stored, err := documentAt(ctx, f.src, event.NS.Collection, id, event.ClusterTime)

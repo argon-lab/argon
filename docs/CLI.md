@@ -222,8 +222,17 @@ argon merge apply <plan-id> [--strategy theirs|ours]
 argon merge list    -p P
 ```
 
-Plans apply exactly once and refuse stale parent heads; conflicts fail
-loudly unless a strategy resolves them. Merges are undoable like any range.
+An ordinary apply requires the parent head saved by preview. Both apply paths
+accept only `theirs` and `ours` when a strategy is supplied. Conflicts require
+an explicit choice. Table preview prints the apply command for the target.
+
+In `merge preview --output json` and `merge list --output json`, document IDs,
+keys and document images use canonical MongoDB Extended JSON v2. For example,
+a BSON int64 count appears as `"count":{"$numberLong":"1"}`. Plan IDs, branch
+names, counts of changes, timestamps and statuses keep their ordinary JSON
+types. JSON listing identifies individual unreadable plans alongside readable
+ones. Preview reports the encoded size if a plan and its outcome fields cannot
+fit in the 16 MiB MongoDB document limit.
 When the parent follows an external database, a plan is applied with
 `--write-back`. Write-back is experimental, off by default, and has known
 open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See
@@ -231,7 +240,9 @@ open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See
 A write-back plan in `writing_back` is claimed and cannot be used again.
 Check the affected documents on the source, let following catch up, then
 run `argon merge preview` again for the sandbox. `merge list` prints this
-guidance and includes it as `writing_back_advice` in JSON output.
+guidance and includes it as `writing_back_advice` in JSON output. An empty
+write-back, including one emptied by `--strategy ours`, marks the plan applied
+and reports `"written_to_source": false`.
 
 ## Pins — immutable datasets
 
