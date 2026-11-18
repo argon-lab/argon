@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
@@ -142,7 +143,11 @@ func (s *ProjectService) GetProjectIDByName(name string) (string, error) {
 
 // ListProjects lists all WAL-enabled projects
 func (s *ProjectService) ListProjects() ([]*wal.Project, error) {
-	ctx := context.Background()
+	return s.ListProjectsContext(context.Background())
+}
+
+// ListProjectsContext lists WAL-enabled projects using the caller's context.
+func (s *ProjectService) ListProjectsContext(ctx context.Context) ([]*wal.Project, error) {
 	cursor, err := s.collection.Find(ctx, bson.M{"use_wal": true, "importing": bson.M{"$ne": true}})
 	if err != nil {
 		return nil, err
@@ -178,7 +183,7 @@ func (s *ProjectService) DeleteProject(projectID string) error {
 		if branch.Name != "main" {
 			if err := s.branches.DeleteBranch(projectID, branch.Name); err != nil {
 				// Log error but continue
-				fmt.Printf("Failed to delete branch %s: %v\n", branch.Name, err)
+				fmt.Fprintf(os.Stderr, "Failed to delete branch %s: %v\n", branch.Name, err)
 			}
 		}
 	}
@@ -199,7 +204,7 @@ func (s *ProjectService) DeleteProject(projectID string) error {
 
 	// Force delete main branch (special case for project deletion)
 	if err := s.branches.ForceDeleteBranch(projectID, "main"); err != nil {
-		fmt.Printf("Failed to delete main branch: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to delete main branch: %v\n", err)
 	}
 
 	// Delete project record

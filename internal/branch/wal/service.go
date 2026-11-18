@@ -170,7 +170,11 @@ func (s *BranchService) GetBranch(projectID, name string) (*wal.Branch, error) {
 
 // GetBranchByID retrieves a branch by its ID
 func (s *BranchService) GetBranchByID(branchID string) (*wal.Branch, error) {
-	ctx := context.Background()
+	return s.GetBranchByIDContext(context.Background(), branchID)
+}
+
+// GetBranchByIDContext retrieves a branch using the caller's context.
+func (s *BranchService) GetBranchByIDContext(ctx context.Context, branchID string) (*wal.Branch, error) {
 	var branch wal.Branch
 
 	err := s.collection.FindOne(ctx, bson.M{
@@ -249,7 +253,11 @@ func (s *BranchService) CompareAndSetCheckout(ctx context.Context, expected *wal
 
 // ListBranches lists all branches for a project
 func (s *BranchService) ListBranches(projectID string) ([]*wal.Branch, error) {
-	ctx := context.Background()
+	return s.ListBranchesContext(context.Background(), projectID)
+}
+
+// ListBranchesContext lists non-deleted branches using the caller's context.
+func (s *BranchService) ListBranchesContext(ctx context.Context, projectID string) ([]*wal.Branch, error) {
 	cursor, err := s.collection.Find(ctx, bson.M{
 		"project_id": projectID,
 		"is_deleted": false,

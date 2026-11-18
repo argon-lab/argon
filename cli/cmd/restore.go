@@ -52,6 +52,35 @@ func restoreTarget(cmd *cobra.Command, services *walcli.Services, branchID strin
 	return target, nil
 }
 
+// restorePreviewJSON is the JSON shape of `argon restore preview -o json`.
+func restorePreviewJSON(branch string, currentLSN, targetLSN int64, discard int, affected map[string]int) map[string]any {
+	if affected == nil {
+		affected = map[string]int{}
+	}
+	return map[string]any{
+		"branch":                branch,
+		"current_lsn":           currentLSN,
+		"target_lsn":            targetLSN,
+		"operations_to_discard": discard,
+		"affected_collections":  affected,
+	}
+}
+
+// restoreResetJSON is the JSON shape of `argon restore reset -o json`. The
+// backup branch is reported only when one was created.
+func restoreResetJSON(branch string, targetLSN int64, backup string) map[string]any {
+	value := map[string]any{"branch": branch, "target_lsn": targetLSN}
+	if backup != "" {
+		value["backup_branch"] = backup
+	}
+	return value
+}
+
+// restoreBranchJSON is the JSON shape of `argon restore branch -o json`.
+func restoreBranchJSON(branch string, targetLSN int64) map[string]any {
+	return map[string]any{"branch": branch, "target_lsn": targetLSN}
+}
+
 var restorePreviewCmd = &cobra.Command{
 	Use:   "preview",
 	Short: "Show what a reset would discard",
@@ -75,6 +104,9 @@ var restorePreviewCmd = &cobra.Command{
 		preview, err := services.Restore.GetRestorePreview(branchID, target)
 		if err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, restorePreviewJSON(preview.BranchName, preview.CurrentLSN, preview.TargetLSN, preview.OperationsToDiscard, preview.AffectedCollections))
 		}
 		fmt.Printf("Branch:  %s (head LSN %d)\n", preview.BranchName, preview.CurrentLSN)
 		fmt.Printf("Target:  LSN %d\n", preview.TargetLSN)
@@ -133,12 +165,17 @@ var restoreResetCmd = &cobra.Command{
 			if _, err := services.Restore.CreateBranchAtLSN(project.ID, branchID, backup, branch.HeadLSN); err != nil {
 				return fmt.Errorf("failed to create backup branch: %w", err)
 			}
-			fmt.Printf("Backup branch %q created at LSN %d\n", backup, branch.HeadLSN)
+			if !jsonOutput(cmd) {
+				fmt.Printf("Backup branch %q created at LSN %d\n", backup, branch.HeadLSN)
+			}
 		}
 
 		branch, err := services.Restore.ResetBranchToLSN(branchID, target)
 		if err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, restoreResetJSON(branch.Name, branch.HeadLSN, backup))
 		}
 		fmt.Printf("Reset %s to LSN %d\n", branch.Name, branch.HeadLSN)
 
@@ -174,6 +211,9 @@ var restoreBranchCmd = &cobra.Command{
 		branch, err := services.Restore.CreateBranchAtLSN(project.ID, branchID, as, target)
 		if err != nil {
 			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, restoreBranchJSON(branch.Name, branch.HeadLSN))
 		}
 		fmt.Printf("Created branch %q at LSN %d\n", branch.Name, branch.HeadLSN)
 		return nil

@@ -86,7 +86,7 @@ func WithReady(ch chan<- struct{}) RunOption {
 // the branch head. It resumes from the persisted token when one exists, so
 // restarts don't lose events.
 func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig, run *running) error {
-	branch, err := s.branches.GetBranchByID(branchID)
+	branch, err := s.branches.GetBranchByIDContext(ctx, branchID)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return &ConfigurationError{fmt.Sprintf("branch %s not found", branchID)}

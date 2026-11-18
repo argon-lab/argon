@@ -36,7 +36,12 @@ jobs:
       - name: Verify public source reproduces embedded assets
         run: bash scripts/sync-ui.sh --check
       - name: Audit complete console dependency tree
-        run: npm audit --prefix web
+        # Fails on any advisory that scripts/console-audit-exceptions.json does
+        # not name. An exception holds only for build-time dependencies and
+        # only while npm offers no compatible fix.
+        run: |
+          node --test scripts/console-audit.test.mjs
+          node scripts/console-audit.mjs
       - name: Start disposable MongoDB replica set
         run: |
           trap 'docker logs console-mongo >&2 || true' ERR

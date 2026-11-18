@@ -188,10 +188,15 @@ that missing history was captured.
 
 `argon console` and API processes supervise live capture and sweep expired
 sandboxes every minute. MCP does the same for its managed branches while the
-process runs. Bare CLI checkout/sandbox commands do not create a background
+process runs, and after a restart resumes capture for branches left checked out
+(2.4.0 and newer). Bare CLI checkout/sandbox commands do not create a background
 worker: keep `watch` running and schedule `sandbox sweep` explicitly. Automatic
 snapshots are triggered by native capture and programmatic writers; retention
 GC still runs through its explicit command/service.
+
+Run one capture supervisor per branch. Checkpoint fencing prevents stale
+streams from committing against a newer head; restart recovery does not
+coordinate which process owns capture.
 
 Stop native writers before release/reset. Release waits through a durable
 capture barrier; reset requires a released branch. Discard intentionally drops

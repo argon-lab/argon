@@ -7,9 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Engine warnings go to stderr. A failed storage reclaim after a branch was
+  deleted, a failed post-import snapshot and a branch that could not be deleted
+  with its project were reported on stdout. Under `argon mcp` stdout is the
+  protocol stream, and with `--output json` it is the JSON value, so such a
+  warning corrupted both.
+
 Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
+
+### Added
+
+- `examples/boxd-sandbox`: agent-written code runs in an isolated boxd machine
+  and writes to an Argon sandbox through a MongoDB user restricted to that
+  sandbox's database; the host prints the diff and discards the sandbox, or
+  merges it with `--apply`.
+
+### Changed
+
+- CI's audit of the console's dependencies can excuse an advisory by name. The
+  whole tree is still audited, a production install must be clean, and an
+  exception ends as soon as npm offers a compatible fix. One exception is
+  recorded: GHSA-fc5q-39xc-vjpf in picomatch, a build-time dependency of vite
+  for which no patched release exists.
+
+## [2.4.0] - 2026-11-16
+
+JSON output for `gc` and `restore`, and a restarted MCP server resumes capture.
+No data format changes since 2.3.3.
+
+### Added
+
+- `argon gc` and `argon restore preview|reset|branch` accept `-o json`.
+
+### Fixed
+
+- A restarted `argon mcp` resumes capture for the branches an earlier server
+  left checked out, as soon as it connects. Before, capture resumed only when a
+  tool next drained the branch, for example `argon_diff`. Writes made in
+  between were caught up then, but a change to a collection the agent had
+  created could by that time be outside MongoDB's snapshot history (five
+  minutes by default), and the drain reported the history as incomplete. The
+  REST API already re-attached capture at startup; the MCP server now does the
+  same.
 
 ## [2.3.3] - 2026-11-12
 
@@ -469,7 +512,8 @@ project's first commit is 2025-05-27 — and have been removed. Performance
 numbers now live only in the reproducible benchmark suite
 (https://github.com/argon-lab/benchmarks).
 
-[Unreleased]: https://github.com/argon-lab/argon/compare/v2.3.3...HEAD
+[Unreleased]: https://github.com/argon-lab/argon/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/argon-lab/argon/releases/tag/v2.4.0
 [2.3.3]: https://github.com/argon-lab/argon/releases/tag/v2.3.3
 [2.3.2]: https://github.com/argon-lab/argon/releases/tag/v2.3.2
 [2.3.1]: https://github.com/argon-lab/argon/releases/tag/v2.3.1

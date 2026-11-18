@@ -87,6 +87,14 @@ not reachable when a tool is called, that call returns a tool error that says so
 keeps running, and the next call tries again. Capture and the sweep of expired
 sandboxes begin as soon as the database answers.
 
+A restarted server resumes capture for the branches an earlier server left
+checked out, as soon as it connects and without a tool call (2.4.0 and
+newer). Writes made while no server ran are caught up from the stored
+position. Up to 2.3.3 capture resumed only when a tool such as `argon_diff`
+next drained the branch; a collection the agent created and changed in between
+could by then be outside MongoDB's snapshot history, and that `diff` reported
+the history as incomplete.
+
 Every tool declares how it behaves (MCP tool annotations): `argon_branch_list`,
 `argon_diff` and `argon_pin_list` are read-only; `argon_merge_apply`,
 `argon_undo` and `argon_sandbox_discard` are marked destructive, so clients
@@ -242,6 +250,11 @@ a bearer token. This requires your own engine; the hosted demo does not
 provide database credentials. Native MongoDB credentials remain deployment
 credentials, not a security boundary between mutually untrusted agents.
 Provision restricted MongoDB users/deployments for those workloads.
+
+[examples/boxd-sandbox](../examples/boxd-sandbox/) does that for agent-written
+code running in a separate code sandbox: a boxd machine gets a MongoDB user
+that can only read and write its Argon sandbox, then the host prints the diff
+and discards the sandbox, or merges it with `--apply`.
 
 A newly materialized collection is already prepared by checkout, and from
 2.3.1 capture reads back the exact states of writes that reach a new collection
