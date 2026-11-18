@@ -122,7 +122,6 @@ func resolveChanges(plan *Plan, strategy string) ([]Change, int, error) {
 					DocumentID: c.DocumentID,
 					Delete:     c.Theirs == nil,
 					Document:   c.Theirs,
-					ID:         imageID(c.Theirs, c.Ours, c.Base),
 					Before:     c.Ours,
 				})
 				resolved++
@@ -142,6 +141,9 @@ func resolveChanges(plan *Plan, strategy string) ([]Change, int, error) {
 // ApplyToSource writes a pending plan to the external database its target
 // branch follows. It is never reached implicitly: the caller names it.
 func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, strategy string, target WriteBackTarget) (*ApplyResult, error) {
+	if err := ValidateStrategy(strategy); err != nil {
+		return nil, err
+	}
 	if err := source.RequireExperimentalWriteBack(); err != nil {
 		return nil, err
 	}
@@ -156,18 +158,13 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		return nil, errors.New("this plan predates before-images and cannot be checked against the source; run preview again")
 	}
 
-	branch, status, err := ingest.ReadCaptureStatus(ctx, s.plans.Database(), plan.TargetBranchID)
+	var databaseName string
+	if target.Database != nil {
+		databaseName = target.Database.Name()
+	}
+	branch, err := s.admitWriteBack(ctx, plan.TargetBranchID, databaseName)
 	if err != nil {
-		return nil, fmt.Errorf("target branch not found: %w", err)
-	}
-	if !branch.IsFollower() {
-		return nil, fmt.Errorf("branch %s does not follow an external database; apply the plan without write-back", branch.Name)
-	}
-	if err := status.Health.WriteBackAdmission(); err != nil {
 		return nil, err
-	}
-	if target.Database == nil || target.Database.Name() != branch.Follows {
-		return nil, fmt.Errorf("branch %s follows database %q; write-back was pointed at another database", branch.Name, branch.Follows)
 	}
 	source, err := s.branches.GetBranchByID(plan.SourceBranchID)
 	if err != nil {
@@ -185,6 +182,13 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		if _, err := documentIDValue(c); err != nil {
 			return nil, err
 		}
+	}
+
+	if len(changes) == 0 {
+		if err := s.claimWriteBack(ctx, plan, databaseName, nil, strategy); err != nil {
+			return nil, err
+		}
+		return &ApplyResult{ConflictsResolved: resolved}, nil
 	}
 
 	// Write-back changes documents in collections the source already has.
@@ -221,20 +225,15 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	}
 	record := &WriteBackRecord{
 		Session:  primitive.Binary{Subtype: subtype, Data: data},
-		Database: branch.Follows, Display: target.Display,
+		Database: branch.Follows, Display: boundedAuditText(target.Display, maxDisplayBytes),
 		Strategy: strategy, Changes: len(changes), StartedAt: time.Now(),
 	}
 	// A metadata election must not undo the claim after the separate
 	// source transaction commits. Require majority acknowledgement for
 	// the claim and both transitions out of it.
 	plans := s.plans.Database().Collection(s.plans.Name(), options.Collection().SetWriteConcern(writeconcern.Majority()))
-	claimed, err := plans.UpdateOne(ctx, bson.M{"_id": plan.ID, "status": StatusPending},
-		bson.M{"$set": bson.M{"status": StatusWritingBack, "write_back": record}})
-	if err != nil {
-		return nil, fmt.Errorf("could not claim plan %s with majority write concern: %w", plan.ID.Hex(), err)
-	}
-	if claimed.MatchedCount != 1 {
-		return nil, errors.New("merge plan is no longer pending")
+	if err := s.claimWriteBack(ctx, plan, databaseName, record, strategy); err != nil {
+		return nil, err
 	}
 
 	// reachedCommit separates "the transaction body failed" (nothing can
@@ -302,10 +301,58 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		reason = target.Redact(reason)
 	}
 	if _, err := plans.UpdateOne(record2, bson.M{"_id": plan.ID, "status": StatusWritingBack, "write_back.session": record.Session},
-		bson.M{"$set": bson.M{"status": StatusPending, "write_back_last_error": reason}, "$unset": bson.M{"write_back": ""}}); err != nil {
+		bson.M{"$set": bson.M{"status": StatusPending, "write_back_last_error": boundedAuditText(reason, maxLastErrorBytes)}, "$unset": bson.M{"write_back": ""}}); err != nil {
 		return nil, errors.Join(txnErr, fmt.Errorf("nothing was written, but the plan could not be returned to pending: %w", err))
 	}
 	return nil, txnErr
+}
+
+func (s *Service) admitWriteBack(ctx context.Context, branchID, databaseName string) (*wal.Branch, error) {
+	branch, status, err := ingest.ReadCaptureStatus(ctx, s.plans.Database(), branchID)
+	if err != nil {
+		return nil, fmt.Errorf("target branch not found: %w", err)
+	}
+	if !branch.IsFollower() {
+		return nil, fmt.Errorf("branch %s does not follow an external database; apply the plan without write-back", branch.Name)
+	}
+	if err := status.Health.WriteBackAdmission(); err != nil {
+		return nil, err
+	}
+	if databaseName != branch.Follows {
+		return nil, fmt.Errorf("branch %s follows database %q; write-back was pointed at another database", branch.Name, branch.Follows)
+	}
+	return branch, nil
+}
+
+// claimWriteBack checks the capture checkpoint and consumes the pending plan
+// in one metadata snapshot. An empty change set is complete at that commit.
+func (s *Service) claimWriteBack(ctx context.Context, plan *Plan, databaseName string, record *WriteBackRecord, strategy string) error {
+	session, err := s.plans.Database().Client().StartSession()
+	if err != nil {
+		return err
+	}
+	defer session.EndSession(context.Background())
+	_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (any, error) {
+		if _, err := s.admitWriteBack(sc, plan.TargetBranchID, databaseName); err != nil {
+			return nil, err
+		}
+		fields := bson.M{"status": StatusWritingBack, "write_back": record}
+		unset := bson.M{"write_back_last_error": ""}
+		if record == nil {
+			fields = bson.M{"status": StatusApplied, "applied_at": time.Now(), "strategy": strategy}
+			unset["write_back"] = ""
+		}
+		update := bson.M{"$set": fields, "$unset": unset}
+		result, err := s.plans.UpdateOne(sc, bson.M{"_id": plan.ID, "status": StatusPending}, update)
+		if err == nil && result.MatchedCount != 1 {
+			err = errors.New("merge plan is no longer pending")
+		}
+		return nil, err
+	}, options.Transaction().SetReadConcern(readconcern.Snapshot()).SetReadPreference(readpref.Primary()).SetWriteConcern(writeconcern.Majority()))
+	if err != nil {
+		return fmt.Errorf("could not claim plan %s with majority write concern: %w", plan.ID.Hex(), err)
+	}
+	return nil
 }
 
 // sourceWrite is one planned change prepared for the source transaction.
@@ -353,24 +400,24 @@ func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Chang
 	if c.Delete {
 		return write, nil
 	}
-	// A plan holds each document as a map, which has no field order. The
-	// branch being merged recorded the document as its database stored it;
-	// failing that the fields are sorted, which is at least the same on
-	// every run.
+	// The replacement needs the sandbox's field order. A map in the
+	// plan also cannot distinguish a repeated field from its last value.
 	entry, err := s.storedImage(source, plan.SourceHead, c.Collection, c.DocumentID, c.Document)
 	if err != nil {
 		return sourceWrite{}, fmt.Errorf("could not read write-back replacement for %s/%s: %w", c.Collection, c.DocumentID, err)
 	}
-	if entry != nil {
-		if err := bson.Unmarshal(entry.PostImage, &write.document); err != nil {
-			return sourceWrite{}, err
-		}
-	} else {
-		canonical, err := mongoexpr.Canonicalize(c.Document)
-		if err != nil {
-			return sourceWrite{}, err
-		}
-		write.document, _ = canonical.(bson.D)
+	floor, err := s.wal.ReclaimFloor(source.ID, c.Collection)
+	if err != nil {
+		return sourceWrite{}, err
+	}
+	if floor > source.BaseLSN && (entry == nil || entry.LSN <= floor) {
+		return sourceWrite{}, fmt.Errorf("write-back replacement for %s/%s: %w; run a new preview after the sandbox history is intact", c.Collection, c.DocumentID, wal.ErrHistoryReclaimed)
+	}
+	if !verifiedReplacement(entry) {
+		return sourceWrite{}, fmt.Errorf("no verified write-back replacement for %s/%s; run a new preview after the sandbox history is intact", c.Collection, c.DocumentID)
+	}
+	if err := bson.Unmarshal(entry.PostImage, &write.document); err != nil {
+		return sourceWrite{}, err
 	}
 	ordered := bson.D{{Key: "_id", Value: id}}
 	for _, field := range write.document {
@@ -380,6 +427,10 @@ func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Chang
 	}
 	write.document = ordered
 	return write, nil
+}
+
+func verifiedReplacement(entry *wal.Entry) bool {
+	return entry != nil && len(entry.PostImage) != 0 && entry.Metadata["capture_images"] != "attached_unverified" && !ingest.HasDuplicateFields(entry.PostImage)
 }
 
 // storedImage returns the newest visible entry that holds the given document
@@ -610,7 +661,8 @@ func arrayItemKey(item interface{}) string {
 // or nil. The follower calls it for transactions it has not seen before.
 func (s *Service) LookupWriteBack(ctx context.Context, targetBranchID string, session primitive.Binary) (*Plan, error) {
 	var plan Plan
-	err := s.plans.FindOne(ctx, bson.M{"write_back.session": session, "target_branch_id": targetBranchID},
+	plans := s.plans.Database().Collection(s.plans.Name(), options.Collection().SetReadPreference(readpref.Primary()))
+	err := plans.FindOne(ctx, bson.M{"write_back.session": session, "target_branch_id": targetBranchID},
 		options.FindOne().SetProjection(bson.M{"changes": 0, "conflicts": 0})).Decode(&plan)
 	if err == mongo.ErrNoDocuments {
 		return nil, nil

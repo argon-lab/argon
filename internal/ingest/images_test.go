@@ -114,8 +114,8 @@ func TestHasDuplicateFieldsLooksAtEveryDepth(t *testing.T) {
 		"wide duplicate":   {wideDup, true},
 		"empty":            {bson.Raw{5, 0, 0, 0, 0}, false},
 	} {
-		if got := hasDuplicateFields(tc.raw); got != tc.want {
-			t.Fatalf("%s: hasDuplicateFields = %v, want %v", name, got, tc.want)
+		if got := HasDuplicateFields(tc.raw); got != tc.want {
+			t.Fatalf("%s: HasDuplicateFields = %v, want %v", name, got, tc.want)
 		}
 	}
 }

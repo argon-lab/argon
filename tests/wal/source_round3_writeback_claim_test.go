@@ -28,13 +28,27 @@ func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
 
 	var lock sync.Mutex
 	var concerns []bson.RawValue
+	var admissions, claims []string
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(metadataDeploymentURI+"/?w=1").SetMonitor(&event.CommandMonitor{
 		Started: func(_ context.Context, e *event.CommandStartedEvent) {
-			if e.DatabaseName != f.metadataName || e.CommandName != "update" || e.Command.Lookup("update").StringValue() != "wal_merge_plans" {
-				return
-			}
 			lock.Lock()
 			defer lock.Unlock()
+			if e.DatabaseName == f.metadataName && e.Command.Lookup("autocommit").Type != 0 {
+				txn := e.Command.Lookup("lsid").String() + e.Command.Lookup("txnNumber").String()
+				switch e.CommandName {
+				case "aggregate":
+					require.Equal(t, "snapshot", e.Command.Lookup("readConcern", "level").StringValue())
+					admissions = append(admissions, txn)
+				case "update":
+					claims = append(claims, txn)
+				}
+			}
+			// Transactional claims carry their write concern on commit.
+			if e.CommandName != "commitTransaction" {
+				if e.DatabaseName != f.metadataName || e.CommandName != "update" || e.Command.Lookup("update").StringValue() != "wal_merge_plans" || e.Command.Lookup("autocommit").Type != 0 {
+					return
+				}
+			}
 			concern := e.Command.Lookup("writeConcern", "w")
 			concerns = append(concerns, bson.RawValue{Type: concern.Type, Value: append([]byte(nil), concern.Value...)})
 		},
@@ -57,6 +71,8 @@ func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
 	require.Equal(t, merge.StatusPending, f.plan(t, stale).Status)
 	lock.Lock()
 	defer lock.Unlock()
+	require.Len(t, admissions, 2)
+	require.Equal(t, admissions, claims, "each claim uses its admission snapshot")
 	require.Len(t, concerns, 4, "claim and applied mark, then claim and return to pending")
 	for _, concern := range concerns {
 		w, ok := concern.StringValueOK()
@@ -77,7 +93,7 @@ func TestWriteBack_ClaimWithoutAcknowledgmentLeavesSourceUntouched(t *testing.T)
 	plan := f.preview(t, sandbox.BranchID)
 	before := f.sourceState(t, nil)
 
-	dialer := &lostAckDialer{command: "update"}
+	dialer := &lostAckDialer{command: "commitTransaction"}
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(metadataDeploymentURI).SetDialer(dialer))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Disconnect(ctx)) })

@@ -112,8 +112,11 @@ ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
 The import copies ordinary collections at one cluster time, which it prints.
 Add `--dry-run` to the import command to check the source and its change stream
 and see the estimated copy without writing anything.
-Following ignores changes to views. `--write-back` applies the plan in one
-transaction on the source. It checks every document against the plan's
+Following ignores changes to views. JSON preview and plan listing preserve
+BSON types with canonical Extended JSON. An empty write-back completes in
+metadata. A nonempty write-back checks capture health in the transaction
+that claims the plan, then writes in one source transaction. It checks
+every affected document against the plan's
 before-image and aborts the transaction if one has changed. The metadata
 deployment must acknowledge the plan claim with majority write concern
 before the source transaction starts.

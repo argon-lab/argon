@@ -642,16 +642,20 @@ func (r *Router) mergePreview(c *gin.Context) {
 }
 
 func (r *Router) mergeApply(c *gin.Context) {
-	planID, err := primitive.ObjectIDFromHex(c.Param("id"))
-	if err != nil {
-		abortErr(c, http.StatusBadRequest, fmt.Errorf("invalid plan id"))
-		return
-	}
 	var body struct {
 		Strategy string `json:"strategy"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil && err.Error() != "EOF" {
 		abortErr(c, http.StatusBadRequest, err)
+		return
+	}
+	if err := walcli.ValidateMergeStrategy(body.Strategy); err != nil {
+		abortErr(c, http.StatusBadRequest, err)
+		return
+	}
+	planID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		abortErr(c, http.StatusBadRequest, fmt.Errorf("invalid plan id"))
 		return
 	}
 	plan, err := r.services.Merge.GetPlan(c.Request.Context(), planID)

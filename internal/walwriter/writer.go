@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -114,16 +115,12 @@ func (w *Writer) putMany(ctx context.Context, collection string, docs []bson.M) 
 	entries := make([]*wal.Entry, 0, len(docs))
 	previous := make(map[string]bson.Raw)
 	for i, doc := range docs {
-		normalized, id, err := normalizeDoc(doc)
+		post, id, err := normalizeDoc(doc)
 		if err != nil {
 			return nil, fmt.Errorf("document %d: %w", i, err)
 		}
 		docID := wal.DocumentIDString(id)
 
-		post, err := bson.Marshal(normalized)
-		if err != nil {
-			return nil, fmt.Errorf("document %d: failed to marshal: %w", i, err)
-		}
 		entry := &wal.Entry{
 			ProjectID:  w.branch.ProjectID,
 			BranchID:   w.branch.ID,
@@ -244,28 +241,26 @@ func (w *Writer) preImage(collection, docID string) (bson.Raw, error) {
 	if current == nil {
 		return nil, nil
 	}
-	raw, err := bson.Marshal(current)
+	raw, err := wal.MarshalDocument(current)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal pre-image for %s/%s: %w", collection, docID, err)
 	}
 	return raw, nil
 }
 
-// normalizeDoc round-trips the document through BSON (a private, normalized
-// copy) and ensures it has an _id.
-func normalizeDoc(doc bson.M) (bson.M, interface{}, error) {
-	raw, err := bson.Marshal(doc)
+// normalizeDoc assigns a missing _id without mutating the caller's map.
+// Both the image and its WAL key come from the same encoded document.
+func normalizeDoc(doc bson.M) (bson.Raw, interface{}, error) {
+	if _, ok := doc["_id"]; !ok {
+		withID := make(bson.M, len(doc)+1)
+		maps.Copy(withID, doc)
+		withID["_id"] = primitive.NewObjectID()
+		doc = withID
+	}
+	raw, err := wal.MarshalDocument(doc)
 	if err != nil {
 		return nil, nil, fmt.Errorf("document must be BSON-marshallable: %w", err)
 	}
-	var normalized bson.M
-	if err := bson.Unmarshal(raw, &normalized); err != nil {
-		return nil, nil, fmt.Errorf("document must decode to a BSON document: %w", err)
-	}
-	id, idErr := wal.DocumentIDFromImage(raw)
-	if idErr != nil {
-		id = primitive.NewObjectID()
-	}
-	normalized["_id"] = id
-	return normalized, id, nil
+	id, err := wal.DocumentIDFromImage(raw)
+	return raw, id, err
 }

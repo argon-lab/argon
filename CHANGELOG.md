@@ -11,7 +11,26 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Changed
+
+- CLI JSON output for `merge preview` and `merge list` uses canonical
+  Extended JSON v2 for document IDs and images. For example, an int64
+  field formerly printed as `"n":1` now prints as `"n":{"$numberLong":"1"}`.
+  NaN and infinities can be previewed and listed.
+- New programmatic WAL writes sort fields supplied in Go maps, including
+  nested maps, and preserve caller-supplied BSON order. Existing entries
+  retain their stored bytes.
+
 ### Fixed
+
+- Saved plans use the stored BSON key for compound IDs on both apply paths.
+  Preview gives target-specific apply guidance and identifies plans too
+  large to leave space for claim and outcome records under MongoDB's 16 MiB limit.
+- Both apply paths reject unknown strategies up front. Empty write-backs
+  complete in metadata, and a new attempt clears the previous write-back error.
+- Write-back verifies capture health in the claim transaction and refuses
+  unverified sandbox replacements. The follower reads claims from the
+  metadata primary and looks again for each new source transaction.
 
 - Source and deployment status stay healthy while a follower reopens its
   stream from a verified exact checkpoint. Write-back still requires

@@ -654,28 +654,39 @@ follower, with the marker left in place.
 
 ### Write-back
 
-A plan is written to the source and nowhere else; `main` learns of it through
-the follower. One writer per branch is kept, and there is nothing to
-reconcile between two deployments.
+Each plan fits in one BSON document, including space reserved for the
+largest claim, outcome or bounded failure text. Its lossless document ID
+supplies the lookup key and replacement `_id` after reload. Programmatic puts
+sort unordered maps when creating the WAL image and retain ordered BSON
+values. Existing WAL images remain readable in their original order.
+
+An empty write-back completes in one majority-acknowledged metadata update.
+For nonempty write-backs, `main` receives the changes through following.
 
 The write is one source transaction that compares each document with the
 plan's before-image and then inserts, replaces or deletes it, in a collection
-that already exists: it never upserts, so it cannot create one. The
+that existed at preflight. A concurrent drop can race a later insert. The
 comparison is on the bytes the followed branch stored for the document when
 it has them, which makes a reordered document a changed one. A history read
 failure or before-image possibly reclaimed by garbage collection stops
-preparation before the plan is claimed. A replacement
-preserves the source's field order. It reserves exact array element matches
+preparation before the plan is claimed. The sandbox must supply a verified
+after-image with intact history and unique field names throughout.
+A replacement preserves the source's field order. It reserves exact array element matches
 first, then matches remaining elements by `_id` or value. Ambiguous and
 unmatched elements keep the plan's order. Because the
 source and the metadata may be different deployments, the plan's status
 cannot commit with the documents. The writer claims the plan first with the
-ID of a session used for nothing else. The source transaction starts only
-after the metadata deployment acknowledges the claim with majority write
-concern, which also applies to settlement and return to pending.
-The follower recognises events from
-that session, attributes their entries to the merge, appends the `merge`
-record and marks the plan applied in the same transaction that stores them.
+ID of a dedicated source session. Admission checks the capture checkpoint
+and followed database in the same metadata transaction as the pending-only
+plan update. A later detach or stop can overlap the source transaction.
+The source transaction starts after the metadata deployment acknowledges the
+claim with majority write concern. The writer also requires majority
+acknowledgment to record the outcome.
+The follower looks up claims on the metadata primary. A miss is remembered
+only for the rest of that source transaction, since a claim is acknowledged
+before its transaction starts.
+It recognises events from that session, attributes their entries to the
+merge, appends the `merge` record and marks the plan applied in the same transaction that stores them.
 An acknowledged source commit also lets the writer mark the plan applied.
 The writer returns a claim to pending only when it knows the transaction
 aborted or the commit was never sent. A claim whose outcome remains unknown

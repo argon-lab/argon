@@ -3,7 +3,6 @@ package wal
 import (
 	"encoding/base64"
 	"fmt"
-	"sort"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -25,7 +24,7 @@ func DocumentIDString(id interface{}) string {
 			return v
 		}
 	}
-	raw, err := bson.Marshal(bson.D{{Key: "i", Value: orderedID(id)}})
+	raw, err := MarshalDocument(bson.D{{Key: "i", Value: id}})
 	if err != nil {
 		return fmt.Sprintf("%sunsupported:%T:%v", documentKeyPrefix, id, id)
 	}
@@ -112,40 +111,4 @@ func DocumentIDFromImage(image bson.Raw) (interface{}, error) {
 		return nil, err
 	}
 	return id, nil
-}
-
-func orderedID(value interface{}) interface{} {
-	switch v := value.(type) {
-	case bson.M:
-		return orderedIDMap(v)
-	case map[string]interface{}:
-		return orderedIDMap(v)
-	case bson.D:
-		d := make(bson.D, len(v))
-		for i, e := range v {
-			d[i] = bson.E{Key: e.Key, Value: orderedID(e.Value)}
-		}
-		return d
-	case bson.A:
-		a := make(bson.A, len(v))
-		for i, e := range v {
-			a[i] = orderedID(e)
-		}
-		return a
-	default:
-		return value
-	}
-}
-
-func orderedIDMap(m map[string]interface{}) bson.D {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	d := make(bson.D, 0, len(keys))
-	for _, k := range keys {
-		d = append(d, bson.E{Key: k, Value: orderedID(m[k])})
-	}
-	return d
 }
