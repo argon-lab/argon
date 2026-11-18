@@ -12,6 +12,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
@@ -102,6 +103,10 @@ type ResyncOptions struct {
 	// WriteBacks and Redact are as in FollowOptions.
 	WriteBacks WriteBackLedger
 	Redact     func(string) string
+	// Watch replaces src.Watch for the check that the source's change stream
+	// can be opened, made before anything is written. Tests use it to supply
+	// a refusal that a deployment without access control cannot produce.
+	Watch func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error)
 }
 
 // ResyncResult describes a finished resync.
@@ -229,10 +234,30 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	if startAt.I++; startAt.I == 0 {
 		startAt.T++
 	}
-	if _, err := s.state.UpdateOne(ctx, bson.M{"_id": branchID}, bson.M{
-		"$set":   bson.M{"start_at": startAt, "actor": sourceActor, "capture_status.source": status},
-		"$unset": bson.M{"resume_token": ""},
-	}, options.Update().SetUpsert(true)); err != nil {
+	// Open the change stream once before anything is written. The replay
+	// only starts after the whole comparison; a user without the changeStream
+	// privilege should learn that now, with the branch untouched and no
+	// unfinished resync on record.
+	if err := probeStream(ctx, src, startAt, opts.Watch); err != nil {
+		return err
+	}
+	// The marker is written in a transaction that also requires the branch
+	// to follow this source still. A detach by another process between the
+	// check above and this write then makes the write fail, instead of
+	// leaving a status document behind for a branch that follows nothing.
+	if _, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		if err := s.branches.FollowerCheckpoint(sc, branch.ID, branch.Follows, branch.HeadLSN); err != nil {
+			return nil, err
+		}
+		_, err := s.state.UpdateOne(sc, bson.M{"_id": branchID}, bson.M{
+			"$set":   bson.M{"start_at": startAt, "actor": sourceActor, "capture_status.source": status},
+			"$unset": bson.M{"resume_token": ""},
+		}, options.Update().SetUpsert(true))
+		return nil, err
+	}); err != nil {
+		if fenced := followerWriteError(branch, err); fenced != err {
+			return fenced
+		}
 		return fmt.Errorf("failed to record the start of the resync: %w", err)
 	}
 	result.FromLSN = from
@@ -547,4 +572,24 @@ func (r *resyncer) commit() error {
 		}
 	}
 	return nil
+}
+
+// probeStream opens and closes the source's change stream at a position.
+func probeStream(ctx context.Context, src *mongo.Database, startAt primitive.Timestamp, watch func(context.Context, *mongo.Database, *options.ChangeStreamOptions) (*mongo.ChangeStream, error)) error {
+	if watch == nil {
+		watch = func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
+			return src.Watch(ctx, mongo.Pipeline{}, opts)
+		}
+	}
+	stream, err := watch(ctx, src, options.ChangeStream().SetStartAtOperationTime(&startAt).SetMaxAwaitTime(100*time.Millisecond))
+	if err != nil {
+		return &ConfigurationError{fmt.Sprintf("the source's change stream cannot be opened, so the changes made during the comparison could not be replayed (the source user needs the changeStream action on database %s): %v. Nothing was written", src.Name(), err)}
+	}
+	stream.TryNext(ctx)
+	err = stream.Err()
+	_ = stream.Close(context.Background())
+	if err != nil && ctx.Err() == nil {
+		return &ConfigurationError{fmt.Sprintf("the source's change stream cannot be read: %v. Nothing was written", err)}
+	}
+	return ctx.Err()
 }

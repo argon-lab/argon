@@ -267,6 +267,9 @@ Resync brings `main` to the source's current state without a second project.
 It takes a stream position on the source, compares the source with `main`,
 and then replays the source's changes from that position until `main` equals
 the source at one cluster time, which it prints with the LSN.
+Before it writes anything it opens the source's change stream at that
+position: a user who may not read the stream is refused there, with `main`
+untouched and no unfinished resync on record.
 
 What it does to `main`:
 

@@ -52,7 +52,11 @@ entry — a synchronization barrier, not in-proxy capture).
   the source; the LSNs it writes are recorded as an inexact range; an
   interrupted resync is reported as unfinished, blocks `source follow`, and
   is completed by running it again. `argon source follow --auto-resync` runs
-  it when following ends as degraded and continues.
+  it when following ends as degraded and continues. Before it writes
+  anything it opens the source's change stream once, so a source user who
+  may not read it is told at the start, and it records its start only while
+  the project still follows the source, so a detach in that instant leaves
+  nothing behind.
   The consistent point reported on a source nobody is writing to is now the
   source's current cluster time; it could be one tick later, a time a later
   write might still be given. Dropping a collection Argon does not follow
