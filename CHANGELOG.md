@@ -11,6 +11,13 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.6.0] - 2026-11-18
+
+The first diff after a checkout no longer scans the copy, and three experimental
+features arrive switched off: online import, following a source database, and
+write-back. No data format changes since 2.5.0 for projects that do not use
+them.
+
 ### Added
 
 - Online import is experimental and off by default behind
