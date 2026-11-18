@@ -564,9 +564,11 @@ after the delete.
 
 Step 4 does not hold a collection in memory. The keys come from the WAL's
 `(branch, collection, document, lsn)` index, read in key order with one key
-at a time; each batch is resolved to the branch's live documents with the
-materializer's point read and checked against the source with one `$in`
-query. Where garbage collection has reclaimed part of a collection's history
+at a time. Each batch is resolved to the branch's live documents with the
+materializer's point read. For an ordinary collection in the source catalog,
+one `$in` query checks the batch against the source. A name outside that
+catalog, including a name now used by a view, is pruned as absent. Where
+garbage collection has reclaimed part of a collection's history
 the log no longer names every document, and the collection is listed from its
 snapshot instead, loaded whole as every reader of reclaimed history does.
 Step 3 treats a document as unchanged only on evidence from the log itself
@@ -615,6 +617,11 @@ stays `writing_back` and cannot be reused.
   temporary collections) needs a resync each time.
 - Following runs through `argon source follow`. The MCP server and the REST
   control plane do not supervise it, and neither offers write-back.
+- To enable source images, the follower first checks the binding, lease and
+  saved position and opens the change stream. If the saved position is
+  degraded, replay must clear the gap or a resync must finish before the
+  follower issues `collMod`. An error after a change lists the collections
+  it altered.
 - A resync restores the source's current state, not its history: the
   changes between the last applied one and the resync are recorded as their
   outcome only, inside a range marked inexact. A write-back that committed in
@@ -632,7 +639,8 @@ stays `writing_back` and cannot be reused.
 - A source with a time-series collection cannot be followed: its
   measurements never reach a change stream as documents. Importing one is
   refused, and creating one on a followed source ends following as degraded.
-  Views are neither imported nor followed.
+  Online import copies ordinary collections and ignores view creation,
+  modification and removal during replay and following.
 - A collection MongoDB does not serve at a past cluster time (a capped one
   up to 7.0; on 6.0 also any collection altered after the update) can only
   be followed exactly through attached images.
@@ -641,8 +649,11 @@ stays `writing_back` and cannot be reused.
   replica-set ID, with an oplog that still covers the position, is followed
   on from there without the rewind being noticed.
 - Processes older than this feature do not know a followed branch is
-  read-only. The follower detects that the head moved without it and stops
-  as degraded; it cannot stop the older process from writing.
+  read-only. Status reports a legacy checkout of a followed branch as
+  degraded. Following, resync and write-back refuse that state. Release
+  can drop the branch's own physical database through the normal drop
+  guard, after which resync rebuilds the source position. The follower
+  also detects a head moved by another process and stops as degraded.
 - Write-back never creates a collection.
 
 ## Migration from schema v1

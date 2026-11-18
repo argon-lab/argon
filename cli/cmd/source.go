@@ -53,18 +53,24 @@ following stops as degraded. Two things avoid that:
                           changes the source: MongoDB then stores a pre-image
                           of every updated or deleted document. The project
                           must have recorded the replica-set ID at import.
+                          Argon verifies the saved position and opens the
+                          stream first. A degraded position must recover or
+                          be resynced before the collections are altered.
   --allow-inexact         lets following continue: such updates are applied
                           with the document's current state, main converges
                           on the source again, and the range in between is
                           recorded as inexact history (argon source status).
 
 A collection dropped or renamed on the source stops following as degraded,
-and so does a saved position the source's oplog no longer holds. "argon
-source resync" repairs both in place. With --auto-resync, follow runs that
+and so does a saved position the source's oplog no longer holds. View
+creation, modification and removal are ignored. "argon source resync"
+repairs both gaps in place. With --auto-resync, follow runs that
 resync itself and continues. It also completes an unfinished resync at
 startup. If something else moved main's head, follow stops as degraded and
-requires a manual resync. Each resync compares the whole source with main
-and leaves an inexact range in main's history.`,
+requires a manual resync. If an older Argon process checked out main,
+upgrade it, stop writes to the checkout, and run "argon release -b main"
+for the project before resyncing. Each resync compares the whole source
+with main and leaves an inexact range in main's history.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		uri, _ := cmd.Flags().GetString("uri")
@@ -103,6 +109,9 @@ and leaves an inexact range in main's history.`,
 var sourceStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show what a project follows and how far following has come",
+	Long: `Show the source binding, saved position and lease owner. An unfinished
+resync or degraded following exits with an error. This includes a followed
+main that an older Argon process checked out.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		if projectName == "" {
@@ -183,19 +192,19 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 
 var sourceResyncCmd = &cobra.Command{
 	Use:   "resync",
-	Short: "Bring main back to the source's current state after following ended as degraded",
-	Long: `Resync repairs a project whose follower has ended as degraded, without
-importing the database again: after a collection was dropped or renamed on
-the source, after the source database itself was dropped, or when the
-source's oplog no longer holds the saved position.
+	Short: "Bring degraded main back to the source's current state",
+	Long: `Resync repairs degraded following without importing the database again.
+Typical causes are a source collection that was dropped or renamed, a
+dropped source database, or a saved position the source's oplog no longer
+holds.
 
 It takes a stream position on the source, then compares the source with main
 in batches: every source document that main does not already hold is stored,
-and every document main holds that the source no longer has is deleted (all
-documents of a dropped collection; a renamed collection ends up under its new
-name). It then replays the source's changes from the position it took until
-main equals the source at one cluster time, and prints that point. "argon
-source follow" continues from there.
+and every document main holds that the source no longer has is deleted.
+That includes all documents of a collection replaced by a view. A renamed
+collection ends up under its new name. Resync replays the source's changes
+until main equals the source at one cluster time, and prints that point.
+"argon source follow" continues from there.
 
 Nothing is written to the source. Main keeps its history: the LSNs written by
 the resync are recorded as an inexact range (argon source status), because
@@ -208,9 +217,10 @@ renamed another collection while it ran, leaves main marked as unfinished.
 Restart it with "argon source resync" or "argon source follow --auto-resync".
 Only one follower or resync can run for a project at a time.
 
-By default resync refuses unless following ended as degraded or an earlier
+By default resync refuses unless following is degraded or an earlier
 resync is unfinished. --force permits resyncing a healthy branch once the
-lease is available.`,
+lease is available. If an older Argon process checked out main, upgrade it,
+stop writes to the checkout, and release the checkout before resyncing.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		uri, _ := cmd.Flags().GetString("uri")

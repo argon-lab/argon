@@ -38,7 +38,8 @@ argon console [--port 1818]   local web console (REST API + UI), opens browser
 
 While a branch is checked out, its history is fed by `watch` (or the
 API/MCP servers' ingesters); SDK writes to it are refused — one source of
-truth.
+truth. `checkout` and `connect` return a connection string only for the
+branch's own physical database.
 
 ## Import ("git clone")
 
@@ -98,6 +99,11 @@ hosts. For a project bound by name and hosts, detach it with
 project as a user allowed to run `replSetGetConfig`, such as one with the
 `clusterMonitor` role.
 
+`source follow --enable-source-images` checks the binding, saved position
+and lease, then opens the stream before altering collections. A degraded
+position must recover or be resynced first. If following subsequently
+fails, the error names any source collections on which it enabled images.
+
 While `main` follows a source, the source is the only thing that changes it:
 `merge apply` without `--write-back`, `undo`, `restore reset`, `checkout` and
 programmatic writes on `main` are refused. Sandboxes forked from it work as
@@ -115,15 +121,22 @@ It reports the lease owner's run type, host, process ID and last heartbeat
 in both table and JSON output. Only one follower or resync can hold the
 lease for a project at a time.
 
-`source resync` repairs a project whose follower ended as degraded, in place:
-after a collection was dropped or renamed on the source, after the source
-database was dropped, or when the source's oplog no longer holds the saved
-position. It compares the source with `main` in batches, stores what differs,
-deletes from `main` what the source no longer has, replays the source's
-changes made meanwhile, and prints the cluster time and LSN at which `main`
+If Argon 2.5.0 checked out a followed `main`, status reports it as
+degraded. Upgrade all processes using that metadata database, stop writers
+to the checkout, then run `argon release -p P -b main` and
+`argon source resync -p P`.
+
+`source resync` repairs degraded following in place, such as after a
+collection was dropped or renamed on the source, after the source database
+was dropped, or when the source's oplog no longer holds the saved position.
+It compares the source with `main` in batches, stores what differs,
+deletes from `main` what the source no longer has, and replays the source's
+changes made meanwhile. View creation, modification and removal are ignored,
+and a view that replaced a collection counts as an absent collection during
+resync. The command prints the cluster time and LSN at which `main`
 equals the source again; `source follow` continues from there. It reads the
 source and writes nothing to it. The LSNs it writes are recorded as an
-inexact range. Run without `--force` it refuses unless following ended as
+inexact range. Run without `--force` it refuses unless following is
 degraded or an earlier resync is unfinished. If a resync is interrupted or
 the source drops or renames another collection while it runs, `source status`
 reports the unfinished resync and plain `source follow` refuses to start.

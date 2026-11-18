@@ -294,6 +294,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/ingest/service.go:runStream UpdateOne",
 		"internal/ingest/source_lease.go:InitSourceState InsertOne",
 		"internal/ingest/source_lease.go:acquireSourceLease UpdateOne",
+		"internal/ingest/source_lease.go:releaseSourceLease DeleteOne",
 		"internal/ingest/source_lease.go:releaseSourceLease UpdateOne",
 		"internal/ingest/source_lease.go:reportSource FindOneAndUpdate",
 		"internal/ingest/source_lease.go:updateSourceLease UpdateOne",

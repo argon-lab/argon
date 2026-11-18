@@ -39,18 +39,21 @@ entry — a synchronization barrier, not in-proxy capture).
   source, and when something other than the follower wrote to `main`. A
   follower's writes are conditional on the branch still following its source,
   so `source detach` stops a follower in another process as well.
+  Status reports a followed `main` checked out by Argon 2.5.0 as degraded.
+  Release its own physical database before resyncing.
 - An online import binds the source by replica-set ID when the importing user
   can run `replSetGetConfig`. Otherwise, following and resync require the set
   name and at least one recorded member host to match. The binding stays as
   recorded at import. Write-back and `--enable-source-images` require a
   replica-set ID. `argon source status` shows the identity check and reports
   when the binding rules out write-back.
-- Resync: `argon source resync` repairs a project whose follower ended as
-  degraded, in place, instead of importing the database again: after a
+- `argon source resync` repairs degraded following in place, without
+  importing the database again. It repairs gaps after a
   collection was dropped or renamed on the source, after the database was
   dropped, or when the oplog no longer holds the saved position. It compares
-  the source with `main` in batches, stores what differs, deletes what the
-  source no longer has, replays the changes made meanwhile and reports the
+  the source with `main` in batches, stores what differs, deletes documents
+  the source no longer has (including a collection replaced by a view),
+  replays the changes made meanwhile and reports the
   cluster time at which `main` equals the source again. Nothing is written to
   the source. The LSNs it writes are recorded as an inexact range. An
   interrupted resync is reported as unfinished and blocks plain `source follow`.
@@ -77,13 +80,15 @@ entry — a synchronization barrier, not in-proxy capture).
 - `--enable-source-images` on `import database --online` and `source follow`
   switches on `changeStreamPreAndPostImages` for the source's collections.
   Argon does not alter a source's collections without it, makes the change
-  only once the import or the follower can actually start, and names the
-  altered collections in the error if the import then fails.
+  once the import has reserved and bound the project or the follower has
+  verified it can resume, and names the altered collections if the import or
+  follower subsequently fails.
 - An online import copies and follows every collection of the source except
   `system.*`, including ones named `config.*`, `admin.*` or `local.*`. It
-  skips views and refuses time-series collections. A failed or cancelled
-  import, and `argon import cleanup`, remove the snapshots taken of the
-  unpublished project as well as its rows.
+  skips views and refuses time-series collections. View creation,
+  modification and removal are ignored during replay and following.
+  A failed or cancelled import, and `argon import cleanup`, remove the
+  snapshots taken of the unpublished project as well as its rows.
 
 ### Changed
 
@@ -106,9 +111,9 @@ entry — a synchronization barrier, not in-proxy capture).
   any other database as its physical database.
 - Source connection strings are removed from import errors before they are
   printed, and `--uri` may be given as `ARGON_SOURCE_URI`.
-- `checkout` of an already checked-out branch whose record names a database
-  other than the one Argon created for it is refused instead of returning
-  that database's connection string.
+- `checkout` and `connect` return a connection string only for the branch's
+  own physical database. The console omits the connection string for a
+  sandbox whose record names another database.
 - The README, the npm package description and the MCP Registry description
   name what is underneath a sandbox as Git for MongoDB. The README sets seven
   Git commands beside the Argon command that does the same job and says where

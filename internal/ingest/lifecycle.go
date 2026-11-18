@@ -66,6 +66,8 @@ type Status struct {
 	// Source is set for a branch that follows an external database.
 	Source *SourceStatus `bson:"source,omitempty" json:"source,omitempty"`
 	Owner  *SourceOwner  `bson:"owner,omitempty" json:"-"`
+
+	hasResumeToken bool
 }
 
 type running struct {

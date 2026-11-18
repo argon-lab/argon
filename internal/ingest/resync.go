@@ -35,9 +35,9 @@ import (
 //     unless the branch's newest entry for it is a put of the same bytes.
 //   - Branch to source: every document the branch holds is looked up on the
 //     source by _id, and deleted from the branch if the source has none. A
-//     collection that was dropped on the source has none of its documents
-//     there, so all of them are deleted; a renamed one is that plus the first
-//     pass's puts under the new name.
+//     name that no longer denotes an ordinary source collection has none
+//     of its documents there, even if a view now uses that name. A renamed
+//     collection is that plus the first pass's puts under the new name.
 //
 // Neither pass is a state of the source: the documents are read at different
 // moments while the source is written. As in the import, the change stream is
@@ -150,9 +150,12 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 		return nil, s.sourceLeaseMiss(ctx, lease)
 	}
 	unfinished := stored.Source != nil && stored.Source.Resync != nil
-	degraded := stored.State == "degraded"
-	if !degraded && !unfinished && !opts.Force {
+	reason := stored.SourceDegradation(lease.branch)
+	if reason == "" && !unfinished && !opts.Force {
 		return nil, &ConfigurationError{"following has not ended as degraded, so there is nothing a resync has to repair; `argon source follow` continues from the saved position. A resync compares the whole source with the branch and records the range it writes as inexact history; pass --force to run one anyway"}
+	}
+	if reason != "" {
+		stored.State, stored.Error = "degraded", reason
 	}
 
 	cfg := runConfig{actor: sourceActor, redact: opts.Redact, lease: lease, resync: true}
@@ -192,8 +195,8 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	if branch.Follows != src.Name() {
 		return &ConfigurationError{fmt.Sprintf("branch %s follows database %q, not %q", branch.Name, branch.Follows, src.Name())}
 	}
-	if branch.IsLive() {
-		return &ConfigurationError{fmt.Sprintf("branch %s is checked out; a followed branch has no physical database", branch.Name)}
+	if branch.IsLive() || branch.PhysicalDB != "" {
+		return sourceCheckoutError(branch.Name)
 	}
 	var status SourceStatus
 	if stored.Source != nil {
@@ -298,7 +301,7 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 		onSource[name] = true
 	}
 	for _, name := range held {
-		deleted, err := r.prune(ctx, name)
+		deleted, err := r.prune(ctx, name, onSource[name])
 		if err != nil {
 			return fmt.Errorf("failed to compare the branch's collection %s with the source: %w", name, err)
 		}
@@ -455,7 +458,7 @@ func (r *resyncer) unchanged(collection string, keys []string) (map[string]bson.
 
 // prune deletes from the branch every document of one collection that the
 // source no longer has, and returns how many that were.
-func (r *resyncer) prune(ctx context.Context, name string) (int64, error) {
+func (r *resyncer) prune(ctx context.Context, name string, onSource bool) (int64, error) {
 	branch := r.branch
 	var deleted int64
 	// A point read can refuse where a replay of the collection still works
@@ -479,24 +482,29 @@ func (r *resyncer) prune(ctx context.Context, name string) (int64, error) {
 		if len(ids) == 0 {
 			return ctx.Err()
 		}
-		cursor, err := r.collection(name).Find(r.reads, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}},
-			options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}}))
-		if err != nil {
-			return err
-		}
-		defer func() { _ = cursor.Close(context.Background()) }()
-		// Keys are compared, not values: MongoDB matches 1 and 1.0 as the
-		// same _id, and the branch keeps them apart.
-		found := make(map[string]bool, len(ids))
-		for cursor.Next(r.reads) {
-			var id interface{}
-			if err := cursor.Current.Lookup("_id").Unmarshal(&id); err != nil {
+		var found map[string]bool
+		if onSource {
+			// Only query names listed as ordinary collections before compare.
+			// Replay covers changes after that list, including new collections.
+			cursor, err := r.collection(name).Find(r.reads, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}},
+				options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}}))
+			if err != nil {
 				return err
 			}
-			found[wal.DocumentIDString(id)] = true
-		}
-		if err := cursor.Err(); err != nil {
-			return err
+			defer func() { _ = cursor.Close(context.Background()) }()
+			// MongoDB matches 1 and 1.0 as the same _id, so compare the
+			// branch's document keys to keep them apart.
+			found = make(map[string]bool, len(ids))
+			for cursor.Next(r.reads) {
+				var id interface{}
+				if err := cursor.Current.Lookup("_id").Unmarshal(&id); err != nil {
+					return err
+				}
+				found[wal.DocumentIDString(id)] = true
+			}
+			if err := cursor.Err(); err != nil {
+				return err
+			}
 		}
 		for _, key := range keys {
 			if _, ok := live[key]; ok && !found[key] {

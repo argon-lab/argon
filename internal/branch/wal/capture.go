@@ -28,6 +28,9 @@ func (s *BranchService) CheckpointHead(ctx context.Context, branchID string, exp
 // been detached from its source (or re-bound) since the follower started.
 var ErrNoLongerFollows = errors.New("branch no longer follows this source")
 
+// ErrFollowerCheckedOut reports a physical checkout of a still-followed branch.
+var ErrFollowerCheckedOut = errors.New("followed branch is checked out")
+
 // FollowerSetHead is CompareAndSetHead for the follower of an external
 // database. Besides the observed head it requires that the branch still
 // follows that database and is not checked out, in the same transaction as
@@ -61,15 +64,18 @@ func (s *BranchService) FollowerCheckpoint(ctx context.Context, branchID, follow
 
 func followerFilter(branchID, follows string, head int64) bson.M {
 	return bson.M{"_id": branchID, "head_lsn": head, "is_deleted": false,
-		"follows": follows, "state": bson.M{"$ne": wal.BranchStateLive}}
+		"follows": follows, "state": bson.M{"$ne": wal.BranchStateLive}, "physical_db": bson.M{"$in": bson.A{nil, ""}}}
 }
 
 // followerMiss says why a follower's write found no branch to apply to.
 func (s *BranchService) followerMiss(ctx context.Context, branchID, follows string) error {
 	var branch wal.Branch
 	err := s.collection.FindOne(ctx, bson.M{"_id": branchID}).Decode(&branch)
-	if err != nil || branch.IsDeleted || branch.Follows != follows || branch.IsLive() {
+	if err != nil || branch.IsDeleted || branch.Follows != follows {
 		return ErrNoLongerFollows
+	}
+	if branch.IsLive() || branch.PhysicalDB != "" {
+		return ErrFollowerCheckedOut
 	}
 	return ErrBranchChanged
 }

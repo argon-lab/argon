@@ -122,16 +122,17 @@ type FollowOptions struct {
 	// current state instead and recording the affected range as inexact.
 	// Without it such an update stops the follower as degraded.
 	AllowInexact bool
-	// OnReady runs once when the stream opens at the saved position.
+	// OnReady runs once when the stream and any source preparation are ready.
 	OnReady func()
 	// WriteBacks is optional.
 	WriteBacks WriteBackLedger
 	// Redact cleans error text before it is stored or printed. The caller
 	// knows the connection string; this package never sees it.
 	Redact func(string) string
-	// BeforeStream runs once with the lease held, after validating the saved
-	// position and before opening the source stream.
-	BeforeStream func(context.Context) error
+	// PrepareSource runs once with the lease held, after validating the saved
+	// position and opening the source stream. A degraded follower must first
+	// replay far enough to clear its stored gap.
+	PrepareSource func(context.Context) error
 	// Watch replaces src.Watch. Tests use it to supply server errors that a
 	// fresh replica set cannot be made to produce, such as a resume position
 	// its oplog no longer holds.
@@ -153,12 +154,12 @@ func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Databa
 		return redacted(err, opts.Redact)
 	}
 	defer s.releaseSourceLease(lease)
-	if before := opts.BeforeStream; before != nil {
-		opts.BeforeStream = func(ctx context.Context) error {
-			if err := before(ctx); err != nil {
+	if prepare := opts.PrepareSource; prepare != nil {
+		opts.PrepareSource = func(ctx context.Context) error {
+			if err := prepare(ctx); err != nil {
 				return err
 			}
-			opts.BeforeStream = nil
+			opts.PrepareSource = nil
 			return nil
 		}
 	}
@@ -280,8 +281,8 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	if branch.Follows != src.Name() {
 		return nil, &ConfigurationError{fmt.Sprintf("branch %s follows database %q, not %q", branch.Name, branch.Follows, src.Name())}
 	}
-	if branch.IsLive() {
-		return nil, &ConfigurationError{fmt.Sprintf("branch %s is checked out; a followed branch has no physical database", branch.Name)}
+	if branch.IsLive() || branch.PhysicalDB != "" {
+		return nil, sourceCheckoutError(branch.Name)
 	}
 
 	saved, err := s.loadFollowState(ctx, branchID)
@@ -292,16 +293,13 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	if opts.startAt != nil {
 		token, startAt = nil, opts.startAt
 	}
-	if token == nil && startAt == nil {
-		return nil, &ConfigurationError{fmt.Sprintf("branch %s has no saved source position to resume from", branch.Name)}
-	}
 	// The saved position is only meaningful on top of the branch the
 	// follower left. Something else that moved the head (a process that
 	// predates following and does not know this branch is read-only), or
 	// that replaced the saved state, means the branch no longer equals the
 	// source at that position.
-	if saved.Status.Source == nil || saved.Status.Source.Database == "" {
-		return nil, &CaptureError{Message: fmt.Sprintf("the saved source position of branch %s was replaced by another process (one that does not know the branch follows a source); it cannot be resumed. Upgrade every process that uses this metadata database, then run `argon source resync`", branch.Name)}
+	if saved.Status.Source == nil || saved.Status.Source.Database != src.Name() {
+		return nil, sourcePositionError(branch.Name)
 	}
 	status := *saved.Status.Source
 	if status.Resync != nil && !opts.resync {
@@ -309,20 +307,15 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 		// on top of a finished comparison with the source.
 		return nil, unfinishedResyncError{&ConfigurationError{fmt.Sprintf("a resync of branch %s was started and has not finished: the branch is between its last consistent state and the source's current one. Run `argon source resync` again to complete it", branch.Name)}}
 	}
+	if len(token) == 0 && (startAt == nil || (!opts.resync && !untilConsistent)) {
+		return nil, sourcePositionError(branch.Name)
+	}
 	if stored := saved.Status.HeadLSN; stored != nil && *stored != branch.HeadLSN && !opts.resync {
 		return nil, &CaptureError{Message: fmt.Sprintf("the head of branch %s moved from LSN %d to %d without the follower: something else wrote to it, so it no longer equals the source. Upgrade every process that uses this metadata database, then run `argon source resync`", branch.Name, *stored, branch.HeadLSN)}
 	}
 	if !opts.resync {
 		if err := s.report(branchID, "starting", sourceActor, ""); err != nil {
 			return nil, err
-		}
-	}
-	if opts.BeforeStream != nil {
-		if err := s.renewSourceLease(ctx, run.lease); err != nil {
-			return nil, err
-		}
-		if err := opts.BeforeStream(ctx); err != nil {
-			return nil, &ConfigurationError{err.Error()}
 		}
 	}
 	if status.Mode == "" {
@@ -387,18 +380,38 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	if err := s.report(branchID, f.stateName(), sourceActor, ""); err != nil {
 		return nil, err
 	}
-	run.readyOnce.Do(func() {
-		close(run.ready)
-		if opts.OnReady != nil {
-			opts.OnReady()
-		}
-	})
+	ready := func() {
+		run.readyOnce.Do(func() {
+			close(run.ready)
+			if opts.OnReady != nil {
+				opts.OnReady()
+			}
+		})
+	}
+	if opts.PrepareSource == nil {
+		ready()
+	}
 
 	for {
 		if ctx.Err() != nil {
 			// Complete cluster times are stored; the one still open is read
 			// again after the saved position.
 			return nil, f.flushReady()
+		}
+		if opts.PrepareSource != nil && f.recoverAt.IsZero() {
+			if _, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+				if err := s.renewSourceLease(sc, run.lease); err != nil {
+					return nil, err
+				}
+				return nil, s.branches.FollowerCheckpoint(sc, branch.ID, branch.Follows, branch.HeadLSN)
+			}); err != nil {
+				return nil, followerWriteError(branch, err)
+			}
+			if err := opts.PrepareSource(ctx); err != nil {
+				return nil, &ConfigurationError{err.Error()}
+			}
+			opts.PrepareSource = nil
+			ready()
 		}
 		if stream.TryNext(ctx) {
 			if err := f.receive(ctx, stream.Current); err != nil {
@@ -624,8 +637,9 @@ func (f *follower) convert(ctx context.Context, raw bson.Raw, event *changeEvent
 	switch event.OperationType {
 	case "insert", "update", "replace", "delete":
 	case "drop", "dropDatabase", "rename":
-		if event.OperationType == "drop" && source.SkipCollection(event.NS.Collection) {
-			// Neither copied nor followed, so its disappearance changes nothing.
+		if event.OperationType == "drop" && (raw.Lookup("collectionUUID").Type == 0 || source.SkipCollection(event.NS.Collection)) {
+			// Expanded view drops have no collection UUID. Views and
+			// system collections are outside the followed data.
 			return nil, nil
 		}
 		return nil, &CaptureError{Message: fmt.Sprintf("%s of %s on the source is not followed: collection-level changes carry no documents, so the branch would stop matching the source; history is incomplete from here. Run `argon source resync` to bring the branch to the source's current state and follow it from there", event.OperationType, event.NS.Collection), streamGap: true}
@@ -935,12 +949,13 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	return nil
 }
 
-// followerWriteError names the two ways a follower's write can find that the
-// branch is no longer its own. Neither is worth retrying.
+// followerWriteError reports when the branch has changed under a follower.
 func followerWriteError(branch *wal.Branch, err error) error {
 	switch {
+	case errors.Is(err, branchwal.ErrFollowerCheckedOut):
+		return sourceCheckoutError(branch.Name)
 	case errors.Is(err, branchwal.ErrNoLongerFollows):
-		return &ConfigurationError{fmt.Sprintf("branch %s no longer follows database %q (it was detached, checked out or removed); following has stopped and nothing more was written to it", branch.Name, branch.Follows)}
+		return sourceDetached(branch.Name, branch.Follows)
 	case errors.Is(err, branchwal.ErrBranchChanged):
 		return &CaptureError{Message: fmt.Sprintf("the head of branch %s moved without this follower. Something else wrote to the branch and it no longer equals the source: make sure every process that uses this metadata database is current, then run `argon source resync`", branch.Name)}
 	case errors.Is(err, context.DeadlineExceeded):
@@ -972,7 +987,8 @@ func (s *Service) loadFollowState(ctx context.Context, branchID string) (*follow
 // not a follower is running in this process.
 func (s *Service) SourceStatusFor(ctx context.Context, branchID string) (*Status, error) {
 	var doc struct {
-		Status Status `bson:"capture_status"`
+		Status      Status   `bson:"capture_status"`
+		ResumeToken bson.Raw `bson:"resume_token"`
 	}
 	err := s.state.FindOne(ctx, bson.M{"_id": branchID}).Decode(&doc)
 	if err == mongo.ErrNoDocuments {
@@ -981,7 +997,32 @@ func (s *Service) SourceStatusFor(ctx context.Context, branchID string) (*Status
 	if err != nil {
 		return nil, err
 	}
+	doc.Status.hasResumeToken = len(doc.ResumeToken) > 0
 	return &doc.Status, nil
+}
+
+// SourceDegradation reports a followed branch's stored error or an invalid
+// branch or resume position, even when no follower has reported the problem.
+func (s *Status) SourceDegradation(branch *wal.Branch) string {
+	if branch.IsLive() || branch.PhysicalDB != "" {
+		return sourceCheckoutError(branch.Name).Error()
+	}
+	if s != nil && s.State == "degraded" {
+		if s.Error != "" {
+			return s.Error
+		}
+		return "the last follower reported a capture failure"
+	}
+	if !s.hasSavedSourcePosition(branch.Follows) {
+		return sourcePositionError(branch.Name).Error()
+	}
+	return ""
+}
+
+func (s *Status) hasSavedSourcePosition(database string) bool {
+	// An unfinished resync has deliberately replaced the old resume position.
+	return s != nil && s.Source != nil && s.Source.Database == database &&
+		(s.hasResumeToken || s.Source.Resync != nil)
 }
 
 // primaryTime is the primary's current cluster time. Nothing any node has

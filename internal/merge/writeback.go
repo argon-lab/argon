@@ -158,6 +158,9 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if !branch.IsFollower() {
 		return nil, fmt.Errorf("branch %s does not follow an external database; apply the plan without write-back", branch.Name)
 	}
+	if branch.IsLive() || branch.PhysicalDB != "" {
+		return nil, fmt.Errorf("write-back refused: following is degraded because branch %s was checked out. Release the checkout, run `argon source resync`, then preview again", branch.Name)
+	}
 	if target.Database == nil || target.Database.Name() != branch.Follows {
 		return nil, fmt.Errorf("branch %s follows database %q; write-back was pointed at another database", branch.Name, branch.Follows)
 	}

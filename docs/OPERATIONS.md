@@ -228,13 +228,13 @@ before the problem:
     writes and more storage on the source for every update and delete, a
     `collMod` on each collection, and the source user needs the privilege to
     run it. Argon never does this unless the flag is given, and does not
-    undo it, also when the import that asked for it then fails: the error
-    names the collections that were changed. The change is made only after
-    the import has reserved its project and bound the source, and for
-    `source follow` only once following can actually start. Collections
-    created later are not covered until the flag is given again. It helps
-    with updates made after it is enabled, not with ones already waiting in
-    the stream.
+    undo it. If the import or follower subsequently fails, the error
+    names the collections that were changed. Online import first reserves
+    the project and binds the source. Before enabling images, `source follow`
+    checks the binding, saved position and lease and opens the stream. If
+    following was degraded, it waits for replay or a resync to clear the gap.
+    Collections created later are not covered until the flag is given again.
+    The setting applies to updates made after it is enabled.
 
   On MongoDB 6.0 an update cannot be read at its own cluster time once its
   collection has been altered afterwards: an index build, a `collMod`
@@ -263,10 +263,20 @@ being the branch's head is checked on every start and on every write.
 When either happens, make sure every process that uses this metadata
 database is current, then run `argon source resync` explicitly.
 
+Argon 2.5.0 can also check out a followed `main` into a physical database.
+`argon source status` reports that as degraded even with no follower
+running, and write-back is refused. Upgrade every process that uses this
+metadata database and stop writers to the checkout. Run
+`argon release -p myapp -b main` to drop the branch's own physical database.
+Direct writes that never reached the WAL are discarded with the checkout.
+Run `argon source resync -p myapp` to rebuild the source position, even if
+the checkout removed the entire saved state.
+
 A time-series collection created on a followed source ends following: its
 measurements never reach a change stream as documents, so `main` could not
-equal such a source, and a resync refuses it for the same reason. Views are
-ignored; they hold no documents. Collections named `config.*`, `admin.*` or
+equal such a source, and a resync refuses it for the same reason. Online
+import and following ignore view creation, modification and removal.
+Collections named `config.*`, `admin.*` or
 `local.*` inside the source database are ordinary collections and are
 imported and followed (a quiesced import still skips them).
 
@@ -295,18 +305,19 @@ What it does to `main`:
 - Every source document `main` does not hold byte for byte is stored. A
   document `main` already holds is not stored again, so the cost in history
   is the size of the difference, not of the database.
-- Every document `main` holds that the source no longer has is deleted. A
-  collection dropped on the source loses all its documents on `main`; a
-  renamed one ends up under its new name; a dropped database leaves `main`
-  empty. Run against the right source: the deployment is checked against the
-  one imported from, as for every source command.
+- Every document `main` holds that the source no longer has is deleted.
+  A collection dropped or replaced by a view loses all its documents on
+  `main`. A renamed collection ends up under its new name. A dropped
+  database leaves `main` empty. Resync verifies the source deployment
+  against the binding recorded at import.
 - `main` keeps its history. The state before the resync can still be read at
   its LSN, and sandboxes forked from it are not affected.
 
 What it guarantees, and what it cannot:
 
 - **Nothing is written to the source.** It issues reads only: one pass over
-  every collection, and one `_id` lookup per batch of `main`'s documents.
+  every ordinary collection, and one `_id` lookup per batch of `main`'s
+  documents in collections that still exist on the source.
 - **The end is a state of the source.** `main` at the printed LSN is the
   source at the printed cluster time, also when the source was written
   throughout.
