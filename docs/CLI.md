@@ -55,14 +55,13 @@ argon import status
 Imports auto-snapshot, so reads never replay the whole import. A real import
 needs one of two flags, and `--yes` replaces neither:
 
-- `--online` (releases after 2.5.0) imports a replica-set database while it
-  is being written. It is experimental, off by default, and has known open
-  issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. The result is the
-  source at one cluster time, which the command prints, and the project's
+- `--online` (introduced in 2.6.0) imports a replica-set database while it
+  is being written. It is available by default. The result is the source
+  at one cluster time, which the command prints, and the project's
   `main` then follows that database (next section). `--follow` keeps following
   in the foreground once the import is done, and `--allow-inexact` (only with
   `--follow`) means what it means for `argon source follow`. Import reads
-  the source by default. `--enable-source-images` separately requires
+  the source by default. The experimental `--enable-source-images` requires
   `ARGON_EXPERIMENTAL_SOURCE=1` and switches on `changeStreamPreAndPostImages`
   for source collections. It needs an import by a user allowed to run
   `replSetGetConfig`, such as one with the `clusterMonitor` role. Operators
@@ -88,9 +87,10 @@ retrying the same name. Completed projects cannot be removed by cleanup. See
 
 ## Follow a live database
 
-The `argon source` commands and `merge apply --write-back` are experimental
-and off by default. They have known open issues. Set
-`ARGON_EXPERIMENTAL_SOURCE=1` to enable them.
+The `argon source` commands are available by default. The experimental
+options `--write-back`, `--auto-resync` and `--enable-source-images` are
+off by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. For known
+issues and limits, see the [operations guide](OPERATIONS.md#following-a-source-database).
 
 ```
 argon source follow -p P [--uri U] [--allow-inexact] [--enable-source-images] [--auto-resync]

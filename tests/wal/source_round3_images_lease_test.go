@@ -13,6 +13,7 @@ import (
 )
 
 func TestFollow_StopsEnablingImagesWhenTheLeaseExpires(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	f := newFollowFixture(t, reproSourceURI(t))

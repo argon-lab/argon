@@ -16,6 +16,7 @@ import (
 // status of the current owner. A successful checkpoint also clears a stale
 // degraded report from a process that does not understand leases.
 func TestFollow_HealthyCheckpointClearsStaleDegradedStatus(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

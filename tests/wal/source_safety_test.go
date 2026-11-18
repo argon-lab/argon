@@ -604,6 +604,7 @@ func sourceTakesMongoHandle(function *ast.FuncType, imports map[string]string) b
 // The source connection string is used and forgotten. Its credentials are in
 // no error, no status report and no document Argon stores.
 func TestSource_CredentialsAreNotStoredOrReported(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	const user, password = "argon_follow_test", "s3cr3t/p@ss:w0rd#17"
 	plain := newFollowFixture(t, metadataDeploymentURI)

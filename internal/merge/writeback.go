@@ -142,7 +142,7 @@ func resolveChanges(plan *Plan, strategy string) ([]Change, int, error) {
 // ApplyToSource writes a pending plan to the external database its target
 // branch follows. It is never reached implicitly: the caller names it.
 func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, strategy string, target WriteBackTarget) (*ApplyResult, error) {
-	if err := source.RequireExperimental(); err != nil {
+	if err := source.RequireExperimentalWriteBack(); err != nil {
 		return nil, err
 	}
 	plan, err := s.GetPlan(ctx, planID)

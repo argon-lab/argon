@@ -10,9 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const experimentalSourceHelp = `Experimental and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable
-this command and read docs/OPERATIONS.md for known issues.`
-
 func requireSourceImagesOptIn(cmd *cobra.Command) error {
 	enableImages, _ := cmd.Flags().GetBool("enable-source-images")
 	if enableImages {
@@ -23,10 +20,8 @@ func requireSourceImagesOptIn(cmd *cobra.Command) error {
 
 var sourceCmd = &cobra.Command{
 	Use:   "source",
-	Short: "Follow the external database a project was imported from (experimental)",
-	Long: experimentalSourceHelp + `
-
-A project created with "argon import database --online" stays tied to
+	Short: "Follow the external database a project was imported from",
+	Long: `A project created with "argon import database --online" stays tied to
 the database it was imported from: its main branch follows that database.
 
   follow   keep main current with the source (runs until interrupted)
@@ -38,25 +33,12 @@ the database it was imported from: its main branch follows that database.
 The source connection string is given to commands that contact the source
 (--uri, or the ARGON_SOURCE_URI environment variable) and is never stored.
 "argon merge apply --write-back" writes the documents in a plan.
-The experimental --enable-source-images option changes how the source
-stores writes. Both require a replica-set ID recorded at import. Operators
-can also enable changeStreamPreAndPostImages directly in MongoDB. Argon
-never drops, renames or rewrites the source database.`,
+The --enable-source-images option changes how the source stores writes.
+Both options are experimental and require ARGON_EXPERIMENTAL_SOURCE=1
+and a replica-set ID recorded at import. Operators can also enable
+changeStreamPreAndPostImages directly in MongoDB. Argon never drops,
+renames or rewrites the source database.`,
 	Args: cobra.NoArgs,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if autoResync, _ := cmd.Flags().GetBool("auto-resync"); autoResync {
-			if err := walcli.RequireExperimentalAutoResync(); err != nil {
-				return err
-			}
-		}
-		if err := requireSourceImagesOptIn(cmd); err != nil {
-			return err
-		}
-		if err := walcli.RequireExperimentalSource(); err != nil {
-			return err
-		}
-		return rootCmd.PersistentPreRunE(cmd, args)
-	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
@@ -64,10 +46,8 @@ never drops, renames or rewrites the source database.`,
 
 var sourceFollowCmd = &cobra.Command{
 	Use:   "follow",
-	Short: "Keep a project's main branch current with its source database (experimental)",
-	Long: experimentalSourceHelp + `
-
-Follow reads the source database's change stream and appends every
+	Short: "Keep a project's main branch current with its source database",
+	Long: `Follow reads the source database's change stream and appends every
 document change to the project's main branch. It resumes from the position
 saved with the last applied change, so stopping and restarting it neither
 skips nor repeats a change, as long as the source's oplog still holds that
@@ -114,6 +94,14 @@ If an older Argon process checked out main,
 upgrade it, stop writes to the checkout, and run "argon release -b main"
 for the project before resyncing. Each resync compares the whole source
 with main and leaves an inexact range in main's history.`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if autoResync, _ := cmd.Flags().GetBool("auto-resync"); autoResync {
+			if err := walcli.RequireExperimentalAutoResync(); err != nil {
+				return err
+			}
+		}
+		return requireSourceImagesOptIn(cmd)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		uri, _ := cmd.Flags().GetString("uri")
@@ -151,10 +139,8 @@ with main and leaves an inexact range in main's history.`,
 
 var sourceStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show the source checkpoint, health reason and next action (experimental)",
-	Long: experimentalSourceHelp + `
-
-Show the source binding, lease owner, saved position and last consistent
+	Short: "Show the source checkpoint, health reason and next action",
+	Long: `Show the source binding, lease owner, saved position and last consistent
 point. Both table and JSON output report health, a stable reason, a message
 and a next action. Use health.reason in JSON for scripts.
 
@@ -241,10 +227,8 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 
 var sourceResyncCmd = &cobra.Command{
 	Use:   "resync",
-	Short: "Bring degraded main back to the source's current state (experimental)",
-	Long: experimentalSourceHelp + `
-
-Resync repairs degraded following without importing the database again.
+	Short: "Bring degraded main back to the source's current state",
+	Long: `Resync repairs degraded following without importing the database again.
 Typical causes are a source collection that was dropped or renamed, a
 dropped source database, a saved position the source's oplog no longer
 holds, or another process moving main's head.
@@ -267,7 +251,8 @@ history at all, only its outcome is.
 
 A resync that is interrupted, or that fails because the source dropped or
 renamed another collection while it ran, leaves main marked as unfinished.
-Restart it with "argon source resync" or "argon source follow --auto-resync".
+Restart it with "argon source resync" or, with ARGON_EXPERIMENTAL_SOURCE=1,
+"argon source follow --auto-resync".
 Only one follower or resync can run for a project at a time.
 
 By default resync accepts degradation, an unfinished resync, a lost owner
@@ -329,10 +314,8 @@ stop writes to the checkout, and release the checkout before resyncing.`,
 
 var sourceDetachCmd = &cobra.Command{
 	Use:   "detach",
-	Short: "Stop following the source for good (experimental)",
-	Long: experimentalSourceHelp + `
-
-Detach removes the tie between a project and the database it was
+	Short: "Stop following the source for good",
+	Long: `Detach removes the tie between a project and the database it was
 imported from. Main keeps its history and becomes an ordinary branch: it can
 be merged into, reset and checked out again, and it no longer changes when
 the source does. This cannot be undone; to follow the database again, import
@@ -370,7 +353,7 @@ func init() {
 	}
 	sourceFollowCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceFollowCmd.Flags().Bool("allow-inexact", false, "Continue past updates whose exact documents the source no longer serves, recording the range as inexact")
-	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Experimental: turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID recorded at import)")
+	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID recorded at import)")
 	sourceFollowCmd.Flags().Bool("auto-resync", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Complete an unfinished resync or repair a source stream gap, then continue following")
 	sourceResyncCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceResyncCmd.Flags().Bool("force", false, "Resync even though following did not end as degraded")

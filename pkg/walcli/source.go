@@ -21,14 +21,21 @@ import (
 // read from when no flag gives one. Argon never stores the string.
 const SourceURIEnv = "ARGON_SOURCE_URI"
 
-// RequireExperimentalSource checks the opt-in before a source command opens services.
+// RequireExperimentalSource checks whether the experimental source switch is set.
+//
+// Deprecated: Use the check for the requested capability, such as RequireExperimentalWriteBack.
 func RequireExperimentalSource() error {
-	return source.RequireExperimental()
+	return RequireExperimentalWriteBack()
+}
+
+// RequireExperimentalWriteBack checks the opt-in before a write-back command opens services.
+func RequireExperimentalWriteBack() error {
+	return source.RequireExperimentalWriteBack()
 }
 
 // RequireExperimentalSourceImages checks the opt-in before an option can alter source collections.
 func RequireExperimentalSourceImages() error {
-	return source.RequireExperimentalImages()
+	return source.RequireExperimentalSourceImages()
 }
 
 // RequireExperimentalAutoResync checks the opt-in before follow can resync main.
@@ -76,12 +83,9 @@ func (s *Services) ImportDatabaseOnline(ctx context.Context, opts OnlineImport) 
 // DryRunOnlineImport runs the online preflight without initializing metadata indexes.
 func DryRunOnlineImport(ctx context.Context, opts OnlineImport) (interface{}, error) {
 	if opts.EnableSourceImages {
-		if err := source.RequireExperimentalImages(); err != nil {
+		if err := source.RequireExperimentalSourceImages(); err != nil {
 			return nil, err
 		}
-	}
-	if err := source.RequireExperimental(); err != nil {
-		return nil, err
 	}
 	mongoURI, metadataDB := deploymentFromEnv()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
@@ -212,9 +216,6 @@ func openSource(ctx context.Context, binding *source.Binding, uri string) (*mong
 
 // SourceStatus reports what a project follows and the health of its saved position.
 func (s *Services) SourceStatus(ctx context.Context, projectName string) (*SourceInfo, error) {
-	if err := source.RequireExperimental(); err != nil {
-		return nil, err
-	}
 	project, branch, binding, err := s.followedBranch(ctx, projectName)
 	if err != nil {
 		return nil, err
@@ -295,12 +296,9 @@ func (s *Services) FollowSource(ctx context.Context, projectName string, opts Fo
 		}
 	}
 	if opts.EnableSourceImages {
-		if err := source.RequireExperimentalImages(); err != nil {
+		if err := source.RequireExperimentalSourceImages(); err != nil {
 			return err
 		}
-	}
-	if err := source.RequireExperimental(); err != nil {
-		return err
 	}
 	var preparedCollections []string
 	var attemptedImages bool
@@ -423,9 +421,6 @@ type ResyncInfo struct {
 // source's oplog no longer holds. It reads the source and writes nothing to
 // it. Afterwards FollowSource continues from the resync's end.
 func (s *Services) ResyncSource(ctx context.Context, projectName string, opts ResyncSourceOptions) (*ResyncInfo, error) {
-	if err := source.RequireExperimental(); err != nil {
-		return nil, err
-	}
 	_, branch, binding, err := s.followedBranch(ctx, projectName)
 	if err != nil {
 		return nil, err
@@ -471,9 +466,6 @@ func (s *Services) resyncSource(ctx context.Context, branch *wal.Branch, db *mon
 // DetachSource stops a project from following its source for good. Its main
 // branch keeps the history it has and becomes an ordinary branch.
 func (s *Services) DetachSource(ctx context.Context, projectName string) error {
-	if err := source.RequireExperimental(); err != nil {
-		return err
-	}
 	_, branch, _, err := s.followedBranch(ctx, projectName)
 	if err != nil {
 		return err
@@ -494,7 +486,7 @@ func (s *Services) DetachSource(ctx context.Context, projectName string) error {
 // branch follows, in one transaction that compares every document with the
 // plan's before-image first. Nothing calls this implicitly.
 func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID, strategy, uri string) (*merge.ApplyResult, error) {
-	if err := source.RequireExperimental(); err != nil {
+	if err := source.RequireExperimentalWriteBack(); err != nil {
 		return nil, err
 	}
 	plan, err := s.Merge.GetPlan(ctx, planID)

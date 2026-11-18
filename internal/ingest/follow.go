@@ -153,9 +153,6 @@ type FollowOptions struct {
 // failures are retried; a gap that cannot be repaired stops it and is
 // reported as degraded.
 func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Database, opts FollowOptions) error {
-	if err := source.RequireExperimental(); err != nil {
-		return err
-	}
 	lease, err := s.acquireSourceLease(ctx, branchID, src.Name(), "follow")
 	if err != nil {
 		return redacted(err, opts.Redact)
@@ -188,9 +185,6 @@ func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Databa
 // being written, so the branch only becomes a state of the source once every
 // change made during the copy has been applied on top.
 func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Database, startAt primitive.Timestamp, expectedHead, firstLSN int64, reason string, redact func(string) string) (*ConsistentPoint, error) {
-	if err := source.RequireExperimental(); err != nil {
-		return nil, err
-	}
 	lease, err := s.acquireSourceLease(ctx, branchID, src.Name(), "import")
 	if err != nil {
 		return nil, redacted(err, redact)

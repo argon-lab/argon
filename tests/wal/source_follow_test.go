@@ -60,7 +60,6 @@ type followFixture struct {
 
 func newFollowFixture(t *testing.T, sourceURI string) *followFixture {
 	t.Helper()
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	id := fmt.Sprintf("%d_%d", time.Now().UnixNano(), followFixtureSeq.Add(1))
 	f := &followFixture{sourceURI: sourceURI, project: "shop-" + id, metadataName: "argon_follow_meta_" + id}
@@ -616,6 +615,7 @@ func TestFollow_ExactDocumentsWithoutTouchingTheSource(t *testing.T) {
 // Enabling images on the source is an explicit option. When it is given the
 // source's collections record images and followed updates carry them.
 func TestFollow_SourceImagesOnlyWhenAskedFor(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

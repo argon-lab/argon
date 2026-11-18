@@ -15,6 +15,7 @@ import (
 // the review. Write-back must refuse, leave production's document in place,
 // and return the plan to pending.
 func TestWriteBack_DeleteOverAChangedDocumentIsAConflict(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	cases := []struct {
 		name  string
 		cause func(t *testing.T, f *followFixture)

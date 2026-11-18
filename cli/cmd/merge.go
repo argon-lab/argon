@@ -128,7 +128,7 @@ to create a new plan.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		writeBack, _ := cmd.Flags().GetBool("write-back")
 		if writeBack {
-			if err := walcli.RequireExperimentalSource(); err != nil {
+			if err := walcli.RequireExperimentalWriteBack(); err != nil {
 				return err
 			}
 		}

@@ -63,9 +63,12 @@ CLI commands connect directly to MongoDB and do not leave a background watcher
 or TTL worker behind. `sandbox create --watch` captures in the foreground for
 as long as it runs.
 
-Releases after 2.5.0 support `argon import database --online` for a replica-set
-database that is in use. Online import is experimental, off by default, and
-has known open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See
+Use `argon import database --online` to copy a replica-set database while
+writers keep running. Run `argon source follow -p myapp` to keep the imported
+`main` current. Online import and following, introduced in 2.6.0, are now
+available by default. The experimental options `--write-back`, `--auto-resync`
+and `--enable-source-images` are off by default and each requires
+`ARGON_EXPERIMENTAL_SOURCE=1`. For known issues and limits, see
 [importing existing data](OPERATIONS.md#importing-existing-data).
 
 ```bash

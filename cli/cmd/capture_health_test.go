@@ -19,7 +19,6 @@ func TestCLIDeploymentStatusUsesSourceHealth(t *testing.T) {
 	if uri == "" {
 		t.Skip("set ARGON_TEST_MONGODB_URI to run deployment checks")
 	}
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	t.Setenv("ARGON_METADATA_DB", "argon_cli_test_"+primitive.NewObjectID().Hex())
 	ctx := context.Background()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))

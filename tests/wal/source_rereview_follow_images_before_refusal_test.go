@@ -15,6 +15,7 @@ import (
 )
 
 func TestFollow_ImagesAreNotEnabledDuringAnUnfinishedResync(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -74,6 +75,7 @@ func TestFollow_ImagesAreNotEnabledDuringAnUnfinishedResync(t *testing.T) {
 }
 
 func TestFollow_ImagesAreNotEnabledWhileAStoredGapNeedsResync(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -96,6 +98,7 @@ func TestFollow_ImagesAreNotEnabledWhileAStoredGapNeedsResync(t *testing.T) {
 }
 
 func TestFollow_ImagesAreNotEnabledWithoutSavedSourceState(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -112,6 +115,7 @@ func TestFollow_ImagesAreNotEnabledWithoutSavedSourceState(t *testing.T) {
 }
 
 func TestFollow_ImagesAreNotEnabledIfStreamCannotOpen(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})
@@ -127,6 +131,7 @@ func TestFollow_ImagesAreNotEnabledIfStreamCannotOpen(t *testing.T) {
 }
 
 func TestFollow_ReportsSourceCollectionsAlteredBeforeFailure(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
