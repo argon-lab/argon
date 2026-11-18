@@ -249,6 +249,9 @@ func (s *Service) Apply(ctx context.Context, branch *wal.Branch, plan *Plan) (re
 	if branch.ID != plan.BranchID {
 		return 0, 0, fmt.Errorf("plan belongs to branch %s, not %s", plan.BranchID, branch.ID)
 	}
+	if branch.IsFollower() {
+		return 0, 0, branch.RefuseFollowerWrite("undo")
+	}
 	if branch.HeadLSN != plan.HeadLSN {
 		return 0, 0, fmt.Errorf("undo plan is stale; branch head changed")
 	}
@@ -259,7 +262,11 @@ func (s *Service) Apply(ctx context.Context, branch *wal.Branch, plan *Plan) (re
 }
 
 func (s *Service) applyPhysical(ctx context.Context, branch *wal.Branch, plan *Plan) (restored, deleted int, err error) {
-	physical := s.client.Database(branch.PhysicalDB)
+	own, err := branch.OwnDatabase()
+	if err != nil {
+		return 0, 0, err
+	}
+	physical := s.client.Database(own)
 	_, err = s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
 		restored, deleted = 0, 0
 		if err := s.branches.FenceBranch(sc, branch); err != nil {

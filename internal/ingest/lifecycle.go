@@ -37,6 +37,8 @@ type Status struct {
 	LastEventAt    time.Time `bson:"last_event_at,omitempty" json:"last_event_at,omitempty"`
 	LastEventLagMS int64     `bson:"last_event_lag_ms,omitempty" json:"last_event_lag_ms,omitempty"`
 	HeadLSN        int64     `bson:"head_lsn,omitempty" json:"head_lsn,omitempty"`
+	// Source is set for a branch that follows an external database.
+	Source *SourceStatus `bson:"source,omitempty" json:"source,omitempty"`
 }
 
 type running struct {
@@ -139,6 +141,9 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		var gap *CaptureError
 		if err != nil {
 			message = err.Error()
+			if cfg.redact != nil {
+				message = cfg.redact(message)
+			}
 			if errors.As(err, &gap) {
 				state = "degraded"
 			}
@@ -156,7 +161,11 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 			return nil
 		}
 		if err = s.report(branchID, "starting", cfg.actor, ""); err == nil {
-			err = s.runStream(ctx, branchID, cfg, run)
+			if cfg.stream != nil {
+				err = cfg.stream(ctx, run)
+			} else {
+				err = s.runStream(ctx, branchID, cfg, run)
+			}
 		}
 		if ctx.Err() != nil {
 			if errors.Is(err, ctx.Err()) {
@@ -173,7 +182,11 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		if err == nil || !retry || errors.As(err, &gap) || errors.As(err, &configuration) {
 			return err
 		}
-		_ = s.report(branchID, "retrying", s.currentActor(run), err.Error())
+		retryMessage := err.Error()
+		if cfg.redact != nil {
+			retryMessage = cfg.redact(retryMessage)
+		}
+		_ = s.report(branchID, "retrying", s.currentActor(run), retryMessage)
 		delay := 5 * time.Second
 		if attempt < 6 {
 			delay = time.Duration(1<<attempt) * 100 * time.Millisecond
@@ -268,6 +281,11 @@ func (s *Service) Drain(ctx context.Context, branchID string) error {
 	}
 	if !branch.IsLive() {
 		return nil
+	}
+	// The marker below is a write; it goes to the branch's own database or
+	// nowhere.
+	if _, err := branch.OwnDatabase(); err != nil {
+		return err
 	}
 	if err := s.start(ctx, branchID); err != nil {
 		return err

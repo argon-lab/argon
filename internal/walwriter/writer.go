@@ -68,6 +68,9 @@ func (w *Writer) guardNotLive() error {
 		return err
 	}
 	w.branch = fresh
+	if w.branch.IsFollower() {
+		return w.branch.RefuseFollowerWrite("write")
+	}
 	if w.branch.IsLive() {
 		return fmt.Errorf("branch %s is checked out as %s: write through a MongoDB driver instead", w.branch.Name, w.branch.PhysicalDB)
 	}

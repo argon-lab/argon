@@ -99,6 +99,23 @@ jobs:
           sleep 1
         done
         test "$(docker exec ci-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = true
+
+    # Online import, following and write-back are also tested with the source
+    # database on a deployment other than the one holding the Argon metadata.
+    - name: Start a second MongoDB replica set (source deployment)
+      run: |
+        trap 'docker logs ci-mongo-source >&2 || true' ERR
+        docker run -d --name ci-mongo-source -p 27018:27018 "$MONGODB_IMAGE" --replSet rs1 --port 27018 --bind_ip_all
+        for i in $(seq 1 30); do
+          docker exec ci-mongo-source mongosh --quiet --port 27018 --eval 'db.runCommand({ping: 1})' && break
+          sleep 1
+        done
+        docker exec ci-mongo-source mongosh --quiet --port 27018 --eval 'rs.initiate({_id: "rs1", members: [{_id: 0, host: "localhost:27018"}]})'
+        for i in $(seq 1 30); do
+          [ "$(docker exec ci-mongo-source mongosh --quiet --port 27018 --eval 'db.hello().isWritablePrimary')" = "true" ] && break
+          sleep 1
+        done
+        test "$(docker exec ci-mongo-source mongosh --quiet --port 27018 --eval 'db.hello().isWritablePrimary')" = true
     
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -156,6 +173,7 @@ jobs:
         AWS_ACCESS_KEY_ID: argon
         AWS_SECRET_ACCESS_KEY: argon12345
         AWS_REGION: us-east-1
+        ARGON_TEST_SOURCE_MONGODB_URI: mongodb://localhost:27018/?replicaSet=rs1
       run: go test -race -v ./...
 
     # The wire proxy parses bytes from unauthenticated sockets. The seed

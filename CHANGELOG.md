@@ -21,6 +21,32 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Added
 
+- Online import: `argon import database --online` imports a replica-set
+  database while it is being written. The copy is followed by the source's
+  change stream until the project equals the source at one cluster time,
+  which the command reports with the LSN it corresponds to. Writes made
+  during the import are not lost and not blocked. `--source-quiesced`
+  imports are unchanged.
+- Following: a project imported online keeps its `main` branch tied to the
+  source. `argon source follow` applies the source's changes and resumes from
+  its saved position after a restart without skipping or repeating one;
+  `argon source status` reports the position, the newest point at which
+  `main` equalled the source, and which ranges of its history are not exact;
+  `argon source detach` ends the tie. Nothing is written to the source.
+  Updates are stored as the source held them, read back at their own cluster
+  time. A position the oplog no longer holds, a dropped or renamed
+  collection, and an update older than MongoDB's snapshot history are
+  reported as degraded; `--allow-inexact` converges past the last of these
+  and records the range. The source may be a different deployment from the
+  Argon metadata.
+- Write-back: `argon merge apply <plan> --write-back` writes a reviewed plan
+  to the database its target follows, in one transaction that compares every
+  document with the plan's before-image and writes nothing if one differs.
+  It happens only when the flag is given on the call; the MCP server and the
+  REST API do not offer it.
+- `--enable-source-images` on `import database --online` and `source follow`
+  switches on `changeStreamPreAndPostImages` for the source's collections.
+  Argon does not alter a source's collections without it.
 - `examples/boxd-sandbox`: agent-written code runs in an isolated boxd machine
   and writes to an Argon sandbox through a MongoDB user restricted to that
   sandbox's database; the host prints the diff and discards the sandbox, or
@@ -28,6 +54,17 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Changed
 
+- A branch that follows an external database accepts changes only from its
+  source: `merge apply` without `--write-back`, `undo`, `restore reset`,
+  `checkout` and programmatic writes on it are refused, with the alternatives
+  named. Projects imported with `--source-quiesced` or created empty are not
+  affected.
+- Database drops go through one function that accepts only the database
+  Argon created for the branch. Release, discard, the sandbox sweep, capture,
+  live merge and undo, and the wire proxy refuse a branch record that names
+  any other database as its physical database.
+- Source connection strings are removed from import errors before they are
+  printed, and `--uri` may be given as `ARGON_SOURCE_URI`.
 - CI's audit of the console's dependencies can excuse an advisory by name. The
   whole tree is still audited, a production install must be clean, and an
   exception ends as soon as npm offers a compatible fix. One exception is

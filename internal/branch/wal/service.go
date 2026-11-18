@@ -237,7 +237,7 @@ func (s *BranchService) SetCheckoutState(branchID, physicalDB, state string, che
 // CompareAndSetCheckout publishes a materialization only if the branch is
 // still the exact metadata state from which it was built.
 func (s *BranchService) CompareAndSetCheckout(ctx context.Context, expected *wal.Branch, physicalDB string, checkedOutLSN int64) error {
-	filter := bson.M{"_id": expected.ID, "head_lsn": expected.HeadLSN, "is_deleted": false,
+	filter := bson.M{"_id": expected.ID, "head_lsn": expected.HeadLSN, "is_deleted": false, "follows": bson.M{"$in": bson.A{nil, ""}},
 		"mutation_version": mutationVersionCondition(expected.MutationVersion), "state": bson.M{"$ne": wal.BranchStateLive}}
 	res, err := s.collection.UpdateOne(ctx, filter, bson.M{"$set": bson.M{
 		"physical_db": physicalDB, "state": wal.BranchStateLive, "checked_out_lsn": checkedOutLSN},
@@ -435,6 +435,9 @@ func mutationVersionCondition(version int64) interface{} {
 // came after the second reset, and they would silently lose the history
 // between the two targets.
 func (s *BranchService) ResetHead(branch *wal.Branch, target int64) error {
+	if branch.IsFollower() {
+		return branch.RefuseFollowerWrite("reset")
+	}
 	if branch.IsLive() {
 		return fmt.Errorf("cannot reset a checked-out branch; release it after capture has drained first")
 	}
@@ -452,6 +455,7 @@ func (s *BranchService) ResetHead(branch *wal.Branch, target int64) error {
 	}
 	result, err := s.collection.UpdateOne(context.Background(), bson.M{"_id": branch.ID, "head_lsn": branch.HeadLSN, "is_deleted": false,
 		"mutation_version": mutationVersionCondition(branch.MutationVersion),
+		"follows":          bson.M{"$in": bson.A{nil, ""}},
 		"state":            bson.M{"$ne": wal.BranchStateLive}}, update)
 	if err != nil {
 		return err
@@ -557,5 +561,25 @@ func (s *BranchService) CreateBranchWithData(branch *wal.Branch) error {
 		return fmt.Errorf("failed to create branch: %w", err)
 	}
 
+	return nil
+}
+
+// SetFollows marks a branch as following an external database, or clears the
+// mark with an empty name. A checked-out branch cannot become a follower: it
+// already has a writer.
+func (s *BranchService) SetFollows(ctx context.Context, branchID, database string) error {
+	filter := bson.M{"_id": branchID, "is_deleted": false}
+	update := bson.M{"$unset": bson.M{"follows": ""}, "$inc": bson.M{"mutation_version": 1}}
+	if database != "" {
+		filter["state"] = bson.M{"$ne": wal.BranchStateLive}
+		update = bson.M{"$set": bson.M{"follows": database}, "$inc": bson.M{"mutation_version": 1}}
+	}
+	result, err := s.collection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount != 1 {
+		return ErrBranchChanged
+	}
 	return nil
 }
