@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -21,7 +22,14 @@ var (
 	SourceLeasePeriod       = 60 * time.Second
 )
 
-const sourceOwnerPath = "capture_status.owner"
+const (
+	sourceOwnerPath      = "capture_status.owner"
+	sourceUnverifiedPath = "capture_status.unverified"
+	leaseExpiredReason   = "lease_expired"
+	missingOwnerReason   = "missing_owner"
+)
+
+var sourceLiveStates = []string{"starting", "running", "catching_up", "retrying", "resyncing"}
 
 // SourceOwner identifies a run and when the metadata server last heard from it.
 type SourceOwner struct {
@@ -33,11 +41,17 @@ type SourceOwner struct {
 	HeartbeatAt time.Time `bson:"heartbeat_at" json:"heartbeat_at"`
 }
 
+type unverifiedSource struct {
+	Reason        string       `bson:"reason"`
+	PreviousOwner *SourceOwner `bson:"previous_owner,omitempty"`
+}
+
 type sourceLease struct {
 	branch             *wal.Branch
 	id                 string
 	initialized        bool
 	replacedExpiredRun bool
+	verifyAt           primitive.Timestamp
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -78,25 +92,25 @@ func (l *sourceLease) revoke(err error) error {
 }
 
 func (s *Status) applySourceLeaseFreshness(fresh bool) {
-	if fresh {
+	if fresh || !slices.Contains(sourceLiveStates, s.State) {
 		return
 	}
-	switch s.State {
-	case "starting", "running", "catching_up", "retrying", "resyncing":
-		s.State = "stopped"
-		s.SourceLeaseExpired = true
-		owner := s.Owner
-		if owner == nil {
-			s.Error = "the source has no current lease owner; see the last saved position"
-			return
-		}
-		kind := "follower"
-		if owner.Kind == "resync" {
-			kind = "resync"
-		}
-		s.Error = fmt.Sprintf("the source %s on %s (pid %d) last renewed its lease at %s and has not been heard from since; see the last saved position",
-			kind, owner.Host, owner.PID, owner.HeartbeatAt.UTC().Format(time.RFC3339))
+	s.State, s.SourceLeaseExpired = "stopped", true
+	if s.Owner != nil || s.SourceUnverified == nil {
+		s.Error = sourceOwnerLoss(s.Owner)
 	}
+}
+
+func sourceOwnerLoss(owner *SourceOwner) string {
+	if owner == nil {
+		return "the source has no current lease owner; see the last saved position"
+	}
+	kind := "follower"
+	if owner.Kind == "resync" {
+		kind = "resync"
+	}
+	return fmt.Sprintf("the source %s on %s (pid %d) last renewed its lease at %s and has not been heard from since; see the last saved position",
+		kind, owner.Host, owner.PID, owner.HeartbeatAt.UTC().Format(time.RFC3339))
 }
 
 // InitSourceState reserves an empty state document for a new import or a
@@ -151,13 +165,28 @@ func (s *Service) acquireSourceLease(ctx context.Context, branchID, database, ki
 		}}
 		owner := bson.M{"id": id, "kind": kind, "host": bson.M{"$literal": host}, "pid": os.Getpid(),
 			"started_at": "$$NOW", "heartbeat_at": "$$NOW"}
+		// Ownership alone cannot verify the previous run's checkpoint. Keep
+		// the loss across attempts, including live reports left without an owner.
+		previousOwner := "$" + sourceOwnerPath
+		liveReport := bson.M{"$in": bson.A{"$capture_status.state", sourceLiveStates}}
+		unverified := bson.M{"$cond": bson.A{
+			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{previousOwner, nil}}, nil}},
+			bson.M{"reason": leaseExpiredReason, "previous_owner": previousOwner},
+			bson.M{"$ifNull": bson.A{"$" + sourceUnverifiedPath, bson.M{"$cond": bson.A{
+				liveReport,
+				bson.M{"reason": missingOwnerReason}, "$$REMOVE",
+			}}}},
+		}}
 		var previous struct {
 			Status Status `bson:"capture_status"`
 		}
-		err = s.state.FindOneAndUpdate(sc, filter, mongo.Pipeline{{{Key: "$set", Value: bson.M{sourceOwnerPath: owner}}}}).Decode(&previous)
+		err = s.state.FindOneAndUpdate(sc, filter, mongo.Pipeline{{{Key: "$set", Value: bson.M{
+			sourceOwnerPath: owner, sourceUnverifiedPath: unverified,
+			"capture_status.state": bson.M{"$cond": bson.A{liveReport, "starting", "$capture_status.state"}},
+		}}}}).Decode(&previous)
 		if err == nil {
-			previous.Status.applySourceLeaseFreshness(false)
-			lease.replacedExpiredRun = previous.Status.SourceLeaseExpired
+			lease.replacedExpiredRun = previous.Status.Owner != nil ||
+				(previous.Status.SourceUnverified == nil && slices.Contains(sourceLiveStates, previous.Status.State))
 			return lease, nil
 		}
 		if !errors.Is(err, mongo.ErrNoDocuments) {

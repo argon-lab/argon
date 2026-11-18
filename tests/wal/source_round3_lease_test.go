@@ -26,9 +26,11 @@ const testSourceLeasePeriod = 1500 * time.Millisecond
 const testSourceHeartbeat = 100 * time.Millisecond
 
 type followerProcessConfig struct {
-	Metadata string
-	Project  string
-	Source   string
+	Metadata          string
+	Project           string
+	Source            string
+	LeasePeriod       time.Duration
+	HeartbeatInterval time.Duration
 }
 
 type followerProcessResult struct {
@@ -45,7 +47,7 @@ func TestFollow_FollowerProcess(t *testing.T) {
 	require.NoError(t, err)
 	var cfg followerProcessConfig
 	require.NoError(t, json.Unmarshal(data, &cfg))
-	useShortSourceLease(t)
+	configureSourceLease(t, cfg.LeasePeriod, cfg.HeartbeatInterval)
 	services, err := walcli.NewServicesAt(metadataDeploymentURI, cfg.Metadata)
 	require.NoError(t, err)
 	services.SynchronousSnapshots()
@@ -95,14 +97,22 @@ func TestFollow_FollowerProcess(t *testing.T) {
 
 func useShortSourceLease(t *testing.T) {
 	t.Helper()
-	period, interval := ingest.SourceLeasePeriod, ingest.SourceHeartbeatInterval
-	ingest.SourceLeasePeriod, ingest.SourceHeartbeatInterval = testSourceLeasePeriod, testSourceHeartbeat
-	t.Cleanup(func() { ingest.SourceLeasePeriod, ingest.SourceHeartbeatInterval = period, interval })
+	configureSourceLease(t, testSourceLeasePeriod, testSourceHeartbeat)
+}
+
+func configureSourceLease(t *testing.T, period, interval time.Duration) {
+	t.Helper()
+	originalPeriod, originalInterval := ingest.SourceLeasePeriod, ingest.SourceHeartbeatInterval
+	ingest.SourceLeasePeriod, ingest.SourceHeartbeatInterval = period, interval
+	t.Cleanup(func() { ingest.SourceLeasePeriod, ingest.SourceHeartbeatInterval = originalPeriod, originalInterval })
 }
 
 func startFollowerProcess(t *testing.T, f *followFixture, path string) *exec.Cmd {
 	t.Helper()
-	data, err := json.Marshal(followerProcessConfig{Metadata: f.metadataName, Project: f.project, Source: f.sourceURI})
+	data, err := json.Marshal(followerProcessConfig{
+		Metadata: f.metadataName, Project: f.project, Source: f.sourceURI,
+		LeasePeriod: ingest.SourceLeasePeriod, HeartbeatInterval: ingest.SourceHeartbeatInterval,
+	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 	cmd := exec.Command(os.Args[0], "-test.run", "^TestFollow_FollowerProcess$")
@@ -142,7 +152,7 @@ func awaitSourceLeaseExpiration(t *testing.T, f *followFixture, owner *walcli.So
 			LocalTime time.Time `bson:"localTime"`
 		}
 		err := f.services.Client.Database("admin").RunCommand(context.Background(), bson.D{{Key: "hello", Value: 1}}).Decode(&reply)
-		return err == nil && !reply.LocalTime.Before(owner.HeartbeatAt.Add(testSourceLeasePeriod))
+		return err == nil && !reply.LocalTime.Before(owner.HeartbeatAt.Add(ingest.SourceLeasePeriod))
 	}, 4*time.Second, 20*time.Millisecond)
 }
 
@@ -201,7 +211,8 @@ func TestFollow_ExpiredOwnerCannotRenewWithoutSuccessor(t *testing.T) {
 	f := newFollowFixture(t, reproSourceURI(t))
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})
-	useShortSourceLease(t)
+	// Exercise the reader's custom period in the follower subprocess too.
+	configureSourceLease(t, 750*time.Millisecond, testSourceHeartbeat)
 
 	path := filepath.Join(t.TempDir(), "owner.json")
 	cmd := startFollowerProcess(t, f, path)
@@ -223,8 +234,7 @@ func TestFollow_ExpiredOwnerCannotRenewWithoutSuccessor(t *testing.T) {
 
 	repair, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
-	// A replacement that releases its lease before writing the marker leaves
-	// the original live report behind, but there is no longer an owner.
+	// A replacement that stops during preflight leaves the lost owner visible.
 	_, err = f.services.ResyncSource(repair, f.project, walcli.ResyncSourceOptions{
 		URI: f.sourceURI,
 		Watch: func(context.Context, *mongo.Database, *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
@@ -236,12 +246,13 @@ func TestFollow_ExpiredOwnerCannotRenewWithoutSuccessor(t *testing.T) {
 	require.Nil(t, infoWithoutOwner.Owner)
 	require.Equal(t, "stopped", infoWithoutOwner.State)
 	require.True(t, infoWithoutOwner.LeaseExpired)
-	require.Contains(t, infoWithoutOwner.Error, "no current lease owner")
+	require.True(t, infoWithoutOwner.Unverified)
+	require.Contains(t, infoWithoutOwner.Error, "last renewed its lease")
 	require.Equal(t, last.Position, infoWithoutOwner.Position)
 
-	// The expired run does not block an explicit repair or require --force.
+	// Force a full comparison even though the saved position can still resume.
 	info, err := f.services.ResyncSource(repair, f.project, walcli.ResyncSourceOptions{
-		URI: f.sourceURI,
+		URI: f.sourceURI, Force: true,
 		Watch: func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
 			f.tick(t)
 			return src.Watch(ctx, mongo.Pipeline{}, opts)
@@ -249,6 +260,7 @@ func TestFollow_ExpiredOwnerCannotRenewWithoutSuccessor(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, info)
+	require.False(t, f.status(t).Unverified)
 	require.Equal(t, int32(99), f.mainState(t, 0)["catalog"]["item-00"]["stock"])
 }
 

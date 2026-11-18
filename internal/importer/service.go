@@ -212,6 +212,9 @@ func PreviewImport(ctx context.Context, mongoURI, databaseName string, online bo
 // ImportDatabase imports an existing MongoDB database into Argon WAL system
 func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) (_ *ImportResult, err error) {
 	if opts.Online {
+		if err := opts.requireSourceImagesOptIn(); err != nil {
+			return nil, err
+		}
 		if err := source.RequireExperimental(); err != nil {
 			return nil, err
 		}

@@ -13,6 +13,14 @@ import (
 const experimentalSourceHelp = `Experimental and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable
 this command and read docs/OPERATIONS.md for known issues.`
 
+func requireSourceImagesOptIn(cmd *cobra.Command) error {
+	enableImages, _ := cmd.Flags().GetBool("enable-source-images")
+	if enableImages {
+		return walcli.RequireExperimentalSourceImages()
+	}
+	return nil
+}
+
 var sourceCmd = &cobra.Command{
 	Use:   "source",
 	Short: "Follow the external database a project was imported from (experimental)",
@@ -30,11 +38,15 @@ the database it was imported from: its main branch follows that database.
 The source connection string is given to commands that contact the source
 (--uri, or the ARGON_SOURCE_URI environment variable) and is never stored.
 "argon merge apply --write-back" writes the documents in a plan.
---enable-source-images changes how the source stores writes. Both require
-a replica-set ID recorded at import. Argon never drops, renames or rewrites
-the source database.`,
+The experimental --enable-source-images option changes how the source
+stores writes. Both require a replica-set ID recorded at import. Operators
+can also enable changeStreamPreAndPostImages directly in MongoDB. Argon
+never drops, renames or rewrites the source database.`,
 	Args: cobra.NoArgs,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := requireSourceImagesOptIn(cmd); err != nil {
+			return err
+		}
 		if err := walcli.RequireExperimentalSource(); err != nil {
 			return err
 		}
@@ -66,8 +78,10 @@ cluster time for a limited time (five minutes by default). If
 following falls further behind than that, the exact document is gone and
 following stops as degraded. Two things avoid that:
 
-  --enable-source-images  turns on changeStreamPreAndPostImages for the
-                          source's collections, so updates carry their own
+  --enable-source-images  is experimental and requires
+                          ARGON_EXPERIMENTAL_SOURCE=1. It turns on
+                          changeStreamPreAndPostImages for the source's
+                          collections, so updates carry their own
                           documents for as long as the oplog keeps them. This
                           changes the source: MongoDB then stores a pre-image
                           of every updated or deleted document. The project
@@ -77,6 +91,8 @@ following stops as degraded. Two things avoid that:
                           be resynced before the collections are altered.
                           Before each alteration the follower checks the
                           lease. A failure lists the collections it changed.
+                          You can instead enable changeStreamPreAndPostImages
+                          directly in MongoDB.
   --allow-inexact         lets following continue: such updates are applied
                           with the document's current state, main converges
                           on the source again, and the range in between is
@@ -133,8 +149,12 @@ var sourceStatusCmd = &cobra.Command{
 	Long: experimentalSourceHelp + `
 
 Show the source binding, saved position and lease owner. An unfinished
-resync, an expired lease or degraded following exits with an error. An
-unexpected branch head change or checkout makes following degraded.`,
+resync, an expired lease, an unverified checkpoint or degraded following
+exits with an error. After takeover, the error stays until the replacement
+follower catches up and verifies a checkpoint or a resync completes.
+An unexpected branch head change or checkout makes following degraded.
+A retry with a capture error exits nonzero because following is behind
+the source and currently unable to read it. The follower keeps retrying.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		if projectName == "" {
@@ -224,6 +244,8 @@ and every document main holds that the source no longer has is deleted.
 That includes all documents of a collection replaced by a view. A renamed
 collection ends up under its new name. Resync replays the source's changes
 until main equals the source at one cluster time, and prints that point.
+If another process moves main's head before replay, the resync fails and
+stays unfinished.
 "argon source follow" continues from there.
 
 Nothing is written to the source. Main keeps its history: the LSNs written by
@@ -238,8 +260,10 @@ Restart it with "argon source resync" or "argon source follow --auto-resync".
 Only one follower or resync can run for a project at a time.
 
 By default resync requires degraded following, an unfinished resync or an
-expired run. --force permits resyncing a healthy branch once the
-lease is available. If an older Argon process checked out main, upgrade it,
+expired run. If a replacement stopped before verifying a checkpoint and a
+saved position is available, start "argon source follow" to catch up.
+--force permits the full comparison once the lease is available. If an
+older Argon process checked out main, upgrade it,
 stop writes to the checkout, and release the checkout before resyncing.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
@@ -334,7 +358,7 @@ func init() {
 	}
 	sourceFollowCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceFollowCmd.Flags().Bool("allow-inexact", false, "Continue past updates whose exact documents the source no longer serves, recording the range as inexact")
-	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID recorded at import)")
+	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Experimental: turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID recorded at import)")
 	sourceFollowCmd.Flags().Bool("auto-resync", false, "Complete an unfinished resync or repair a source stream gap, then continue following")
 	sourceResyncCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceResyncCmd.Flags().Bool("force", false, "Resync even though following did not end as degraded")

@@ -149,10 +149,12 @@ no other writes. Before copying, Argon opens the change stream with the options
 it will use for replay. With --online --dry-run, Argon runs these preflight
 checks and estimates document counts without making changes.
 
---enable-source-images changes the source's collections during an import.
-It requires a user allowed to run replSetGetConfig, for example one with the
-clusterMonitor role. This lets Argon record the replica-set ID at import,
-which is also required for write-back.
+--enable-source-images is experimental and requires
+ARGON_EXPERIMENTAL_SOURCE=1. It changes the source's collections during an
+import and requires a user allowed to run replSetGetConfig, for example one
+with the clusterMonitor role. This lets Argon record the replica-set ID at
+import, which is also required for write-back. You can instead enable
+changeStreamPreAndPostImages directly in MongoDB.
 
 --source-quiesced is for a database nobody writes to: stop its writers and
 DDL first and keep them stopped until this command finishes. The result is a
@@ -171,6 +173,9 @@ Examples:
 	Args: func(cmd *cobra.Command, args []string) error {
 		online, _ := cmd.Flags().GetBool("online")
 		if online {
+			if err := requireSourceImagesOptIn(cmd); err != nil {
+				return err
+			}
 			return walcli.RequireExperimentalSource()
 		}
 		return nil
@@ -409,7 +414,7 @@ func init() {
 	importDatabaseCmd.Flags().Bool("online", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Import a replica-set database that is being written; main then follows it")
 	importDatabaseCmd.Flags().Bool("follow", false, "With --online: keep following the source in the foreground after the import")
 	importDatabaseCmd.Flags().Bool("allow-inexact", false, "With --follow: see argon source follow --allow-inexact")
-	importDatabaseCmd.Flags().Bool("enable-source-images", false, "With --online: turn on changeStreamPreAndPostImages for the SOURCE collections (requires replSetGetConfig privilege)")
+	importDatabaseCmd.Flags().Bool("enable-source-images", false, "Experimental with --online: turn on changeStreamPreAndPostImages for the SOURCE collections (requires replSetGetConfig privilege)")
 	importDatabaseCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
 	importDatabaseCmd.Flags().Int("batch-size", 1000, "Number of documents to process in each batch")
 	importDatabaseCmd.Flags().StringP("output", "o", "table", "Output format: table, json")

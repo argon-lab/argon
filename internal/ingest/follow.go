@@ -143,6 +143,9 @@ type FollowOptions struct {
 	resync bool
 	// startAt is the owning resync's boundary, taken before its comparison.
 	startAt *primitive.Timestamp
+	// expectedHead is the head handed to replay by the comparison or copy.
+	// A committed replay checkpoint advances it for the next attempt.
+	expectedHead *int64
 }
 
 // Follow applies the source database's changes to a branch until ctx ends,
@@ -184,7 +187,7 @@ func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Databa
 // half of an online import: the copy before it read the source while it was
 // being written, so the branch only becomes a state of the source once every
 // change made during the copy has been applied on top.
-func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Database, startAt primitive.Timestamp, firstLSN int64, reason string, redact func(string) string) (*ConsistentPoint, error) {
+func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Database, startAt primitive.Timestamp, expectedHead, firstLSN int64, reason string, redact func(string) string) (*ConsistentPoint, error) {
 	if err := source.RequireExperimental(); err != nil {
 		return nil, err
 	}
@@ -210,7 +213,7 @@ func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Datab
 			}
 			initialized = true
 		}
-		reached, err := s.followStream(ctx, branchID, src, FollowOptions{AllowInexact: true}, run, true)
+		reached, err := s.followStream(ctx, branchID, src, FollowOptions{AllowInexact: true, expectedHead: &expectedHead}, run, true)
 		if reached != nil {
 			point = reached
 		}
@@ -272,6 +275,7 @@ type follower struct {
 	lastCommit time.Time
 	lastToken  bson.Raw
 	recoverAt  primitive.Timestamp
+	unverified bool
 }
 
 func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.Database, opts FollowOptions, run *running, untilConsistent bool) (*ConsistentPoint, error) {
@@ -317,10 +321,15 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	if len(token) == 0 && (startAt == nil || (!opts.resync && !untilConsistent)) {
 		return nil, sourcePositionError(branch.Name)
 	}
-	if stored := saved.Status.HeadLSN; stored != nil && *stored != branch.HeadLSN && !opts.resync {
-		return nil, sourceHeadMismatch(branch, *stored)
+	expectedHead := saved.Status.HeadLSN
+	if opts.expectedHead != nil {
+		expectedHead = opts.expectedHead
 	}
-	if !opts.resync {
+	if expectedHead != nil && *expectedHead != branch.HeadLSN {
+		return nil, sourceHeadMismatch(branch, *expectedHead)
+	}
+	// Keep reporting a capture error until the source stream opens successfully.
+	if !opts.resync && (saved.Status.State != "retrying" || saved.Status.Error == "") {
 		if err := s.report(branchID, "starting", sourceActor, ""); err != nil {
 			return nil, err
 		}
@@ -369,9 +378,13 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 
 	f := &follower{s: s, branch: branch, src: src, session: session, opts: opts, status: status,
 		writeBacks: make(map[string]*WriteBack), lastCommit: time.Now(), opened: opened,
-		unpublished: untilConsistent && !opts.resync, run: run}
+		unpublished: untilConsistent && !opts.resync, run: run, unverified: saved.Status.Unverified != nil}
 	if saved.Status.State == "degraded" && !opts.resync {
 		f.recoverAt = now
+	}
+	if f.unverified && !opts.resync && run.lease.verifyAt.IsZero() {
+		// A stream retry keeps the verification boundary of this owner.
+		run.lease.verifyAt = now
 	}
 	if f.status.Mode == ModeCatchUp {
 		// Every document read for this catch-up so far happened before now.
@@ -887,6 +900,9 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	// source time it observed on opening. A gap that still needs a resync
 	// stops replay before then; an old report or a repaired gap does not.
 	recovered := !at.Before(f.recoverAt)
+	// A replacement verifies only a complete, exact checkpoint. Resync has
+	// its own replay boundary and reaches exact mode only at completion.
+	verified := f.unverified && !at.Before(f.run.lease.verifyAt) && status.Mode == ModeExact && status.Resync == nil
 	_, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
 		if err := s.renewSourceLease(sc, f.run.lease); err != nil {
 			return nil, err
@@ -920,7 +936,11 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 			fields["capture_status.last_event_at"] = eventAt
 			fields["capture_status.last_event_lag_ms"] = lagMS
 		}
-		if err := s.updateSourceLease(sc, f.run.lease, bson.M{"$set": fields}); err != nil {
+		update := bson.M{"$set": fields}
+		if verified {
+			update["$unset"] = bson.M{sourceUnverifiedPath: ""}
+		}
+		if err := s.updateSourceLease(sc, f.run.lease, update); err != nil {
 			return nil, fmt.Errorf("failed to persist the source position: %w", err)
 		}
 		for _, wb := range f.settles {
@@ -933,10 +953,16 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	if err != nil {
 		return followerWriteError(branch, err)
 	}
+	if f.opts.expectedHead != nil {
+		*f.opts.expectedHead = head
+	}
 	f.run.lease.recordRenewal()
 	f.run.progress.Add(1)
 	if recovered {
 		f.recoverAt = primitive.Timestamp{}
+	}
+	if verified {
+		f.unverified = false
 	}
 	f.status = status
 	f.lastCommit, f.lastToken = capturedAt, append(f.lastToken[:0], token...)
@@ -944,6 +970,9 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	current := s.statuses[branch.ID]
 	if recovered {
 		current.State, current.Error = f.stateName(), ""
+	}
+	if verified {
+		current.SourceUnverified = nil
 	}
 	current.LastCapturedAt, current.HeadLSN = capturedAt, head
 	if !eventAt.IsZero() {
@@ -987,9 +1016,11 @@ type followState struct {
 	ResumeToken bson.Raw             `bson:"resume_token"`
 	StartAt     *primitive.Timestamp `bson:"start_at"`
 	Status      struct {
-		Source  *SourceStatus `bson:"source"`
-		HeadLSN *int64        `bson:"head_lsn"`
-		State   string        `bson:"state"`
+		Source     *SourceStatus     `bson:"source"`
+		HeadLSN    *int64            `bson:"head_lsn"`
+		State      string            `bson:"state"`
+		Error      string            `bson:"error"`
+		Unverified *unverifiedSource `bson:"unverified"`
 	} `bson:"capture_status"`
 }
 

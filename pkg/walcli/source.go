@@ -26,6 +26,11 @@ func RequireExperimentalSource() error {
 	return source.RequireExperimental()
 }
 
+// RequireExperimentalSourceImages checks the opt-in before an option can alter source collections.
+func RequireExperimentalSourceImages() error {
+	return source.RequireExperimentalImages()
+}
+
 // SourceURI returns the connection string to use for a source: the given one,
 // or the environment's.
 func SourceURI(given string) string {
@@ -60,14 +65,16 @@ type OnlineImport struct {
 // ImportDatabaseOnline imports a database that is being written, without
 // pausing its writers, and leaves the new project's main branch following it.
 func (s *Services) ImportDatabaseOnline(ctx context.Context, opts OnlineImport) (interface{}, error) {
-	if err := source.RequireExperimental(); err != nil {
-		return nil, err
-	}
 	return s.Importer.ImportDatabase(ctx, opts.importOptions())
 }
 
 // DryRunOnlineImport runs the online preflight without initializing metadata indexes.
 func DryRunOnlineImport(ctx context.Context, opts OnlineImport) (interface{}, error) {
+	if opts.EnableSourceImages {
+		if err := source.RequireExperimentalImages(); err != nil {
+			return nil, err
+		}
+	}
 	if err := source.RequireExperimental(); err != nil {
 		return nil, err
 	}
@@ -135,6 +142,8 @@ type SourceInfo struct {
 	Owner *SourceOwner `json:"owner,omitempty"`
 	// LeaseExpired marks a live report whose owner can no longer renew.
 	LeaseExpired bool `json:"lease_expired,omitempty"`
+	// Unverified marks a lost run whose replacement has yet to verify a checkpoint.
+	Unverified bool `json:"unverified,omitempty"`
 
 	UpdatedAt      time.Time `json:"updated_at"`
 	LastCapturedAt time.Time `json:"last_captured_at,omitempty"`
@@ -215,7 +224,7 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 		Project: project.Name, Branch: branch.Name, BranchID: branch.ID,
 		Database: binding.Database, Location: binding.Display, ReplicaSet: binding.SetName, Identity: binding.Strength(),
 		HeadLSN: branch.HeadLSN, State: status.State, Error: status.Error, Mode: ingest.ModeExact, InexactRanges: []InexactRange{},
-		LeaseExpired: status.SourceLeaseExpired,
+		LeaseExpired: status.SourceLeaseExpired, Unverified: status.SourceUnverified != nil,
 	}
 	if binding.ReplicaSetID == "" {
 		info.WriteBackUnavailableReason = "requires a replica-set ID recorded at import"
@@ -274,6 +283,11 @@ const autoResyncSpacing = time.Minute
 // FollowSource keeps a project's main branch up with the database it was
 // imported from until ctx ends, resuming from the saved position.
 func (s *Services) FollowSource(ctx context.Context, projectName string, opts FollowSourceOptions) (err error) {
+	if opts.EnableSourceImages {
+		if err := source.RequireExperimentalImages(); err != nil {
+			return err
+		}
+	}
 	if err := source.RequireExperimental(); err != nil {
 		return err
 	}

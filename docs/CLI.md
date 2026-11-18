@@ -61,11 +61,12 @@ needs one of two flags, and `--yes` replaces neither:
   source at one cluster time, which the command prints, and the project's
   `main` then follows that database (next section). `--follow` keeps following
   in the foreground once the import is done, and `--allow-inexact` (only with
-  `--follow`) means what it means for `argon source follow`. Nothing is written
-  to the source. `--enable-source-images` is the one exception and has to be
-  asked for: it switches on `changeStreamPreAndPostImages` for the source's
-  collections, and needs an import by a user allowed to run
-  `replSetGetConfig`, such as one with the `clusterMonitor` role.
+  `--follow`) means what it means for `argon source follow`. Import reads
+  the source by default. `--enable-source-images` separately requires
+  `ARGON_EXPERIMENTAL_SOURCE=1` and switches on `changeStreamPreAndPostImages`
+  for source collections. It needs an import by a user allowed to run
+  `replSetGetConfig`, such as one with the `clusterMonitor` role. Operators
+  can enable `changeStreamPreAndPostImages` directly on MongoDB.
 - `--source-quiesced` is for a database nobody is writing to: pause its
   writers and DDL for the whole import. The result is a one-time copy.
 
@@ -114,9 +115,10 @@ project as a user allowed to run `replSetGetConfig`, such as one with the
 `clusterMonitor` role.
 
 `source follow --enable-source-images` checks the binding, saved position
-and lease, then opens the stream before altering collections. A degraded
-position must recover or be resynced first. If following subsequently
-fails, the error names any source collections on which it enabled images.
+and lease, then opens the stream before altering collections. The option
+has its own experimental gate and requires `ARGON_EXPERIMENTAL_SOURCE=1`.
+A degraded position must recover or be resynced first. If following
+subsequently fails, the error names any source collections on which it enabled images.
 The follower checks the lease before each alteration.
 
 While `main` follows a source, the source is the only thing that changes it:
@@ -130,14 +132,19 @@ transaction. `main` shows the result once following has read it back from
 the source. The MCP server and REST API do not offer write-back.
 
 `source status` exits nonzero when following is degraded, a resync is
-unfinished, or the lease of the last running follower or resync has
-expired. It lists the inexact ranges of `main`'s history.
+unfinished, a lease has expired, or a replacement has yet to verify a
+checkpoint (`unverified` in JSON). It also exits nonzero when the follower
+is `retrying` with a capture error. This means the follower is behind the
+source and currently unable to read it. It keeps retrying and shows the last
+consistent point. Status lists the inexact ranges of `main`'s history.
 It shows the binding's identity check and reports when that check rules
 out write-back (`write_back_unavailable_reason` in JSON).
 It reports the lease owner's run type, host, process ID and last heartbeat
 in both table and JSON output. Only one follower or resync can hold the
 lease for a project at a time. Expiry revokes the lease. The status is
-reported as stopped and retains the saved position.
+reported as stopped and retains the saved position. A replacement must
+reach the source time it observed after taking the lease, or finish a resync,
+before status clears the error and write-back is available again.
 
 If Argon 2.5.0 checked out a followed `main`, status reports it as
 degraded. Upgrade all processes using that metadata database, stop writers
@@ -164,6 +171,9 @@ complete it. `--auto-resync` also repairs a gap in the source stream before
 following again. It stops if another automatic resync would be needed
 within a minute. If another process moves the branch head, follow stops as
 degraded and requires `source resync` to be run explicitly.
+If a replacement stopped before verifying a checkpoint, resync checks whether
+MongoDB can still open the stream from the saved position. If it can, run
+`source follow` to catch up. `--force` starts the full comparison immediately.
 
 `source detach` ends the tie for good
 and turns `main` back into an ordinary branch. See
@@ -283,7 +293,8 @@ argon restore preview -p P -b B --lsn N --output json  # {"branch": ..., "target
 
 Doctor/status return nonzero when readiness fails. They apply the same
 health checks to followed projects as `source status`. For ordinary
-capture, the status is the worker's last stored report.
+capture, the status is the worker's last stored report. Projects in the
+middle of import enter deployment capture health when they are published.
 The CLI does not support relative time on `time-travel info`; use retained
 LSNs for queries and RFC3339 timestamps on restore/pin commands.
 

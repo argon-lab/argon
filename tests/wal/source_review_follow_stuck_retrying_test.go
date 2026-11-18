@@ -67,7 +67,5 @@ func TestFollow_EventTooLargeToReturnIsDegraded(t *testing.T) {
 	t.Logf("states observed over 40s (polls): %v", seen)
 	t.Logf("final: state=%s mode=%s head before=%d head now=%d error=%q", last.State, last.Mode, headBefore, f.main(t).HeadLSN, last.Error)
 	require.Equal(t, headBefore, f.main(t).HeadLSN, "main must not have advanced past the undeliverable event")
-	// What `argon source status` does: it exits non-zero only on degraded.
-	require.Equal(t, "degraded", last.State,
-		"a position that fails every time must be reported as degraded; `argon source status` succeeds on %q", last.State)
+	require.Equal(t, "degraded", last.State, "a position that fails every time must be reported as degraded")
 }

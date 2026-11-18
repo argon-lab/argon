@@ -201,7 +201,12 @@ source online into a new project. Use a source user allowed to run
   `argon source status` reports an expired run as stopped and exits nonzero
   in table and JSON output. It shows the owner's host, process ID and last
   heartbeat, and keeps the position and last consistent point. A replacement
-  follower or resync can take over.
+  follower or resync can take over. Argon records the lost owner at takeover.
+  Status and write-back treat the position as unverified until a replacement
+  commits an exact checkpoint at or beyond the source time it read after
+  taking the lease, or completes a resync. If a replacement stops before
+  then, start `argon source follow` again to catch up. If following reports a
+  gap, run `argon source resync`.
 - **No change is skipped or repeated across restarts.** The entries, the
   branch head and the stream's resume token commit in one transaction on the
   metadata deployment. This holds whether or not the source is the same
@@ -223,6 +228,13 @@ source online into a new project. Use a source user allowed to run
   transactions and, when asked for by name, `--enable-source-images`.
 
 ### What stops it, and what it then reports
+
+Following keeps retrying a temporary failure to read the source. While its
+saved report is `retrying` with a capture error, `argon source status`,
+`argon status` and `argon doctor` exit nonzero. This means the follower is
+behind the source and currently unable to read it. The last consistent
+point stays visible. The next successful stream-open report clears the retry
+error. Deployment capture health includes an imported project once published.
 
 Following ends as `degraded`, with the reason in `argon source status` and
 `argon status` (both exit nonzero), and with `main` left at the last change
@@ -249,8 +261,10 @@ before the problem:
   - `--enable-source-images` (on `import database --online` or
     `source follow`) switches on `changeStreamPreAndPostImages` for the
     source's existing collections, so updates carry their own documents for
-    as long as the oplog keeps them and no reads are needed. This requires
-    a replica-set ID at import and changes the source. MongoDB then stores
+    as long as the oplog keeps them and no reads are needed. The option has
+    its own experimental gate and requires `ARGON_EXPERIMENTAL_SOURCE=1`
+    and a replica-set ID at import. Operators can enable
+    `changeStreamPreAndPostImages` directly on MongoDB. MongoDB then stores
     a pre-image of every updated or deleted document in
     `config.system.preimages` until it expires with the oplog (or
     after `changeStreamOptions.preAndPostImages.expireAfterSeconds`): more
@@ -358,7 +372,10 @@ What it guarantees, and what it cannot:
   documents in collections that still exist on the source.
 - **The end is a state of the source.** `main` at the printed LSN is the
   source at the printed cluster time, also when the source was written
-  throughout.
+  throughout. Replay checks the branch head from the comparison before
+  opening the stream. If another process moved the head, resync stops with
+  the unfinished marker still set. Online import checks its copy's head in
+  the same way and keeps the project unpublished on a mismatch.
 - **The LSNs in between are not.** While it runs `main` moves batch by batch
   and is reported as `catching_up`; afterwards the range from the first LSN
   after the last consistent point to the printed LSN is listed by

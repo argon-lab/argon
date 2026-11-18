@@ -27,14 +27,14 @@ func watchSource(ctx context.Context, src *mongo.Database, opts *options.ChangeS
 // ProbeStream checks that a source can open and read the stream that will
 // replay changes made during the copy.
 func ProbeStream(ctx context.Context, src *mongo.Database, startAt primitive.Timestamp) error {
-	return probeStream(ctx, src, startAt, watchSource)
+	return probeStream(ctx, src, sourceStreamOptions().SetStartAtOperationTime(&startAt), watchSource)
 }
 
-func probeStream(ctx context.Context, src *mongo.Database, startAt primitive.Timestamp, watch func(context.Context, *mongo.Database, *options.ChangeStreamOptions) (*mongo.ChangeStream, error)) error {
+func probeStream(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions, watch func(context.Context, *mongo.Database, *options.ChangeStreamOptions) (*mongo.ChangeStream, error)) error {
 	if watch == nil {
 		watch = watchSource
 	}
-	stream, err := watch(ctx, src, sourceStreamOptions().SetStartAtOperationTime(&startAt))
+	stream, err := watch(ctx, src, opts)
 	if err != nil {
 		if unsupportedSourceStreamOptions(err) {
 			return fmt.Errorf("the source's change stream cannot be opened: the source's MongoDB version does not support the change-stream options Argon follows with: %w", err)

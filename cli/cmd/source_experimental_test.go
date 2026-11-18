@@ -17,7 +17,7 @@ func TestCLIExperimentalSourceCommandsRequireOptIn(t *testing.T) {
 		{"import", "database", "--online", "--database", "source", "--project", "target", "--uri", "invalid", "--yes"},
 		{"import", "database", "--online", "--dry-run"},
 		{"source"},
-		{"source", "follow", "--project", "p", "--uri", "invalid", "--enable-source-images"},
+		{"source", "follow", "--project", "p", "--uri", "invalid"},
 		{"source", "status", "--project", "p", "--output", "invalid"},
 		{"source", "resync", "--project", "p", "--uri", "invalid"},
 		{"source", "detach", "--project", "p", "--yes"},
@@ -27,6 +27,23 @@ func TestCLIExperimentalSourceCommandsRequireOptIn(t *testing.T) {
 		stdout, stderr, err := invokeCLI(t, "invalid", args...)
 		if err == nil || stdout != "" || strings.TrimSpace(stderr) != "Error: "+want.Error() {
 			t.Errorf("%v: expected the experimental error before running the command, got %v (stdout %q, stderr %q)", args, err, stdout, stderr)
+		}
+	}
+}
+
+func TestCLISourceImagesRequireOptIn(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "")
+	want := walcli.RequireExperimentalSourceImages()
+	if want == nil || !strings.Contains(want.Error(), "--enable-source-images") {
+		t.Fatalf("expected an error naming --enable-source-images, got %v", want)
+	}
+	for _, args := range [][]string{
+		{"import", "database", "--online", "--enable-source-images"},
+		{"source", "follow", "--enable-source-images"},
+	} {
+		stdout, stderr, err := invokeCLI(t, "invalid", args...)
+		if err == nil || stdout != "" || strings.TrimSpace(stderr) != "Error: "+want.Error() {
+			t.Errorf("%v: expected the option's experimental error before running the command, got %v (stdout %q, stderr %q)", args, err, stdout, stderr)
 		}
 	}
 }

@@ -22,12 +22,19 @@ type captureSnapshot struct {
 
 // A follower transaction changes the head and position together. Snapshot
 // reads keep the join from combining the two sides of a concurrent commit.
-func captureSnapshots(ctx context.Context, metadata *mongo.Database, filter bson.M) (*mongo.Cursor, error) {
+func captureSnapshots(ctx context.Context, metadata *mongo.Database, filter bson.M, publishedOnly bool) (*mongo.Cursor, error) {
 	branches := metadata.Collection("wal_branches", options.Collection().
 		SetReadConcern(readconcern.Snapshot()).SetReadPreference(readpref.Primary()))
+	publication := bson.M{}
+	if publishedOnly {
+		publication["project.importing"] = bson.M{"$ne": true}
+	}
+	// Publication, branch and checkpoint must all come from this snapshot.
 	return branches.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: filter}},
 		{{Key: "$project", Value: bson.M{"_id": 0, "branch": "$$ROOT"}}},
+		{{Key: "$lookup", Value: bson.M{"from": "wal_projects", "localField": "branch.project_id", "foreignField": "_id", "as": "project"}}},
+		{{Key: "$match", Value: publication}},
 		{{Key: "$lookup", Value: bson.M{"from": "wal_ingest_state", "localField": "branch._id", "foreignField": "_id", "as": "checkpoint"}}},
 		{{Key: "$project", Value: bson.M{"branch": 1, "checkpoint": bson.M{"$first": "$checkpoint"}}}},
 		{{Key: "$project", Value: bson.M{"branch": 1, "capture_status": "$checkpoint.capture_status", "resume_token": "$checkpoint.resume_token"}}},
@@ -38,7 +45,7 @@ func captureSnapshots(ctx context.Context, metadata *mongo.Database, filter bson
 // ReadCaptureStatus reads a branch and its saved status at one metadata snapshot.
 // An ordinary branch without a capture report returns a nil status.
 func ReadCaptureStatus(ctx context.Context, metadata *mongo.Database, branchID string) (*wal.Branch, *Status, error) {
-	cursor, err := captureSnapshots(ctx, metadata, bson.M{"_id": branchID, "is_deleted": false})
+	cursor, err := captureSnapshots(ctx, metadata, bson.M{"_id": branchID, "is_deleted": false}, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -79,7 +86,7 @@ type CaptureReport struct {
 
 // ReadCaptureReports reads capture health across the metadata deployment.
 func ReadCaptureReports(ctx context.Context, metadata *mongo.Database) ([]CaptureReport, error) {
-	cursor, err := captureSnapshots(ctx, metadata, bson.M{"is_deleted": false})
+	cursor, err := captureSnapshots(ctx, metadata, bson.M{"is_deleted": false}, true)
 	if err != nil {
 		return nil, err
 	}
@@ -121,13 +128,42 @@ func (snapshot *captureSnapshot) status() (*Status, error) {
 	status.BranchID = snapshot.Branch.ID
 	if snapshot.Branch.IsFollower() {
 		status.hasResumeToken = len(snapshot.ResumeToken) != 0
+		if status.SourceUnverified != nil {
+			_, status.hasResumeToken = tokenTime(snapshot.ResumeToken)
+			status.resumeToken = snapshot.ResumeToken
+		}
 		status.applySourceLeaseFreshness(snapshot.LeaseFresh)
 		if reason := status.sourceDegradation(&snapshot.Branch, snapshot.Stored.Lookup("head_lsn")); reason != "" {
 			status.synthesizedDegradation = status.State != "degraded"
 			status.State, status.Error = "degraded", reason
 		}
+		status.applySourceVerification(snapshot.LeaseFresh)
 	}
 	return status, nil
+}
+
+func (s *Status) applySourceVerification(fresh bool) {
+	if s.SourceUnverified == nil {
+		return
+	}
+	detail := "the previous live source report was left without a lease owner; see the last saved position"
+	if s.SourceUnverified.Reason == leaseExpiredReason {
+		detail = sourceOwnerLoss(s.SourceUnverified.PreviousOwner)
+	}
+	if s.Error != "" && s.Error != detail {
+		detail += ". " + s.Error
+	}
+	switch {
+	case fresh:
+		detail += ". The replacement is catching up to verify a checkpoint"
+	case s.ResyncUnfinished():
+		detail += ". The resync has not finished; complete it with `argon source resync`, then start `argon source follow`"
+	case s.State == "degraded":
+		detail += ". Repair the branch with `argon source resync`, then start `argon source follow`"
+	default:
+		detail += ". Start `argon source follow` to catch up and verify a checkpoint"
+	}
+	s.Error = detail
 }
 
 // sourceDegradation checks the branch and position from the same snapshot.
@@ -174,6 +210,9 @@ func (s *Status) RequireSourceWriteBackReady() error {
 			state = "is degraded"
 		}
 		return fmt.Errorf("write-back refused: following %s (%s). After repairing the branch with `argon source resync`, preview again", state, s.Error)
+	}
+	if s.SourceUnverified != nil {
+		return fmt.Errorf("write-back refused: %s. After a checkpoint is verified, preview again", s.Error)
 	}
 	if s.ResyncUnfinished() {
 		return errors.New("write-back refused: a resync of the followed branch has not finished. Complete it with `argon source resync`, then preview again")
