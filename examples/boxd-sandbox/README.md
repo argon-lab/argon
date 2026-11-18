@@ -171,6 +171,12 @@ the diff of its own run. The agent's code is deterministic, so that diff has
 the same three changes. With a real agent two runs can differ, and `--apply`
 merges whatever its own run produced.
 
+When you replace `agent.py` with code of your own, replace the checks at the
+end of `review()` in `host.py` with it. After the merge they expect what the
+stock agent does, ticket `T-1` closed and the note `triage-1`, and a run with
+`--apply` stops on them after it has merged other changes. A run that changed
+nothing skips the merge and those checks.
+
 Add `--keep-machine` to keep the agent machine for a look around (its MongoDB
 user is dropped all the same). Remove a kept machine with
 `boxd machine remove <name> -y` on your computer. Set `ARGON_API_TOKEN` when
