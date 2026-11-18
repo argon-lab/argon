@@ -113,9 +113,10 @@ argon merge apply <plan-id>          # after you have read the plan
 offers only the three read-only tools. A withheld tool is neither listed nor
 callable.
 
-Online import, the `argon source` commands, and `merge apply --write-back`
-are experimental and off by default. They have known open issues. Set
-`ARGON_EXPERIMENTAL_SOURCE=1` to enable them. See
+Online import and the `argon source` commands are available by default.
+The experimental options `--write-back`, `--auto-resync` and
+`--enable-source-images` are off by default and each requires
+`ARGON_EXPERIMENTAL_SOURCE=1`. For known issues and limits, see
 [following a source](OPERATIONS.md#following-a-source-database).
 
 When a project follows an external database (`argon import database

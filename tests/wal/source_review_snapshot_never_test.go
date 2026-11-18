@@ -14,6 +14,7 @@ import (
 // (a) An update to a document in a capped collection on a source without
 // images. Nothing is old: the event is read seconds after it happened.
 func TestFollow_CappedCollectionUpdateIsDegraded(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -61,6 +62,7 @@ func TestFollow_CappedCollectionUpdateIsDegraded(t *testing.T) {
 // (c) on this server version: collMod by --enable-source-images before the
 // backlog is read.
 func TestFollow_EnablingImagesKeepsTheBacklogReadable(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

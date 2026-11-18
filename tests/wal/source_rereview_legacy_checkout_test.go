@@ -65,6 +65,7 @@ func (f *followFixture) checkoutAs250(t *testing.T) string {
 }
 
 func TestSource_LegacyCheckoutRequiresReleaseAndResync(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	forEachSourceDeployment(t, testLegacyCheckoutRequiresReleaseAndResync)
 }
 
@@ -157,6 +158,7 @@ wait:
 }
 
 func TestSource_MissingResumeTokenRequiresResync(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

@@ -14,6 +14,7 @@ import (
 )
 
 func TestFollow_AutoResyncStopsWhenAnotherWriterMovesHead(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})

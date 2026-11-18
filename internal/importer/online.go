@@ -40,7 +40,7 @@ type onlineSource struct {
 
 func (opts ImportOptions) requireSourceImagesOptIn() error {
 	if opts.EnableSourceImages {
-		return source.RequireExperimentalImages()
+		return source.RequireExperimentalSourceImages()
 	}
 	return nil
 }
@@ -106,9 +106,6 @@ func prepareOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Data
 // DryRunOnline checks the same source preconditions as an online import and estimates its copy size.
 func DryRunOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Database) (_ *ImportResult, err error) {
 	if err := opts.requireSourceImagesOptIn(); err != nil {
-		return nil, err
-	}
-	if err := source.RequireExperimental(); err != nil {
 		return nil, err
 	}
 	started := time.Now()

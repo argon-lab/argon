@@ -22,6 +22,7 @@ func reproImagesEnabledOn(t *testing.T, f *followFixture, collection string) boo
 // (the name is held by another import in progress) has already altered the
 // source's collections, and neither a result nor the error says so.
 func TestOnlineImport_ImagesAreNotEnabledBeforeTheProjectIsReserved(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -47,6 +48,7 @@ func TestOnlineImport_ImagesAreNotEnabledBeforeTheProjectIsReserved(t *testing.T
 // source follow --enable-source-images alters the source before Follow
 // checks its own preconditions.
 func TestFollow_ImagesAreNotEnabledWhenFollowingCannotStart(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

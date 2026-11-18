@@ -90,17 +90,15 @@ Long-lived branches work the same way with `argon branches create` and
 
 ### A database that is in use
 
-Online import, the `argon source` commands, and write-back are experimental
-and off by default. They have known open issues. Set
-`ARGON_EXPERIMENTAL_SOURCE=1` to enable them after reading
+Online import and the `argon source` commands, introduced in 2.6.0, are now
+available by default. You can import a replica-set database while writers
+keep running, then follow its changes on the project's `main`. The experimental
+options `--write-back`, `--auto-resync` and `--enable-source-images` are off
+by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. For known
+issues and limits, see
 [the operations guide](docs/OPERATIONS.md#following-a-source-database).
 
-Releases after 2.5.0 can import a replica-set database without stopping its
-writers, keep the project's `main` following it, and write a reviewed plan
-back to it:
-
 ```bash
-export ARGON_EXPERIMENTAL_SOURCE=1
 export ARGON_SOURCE_URI="mongodb://…"     # read per command, never stored
 argon import preview --database myapp --online
 argon import database --database myapp --project myapp --online
@@ -108,16 +106,17 @@ argon source follow -p myapp              # main tracks the source; leave it run
 
 argon sandbox create -p myapp --ttl 1h --watch --actor agent:run-1
 argon merge preview -p myapp -b <sandbox>
-argon merge apply <plan-id> --write-back  # one transaction on the source
+ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
 ```
 
 The import copies ordinary collections at one cluster time, which it prints.
 Add `--dry-run` to the import command to check the source and its change stream
 and see the estimated copy without writing anything.
-Following ignores changes to views. `--write-back`
-checks every document against the plan's before-image and aborts the
-transaction if one has changed. The metadata deployment must acknowledge
-the plan claim with majority write concern before the source transaction starts.
+Following ignores changes to views. `--write-back` applies the plan in one
+transaction on the source. It checks every document against the plan's
+before-image and aborts the transaction if one has changed. The metadata
+deployment must acknowledge the plan claim with majority write concern
+before the source transaction starts.
 Write-back and `--enable-source-images`
 require importing with a user allowed to run `replSetGetConfig`, such as one
 with the `clusterMonitor` role. Use `argon source status` to see which identity
@@ -141,9 +140,8 @@ after lease loss and let the replacement verify its checkpoint.
 `argon source follow --auto-resync` completes an unfinished resync or repairs
 a source stream gap. The option checks `ARGON_EXPERIMENTAL_SOURCE=1` at startup.
 
-`--enable-source-images` is separately experimental and requires
-`ARGON_EXPERIMENTAL_SOURCE=1`. Operators can enable
-`changeStreamPreAndPostImages` directly on MongoDB. When requested,
+Operators can enable `changeStreamPreAndPostImages` directly on MongoDB
+or use `--enable-source-images` on online import or follow. When requested,
 `source follow --enable-source-images` checks the lease before altering each
 collection. An error after a change lists the affected collections.
 

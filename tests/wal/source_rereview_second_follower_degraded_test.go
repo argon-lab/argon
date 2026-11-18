@@ -16,6 +16,7 @@ import (
 // stops. The new process is refused while the first remains healthy and
 // write-back remains available.
 func TestFollow_RefusesASecondFollower(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

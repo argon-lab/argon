@@ -357,7 +357,7 @@ MongoDB:
    point lookups, puts batch into contiguous LSN ranges, and writes to
    live branches are rejected (their WAL is fed by the change stream).
 
-3. **A followed source database (experimental)** — a branch that follows an
+3. **A followed source database** — a branch that follows an
    external database receives that database's change stream as entries (see
    [Following an external database](#following-an-external-database)).
    It is the branch's only writer.
@@ -406,10 +406,11 @@ MongoDB write semantics — the one thing this design refuses to do.
 
 ## Following an external database
 
-Online import, the `argon source` commands, and write-back are experimental
-and off by default. They have known open issues. Set
-`ARGON_EXPERIMENTAL_SOURCE=1` to enable them. A followed branch keeps its
-write and checkout restrictions while the switch is off.
+Online import and the `argon source` commands are available by default.
+The experimental options `--write-back`, `--auto-resync` and
+`--enable-source-images` are off by default and each requires
+`ARGON_EXPERIMENTAL_SOURCE=1`. A followed branch keeps its write and
+checkout restrictions regardless of the switch. See [Limits](#limits).
 
 `argon import database --online` imports a database that is in use and leaves
 the new project's `main` following it; `argon merge apply --write-back`

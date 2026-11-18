@@ -403,6 +403,7 @@ func TestResync_RefusesAHealthyProjectUnlessForced(t *testing.T) {
 // With --auto-resync a running follower repairs a dropped collection itself
 // and keeps following.
 func TestFollow_AutoResyncAfterDroppedCollection(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

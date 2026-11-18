@@ -11,12 +11,14 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
-The experimental source features (online import, `argon source`, write-back;
-behind `ARGON_EXPERIMENTAL_SOURCE=1`) change as follows. They stay
-experimental and off by default.
-
 ### Changed
 
+- Online import and following no longer require `ARGON_EXPERIMENTAL_SOURCE=1`
+  in this release. Source status, manual resync and detach are also available
+  by default. Three options remain experimental and off by default behind
+  that switch. `--write-back` writes reviewed changes to the source,
+  `--enable-source-images` alters its collections, and `--auto-resync` can
+  start a full comparison and record an inexact history range automatically.
 - One follower or resync per project. A run takes a lease in Argon's
   metadata, judged by the metadata deployment's clock, and every write it
   makes is conditional on still holding it. A second `source follow` or
@@ -39,21 +41,20 @@ experimental and off by default.
   (replica set, collection rules, the change stream the replay will open) and
   lists what an online import would copy. `import preview` skips views, and
   `import preview --online` applies the online collection rules.
-- `source follow --auto-resync` completes an interrupted resync when it
-  starts, and resyncs only when the source's stream can no longer be
-  followed. A head moved by something other than the follower needs an
-  explicit `source resync`.
+- `source follow --auto-resync` checks the switch at startup and completes
+  any interrupted resync. During following it resyncs only when the source's
+  stream can no longer be followed. A head moved by something other than
+  the follower needs an explicit `source resync`.
 - Resync bounds document batches and both metadata and source lookup
   selectors by encoded size as well as by count.
 - `connect` returns a connection string only for the branch's own physical
   database, and the console omits it for a sandbox whose record names
   another database.
-- `--enable-source-images` has its own experimental gate. Operators can
-  enable `changeStreamPreAndPostImages` directly on MongoDB.
+- Operators can enable `changeStreamPreAndPostImages` directly on MongoDB
+  or use the experimental `--enable-source-images` on online import or follow.
 - Source status reports a stable health reason, the evidence for it and the
   next action in table and JSON output. Deployment status, doctor,
   write-back preflight and follow and resync admission use the same verdict.
-- `source follow --auto-resync` checks its own experimental opt-in at startup.
 
 ### Fixed
 

@@ -11,6 +11,7 @@ import (
 )
 
 func TestOnlineImport_DryRunAndPreviewSkipViews(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

@@ -215,9 +215,6 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 		if err := opts.requireSourceImagesOptIn(); err != nil {
 			return nil, err
 		}
-		if err := source.RequireExperimental(); err != nil {
-			return nil, err
-		}
 	}
 	startTime := time.Now()
 	if opts.Online && opts.DryRun {

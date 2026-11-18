@@ -10,6 +10,7 @@ import (
 )
 
 func TestWriteBack_ReservesExactArrayMatchesBeforeFallback(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	first := bson.D{{Key: "a", Value: int32(1)}, {Key: "b", Value: int32(2)}}

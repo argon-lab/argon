@@ -118,6 +118,7 @@ func (c *lostAckConn) Read(p []byte) (int, error) {
 // outcome. The plan must stay claimed with its session, must not be written
 // again, and following must settle it as applied and attribute the entries.
 func TestWriteBack_UnknownCommitOutcomeKeepsThePlanClaimed(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -182,6 +183,7 @@ func TestWriteBack_UnknownCommitOutcomeKeepsThePlanClaimed(t *testing.T) {
 
 // Two processes write the same plan back at once. Exactly one may claim it.
 func TestWriteBack_ConcurrentCallsClaimOnce(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

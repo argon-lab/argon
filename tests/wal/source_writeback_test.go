@@ -65,6 +65,7 @@ func agentEdits(t *testing.T, db *mongo.Database) {
 // it through following like any other change to the source, and the plan and
 // main's history both say where the change came from.
 func TestWriteBack_ReviewedPlanReachesTheSource(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	forEachSourceDeployment(t, func(t *testing.T, sourceURI string) {
 		ctx := context.Background()
 		f := newFollowFixture(t, sourceURI)
@@ -154,6 +155,7 @@ func TestWriteBack_ReviewedPlanReachesTheSource(t *testing.T) {
 // write-back is refused and the source is exactly as it was: the documents
 // before the conflicting one in the plan were not written either.
 func TestWriteBack_ConflictAbortsTheWholeBatch(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	forEachSourceDeployment(t, func(t *testing.T, sourceURI string) {
 		ctx := context.Background()
 		f := newFollowFixture(t, sourceURI)
@@ -301,6 +303,7 @@ func TestWriteBack_OnlyWhenAskedFor(t *testing.T) {
 // A connection string that leads to a different deployment than the one the
 // project follows is refused before anything is read or written there.
 func TestWriteBack_RefusesAnotherDeployment(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	deployments := sourceDeployments()
 	if len(deployments) < 2 {
 		t.Skip("set ARGON_TEST_SOURCE_MONGODB_URI to a second replica set")
@@ -333,6 +336,7 @@ func TestWriteBack_RefusesAnotherDeployment(t *testing.T) {
 // second time, and the follower closes it when the transaction arrives in
 // the stream.
 func TestWriteBack_CommitWithoutRecordIsSettledByFollowing(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -375,6 +379,7 @@ func TestWriteBack_CommitWithoutRecordIsSettledByFollowing(t *testing.T) {
 // production writes, and main ends up equal to the source with every change
 // from either side exactly once.
 func TestFollowedMain_SandboxMergeUnderProductionTraffic(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	forEachSourceDeployment(t, func(t *testing.T, sourceURI string) {
 		ctx := context.Background()
 		f := newFollowFixture(t, sourceURI)

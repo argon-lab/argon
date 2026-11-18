@@ -14,6 +14,7 @@ import (
 )
 
 func TestSource_UnexpectedHeadChangeDegradesStatusAndAdmitsResync(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, reproSourceURI(t))
 	f.seedSmall(t)

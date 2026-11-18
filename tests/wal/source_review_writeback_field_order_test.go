@@ -15,6 +15,7 @@ import (
 // field order. MongoDB treats that as a different value; write-back should
 // see a conflict and write nothing.
 func TestWriteBack_ReorderedFieldsAreAConflict(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	cases := []struct {
 		name      string
 		reordered bson.D

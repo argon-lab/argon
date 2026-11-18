@@ -11,6 +11,7 @@ import (
 )
 
 func TestWriteBack_RefusedWhileResyncIsUnfinished(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

@@ -23,6 +23,7 @@ import (
 // is exactly the state "my source and that deployment report the same name
 // and hosts", and it holds no ID.
 func TestWriteBack_WeakBindingRefusesSourceWrites(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	deployments := sourceDeployments()
 	if len(deployments) < 2 {
 		t.Skip("set ARGON_TEST_SOURCE_MONGODB_URI to a second replica set")
@@ -113,6 +114,7 @@ func requireWeakBindingRemedy(t *testing.T, err error) {
 }
 
 func TestOnlineImport_ImagesRequireReplicaSetID(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

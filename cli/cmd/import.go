@@ -130,15 +130,14 @@ Example:
 // importDatabaseCmd imports an existing MongoDB database
 var importDatabaseCmd = &cobra.Command{
 	Use:   "database",
-	Short: "Import an existing MongoDB database into Argon (--online is experimental)",
+	Short: "Import an existing MongoDB database into Argon",
 	Long: `Import an existing MongoDB database into Argon's WAL system.
 
 This creates a new Argon project and imports all data from the source
 database, enabling time travel and branching capabilities.
 
-There are two ways to get a consistent copy. The --online mode is experimental
-and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it and read
-docs/OPERATIONS.md for known issues.
+There are two ways to get a consistent copy. See docs/OPERATIONS.md for
+online import limits.
 
 --online imports a database that keeps being written. The copy is followed
 by the source's own change stream until the project equals the source at one
@@ -175,10 +174,7 @@ Examples:
 	Args: func(cmd *cobra.Command, args []string) error {
 		online, _ := cmd.Flags().GetBool("online")
 		if online {
-			if err := requireSourceImagesOptIn(cmd); err != nil {
-				return err
-			}
-			return walcli.RequireExperimentalSource()
+			return requireSourceImagesOptIn(cmd)
 		}
 		return nil
 	},
@@ -413,10 +409,10 @@ func init() {
 	importDatabaseCmd.Flags().StringP("project", "p", "", "Argon project name to create (required)")
 	importDatabaseCmd.Flags().Bool("dry-run", false, "Preview import without making changes (with --online, run the online preflight)")
 	importDatabaseCmd.Flags().Bool("source-quiesced", false, "Confirm source writers and DDL are paused until the import finishes")
-	importDatabaseCmd.Flags().Bool("online", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Import a replica-set database that is being written; main then follows it")
+	importDatabaseCmd.Flags().Bool("online", false, "Import a replica-set database while writes continue and leave main following it")
 	importDatabaseCmd.Flags().Bool("follow", false, "With --online: keep following the source in the foreground after the import")
 	importDatabaseCmd.Flags().Bool("allow-inexact", false, "With --follow: see argon source follow --allow-inexact")
-	importDatabaseCmd.Flags().Bool("enable-source-images", false, "Experimental with --online: turn on changeStreamPreAndPostImages for the SOURCE collections (requires replSetGetConfig privilege)")
+	importDatabaseCmd.Flags().Bool("enable-source-images", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). With --online, turn on changeStreamPreAndPostImages for the SOURCE collections (requires replSetGetConfig privilege)")
 	importDatabaseCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
 	importDatabaseCmd.Flags().Int("batch-size", 1000, "Number of documents to process in each batch")
 	importDatabaseCmd.Flags().StringP("output", "o", "table", "Output format: table, json")

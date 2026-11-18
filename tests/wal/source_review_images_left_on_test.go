@@ -26,6 +26,7 @@ func reproImagesOn(t *testing.T, f *followFixture) map[string]bool {
 // The project name is reserved by another unpublished import, so BeginImport
 // fails; --enable-source-images has already run collMod on the source.
 func TestOnlineImport_ReservedNameLeavesTheSourceUnaltered(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	forEachSourceDeployment(t, func(t *testing.T, sourceURI string) {
 		ctx := context.Background()
 		f := newFollowFixture(t, sourceURI)
@@ -56,6 +57,7 @@ func TestOnlineImport_ReservedNameLeavesTheSourceUnaltered(t *testing.T) {
 
 // The operator interrupts (Ctrl-C) right after the collMod ran.
 func TestOnlineImport_InterruptedImageChangeIsReported(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
 	ctx, cancel := context.WithCancel(context.Background())

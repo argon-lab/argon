@@ -7,20 +7,20 @@ import (
 
 const experimentalEnv = "ARGON_EXPERIMENTAL_SOURCE"
 
-var errExperimentalSource = errors.New("this command is experimental and off by default: it connects Argon to a database that is in use. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it, and read docs/OPERATIONS.md first")
+var errExperimentalWriteBack = errors.New("this command is experimental and off by default: it connects Argon to a database that is in use. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it, and read docs/OPERATIONS.md first")
 var errExperimentalImages = errors.New("--enable-source-images is experimental and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to use it, or enable changeStreamPreAndPostImages directly in MongoDB")
 var errExperimentalAutoResync = errors.New("--auto-resync is experimental and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to allow following to resync main automatically")
 
-// RequireExperimental checks whether the operator has enabled experimental source features.
-func RequireExperimental() error {
+// RequireExperimentalWriteBack checks the opt-in for writing a merge plan to the source.
+func RequireExperimentalWriteBack() error {
 	if os.Getenv(experimentalEnv) == "1" {
 		return nil
 	}
-	return errExperimentalSource
+	return errExperimentalWriteBack
 }
 
-// RequireExperimentalImages checks the separate opt-in for altering source collections.
-func RequireExperimentalImages() error {
+// RequireExperimentalSourceImages checks the opt-in for altering source collections.
+func RequireExperimentalSourceImages() error {
 	if os.Getenv(experimentalEnv) == "1" {
 		return nil
 	}

@@ -42,7 +42,7 @@ migration. Everything here reflects what the code does today.
 | `(cd api && go run .)` (or the built binary) | one | REST control plane; supervises ingesters for the sandboxes it creates; `HOST`/`PORT` (default 127.0.0.1:8080) |
 | `argon mcp` | per agent client | MCP server over stdio; supervises ingesters for its sandboxes |
 | `argon proxy` | optional | stable `project~branch` connection strings on `127.0.0.1:27018` (see [Exposure](#exposure-and-credentials) before listening elsewhere) |
-| `argon source follow -p P` | one per project that follows a source | [Experimental and off by default](#following-a-source-database). Applies the source database's changes to `main` and resumes from its saved position. With `--auto-resync`, repairs source stream gaps and completes interrupted resyncs |
+| `argon source follow -p P` | one per project that follows a source | [Applies the source database's changes](#following-a-source-database) to `main` and resumes from its saved position. The experimental `--auto-resync` option repairs source stream gaps and completes interrupted resyncs |
 | `argon sandbox sweep -p P` | schedule for CLI-only use | reap expired sandboxes (pinned ones are skipped loudly) |
 | `argon gc -p P` | cron | reclaim covered, out-of-retention WAL entries |
 
@@ -57,11 +57,9 @@ target-creation confirmation.
 
 ### Online: the source keeps running
 
-Online import is experimental, off by default, and has known open issues.
-Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it.
+Online import and following are available by default.
 
 ```sh
-export ARGON_EXPERIMENTAL_SOURCE=1
 export ARGON_SOURCE_URI="mongodb://…"      # used per command, never stored
 argon import preview  --database myapp --online
 argon import database --database myapp --project myapp --online --yes
@@ -151,11 +149,11 @@ recovery, even when the quiesced source is standalone.
 
 ## Following a source database
 
-The `argon source` commands and `merge apply --write-back` are experimental
-and off by default. They have known open issues. Set
-`ARGON_EXPERIMENTAL_SOURCE=1` to enable them. A branch already bound to a
-source still refuses ordinary merges, undo, reset, checkout, and programmatic
-writes while the switch is off.
+The `argon source` commands are available by default. The experimental
+options `--write-back`, `--auto-resync` and `--enable-source-images` are
+off by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. A branch
+bound to a source refuses ordinary merges, undo, reset, checkout and
+programmatic writes regardless of the switch.
 
 A project imported with `--online` stays tied to its source: `main` follows
 that database. Argon keeps a record of which deployment and database that is
@@ -442,7 +440,7 @@ instead:
 
 ```sh
 argon merge preview -p myapp -b <sandbox>
-argon merge apply <plan-id> --write-back
+ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
 ```
 
 - The write is one transaction on the source, with snapshot reads and

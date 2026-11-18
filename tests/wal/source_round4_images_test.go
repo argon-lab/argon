@@ -20,8 +20,7 @@ func TestOnlineImport_SourceImagesRequireOptIn(t *testing.T) {
 	require.False(t, reproImagesEnabledOn(t, f, "catalog"))
 
 	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "")
-	// Invalid input fails before EnableImages even if the general opt-in
-	// check is bypassed, so only the import's own check can give this error.
+	// Each entry point checks the option before validating its input.
 	_, err := f.services.ImportDatabaseOnline(ctx, walcli.OnlineImport{EnableSourceImages: true})
 	require.ErrorContains(t, err, sourceImagesOptInMessage)
 	t.Setenv("MONGODB_URI", "invalid")
@@ -50,8 +49,7 @@ func TestFollow_SourceImagesRequireOptIn(t *testing.T) {
 	require.False(t, reproImagesEnabledOn(t, f, "catalog"))
 
 	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "")
-	// A missing project makes the option check observable independently of
-	// the guard at collMod and of the command's generic check.
+	// Following checks the option before looking up the project.
 	err := f.services.FollowSource(ctx, f.project+"-missing", walcli.FollowSourceOptions{EnableSourceImages: true})
 	require.ErrorContains(t, err, sourceImagesOptInMessage)
 	require.False(t, reproImagesEnabledOn(t, f, "catalog"))

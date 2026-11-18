@@ -14,6 +14,7 @@ import (
 )
 
 func TestWriteBack_BeforeImageReadFailureLeavesPlanPending(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	catalog := f.source.Collection("catalog")
@@ -57,6 +58,7 @@ func TestWriteBack_BeforeImageReadFailureLeavesPlanPending(t *testing.T) {
 }
 
 func TestWriteBack_ReclaimedBeforeImageLeavesPlanPending(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

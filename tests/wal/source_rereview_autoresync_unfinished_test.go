@@ -47,6 +47,7 @@ func (f *followFixture) requireUnfinishedResyncCompleted(t *testing.T) {
 // Restarting with --auto-resync completes a resync interrupted after it
 // wrote part of the difference.
 func TestFollow_AutoResyncCompletesInterruptedResync(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -86,6 +87,7 @@ func TestFollow_AutoResyncCompletesInterruptedResync(t *testing.T) {
 // Restarting with --auto-resync also completes a resync that was stopped by
 // another collection drop during replay.
 func TestFollow_AutoResyncCompletesResyncInterruptedByDrop(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -114,6 +116,7 @@ func TestFollow_AutoResyncCompletesResyncInterruptedByDrop(t *testing.T) {
 }
 
 func TestFollow_AutoResyncSignalsReadyAfterLostPositionAtStartup(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})
