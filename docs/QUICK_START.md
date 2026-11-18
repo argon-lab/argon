@@ -63,11 +63,14 @@ CLI commands connect directly to MongoDB and do not leave a background watcher
 or TTL worker behind. `sandbox create --watch` captures in the foreground for
 as long as it runs.
 
+Releases after 2.5.0 support `argon import database --online` for a replica-set
+database that is in use. Online import is experimental, off by default, and
+has known open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See
+[importing existing data](OPERATIONS.md#importing-existing-data).
+
 ```bash
 # Bring existing data in once, with source writers and DDL stopped
-# (or start empty: argon projects create myapp). For a replica-set database
-# that is in use, releases after 2.5.0 take --online instead; see
-# OPERATIONS.md#importing-existing-data.
+# (or start empty: argon projects create myapp).
 argon import database --uri "$MONGODB_URI" --database myapp --project myapp --source-quiesced
 
 # Fork + checkout + TTL + capture. Note the sandbox name and connection string

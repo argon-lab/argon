@@ -148,6 +148,9 @@ type FollowOptions struct {
 // failures are retried; a gap that cannot be repaired stops it and is
 // reported as degraded.
 func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Database, opts FollowOptions) error {
+	if err := source.RequireExperimental(); err != nil {
+		return err
+	}
 	cfg := runConfig{ready: opts.Ready, actor: sourceActor, redact: opts.Redact, follower: true}
 	run, runCtx, created := s.register(ctx, branchID, cfg)
 	if !created {
@@ -166,6 +169,9 @@ func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Databa
 // being written, so the branch only becomes a state of the source once every
 // change made during the copy has been applied on top.
 func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Database, startAt primitive.Timestamp, firstLSN int64, reason string, redact func(string) string) (*ConsistentPoint, error) {
+	if err := source.RequireExperimental(); err != nil {
+		return nil, err
+	}
 	status := SourceStatus{Database: src.Name(), Mode: ModeCatchUp, Position: startAt, InexactFromLSN: firstLSN, InexactReason: reason}
 	if _, err := s.state.UpdateOne(ctx, bson.M{"_id": branchID}, bson.M{"$set": bson.M{
 		"start_at": startAt, "actor": sourceActor, "capture_status.source": status,

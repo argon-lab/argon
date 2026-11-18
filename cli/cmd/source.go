@@ -10,10 +10,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const experimentalSourceHelp = `Experimental and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable
+this command and read docs/OPERATIONS.md for known issues.`
+
 var sourceCmd = &cobra.Command{
 	Use:   "source",
-	Short: "Follow the external database a project was imported from",
-	Long: `A project created with "argon import database --online" stays tied to
+	Short: "Follow the external database a project was imported from (experimental)",
+	Long: experimentalSourceHelp + `
+
+A project created with "argon import database --online" stays tied to
 the database it was imported from: its main branch follows that database.
 
   follow   keep main current with the source (runs until interrupted)
@@ -26,12 +31,24 @@ The source connection string is given on each command (--uri, or the
 ARGON_SOURCE_URI environment variable) and is never stored. Argon reads the
 source and, only through "argon merge apply --write-back", writes single
 documents to it. It never drops, renames or rewrites anything there.`,
+	Args: cobra.NoArgs,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := walcli.RequireExperimentalSource(); err != nil {
+			return err
+		}
+		return rootCmd.PersistentPreRunE(cmd, args)
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
+	},
 }
 
 var sourceFollowCmd = &cobra.Command{
 	Use:   "follow",
-	Short: "Keep a project's main branch current with its source database",
-	Long: `Follow reads the source database's change stream and appends every
+	Short: "Keep a project's main branch current with its source database (experimental)",
+	Long: experimentalSourceHelp + `
+
+Follow reads the source database's change stream and appends every
 document change to the project's main branch. It resumes from the position
 saved with the last applied change, so stopping and restarting it neither
 skips nor repeats a change, as long as the source's oplog still holds that
@@ -95,7 +112,10 @@ and leaves an inexact range in main's history, so it is off unless asked for.`,
 
 var sourceStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show what a project follows and how far following has come",
+	Short: "Show what a project follows and how far following has come (experimental)",
+	Long: experimentalSourceHelp + `
+
+Show the source binding and the follower's last report from Argon's metadata.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		if projectName == "" {
@@ -168,8 +188,10 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 
 var sourceResyncCmd = &cobra.Command{
 	Use:   "resync",
-	Short: "Bring main back to the source's current state after following ended as degraded",
-	Long: `Resync repairs a project whose follower has ended as degraded, without
+	Short: "Bring main back to the source's current state after following ended as degraded (experimental)",
+	Long: experimentalSourceHelp + `
+
+Resync repairs a project whose follower has ended as degraded, without
 importing the database again: after a collection was dropped or renamed on
 the source, after the source database itself was dropped, or when the
 source's oplog no longer holds the saved position.
@@ -247,8 +269,10 @@ resync is unfinished; --force runs it regardless.`,
 
 var sourceDetachCmd = &cobra.Command{
 	Use:   "detach",
-	Short: "Stop following the source for good",
-	Long: `Detach removes the tie between a project and the database it was
+	Short: "Stop following the source for good (experimental)",
+	Long: experimentalSourceHelp + `
+
+Detach removes the tie between a project and the database it was
 imported from. Main keeps its history and becomes an ordinary branch: it can
 be merged into, reset and checked out again, and it no longer changes when
 the source does. This cannot be undone; to follow the database again, import

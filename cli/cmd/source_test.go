@@ -28,6 +28,7 @@ func TestCLISourceCommandsAreDocumented(t *testing.T) {
 	if err != nil || !strings.Contains(stdout, "--write-back") {
 		t.Fatalf("merge apply must document --write-back: %v %s", err, stdout)
 	}
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	// Refused before anything is connected to.
 	for _, args := range [][]string{
 		{"import", "database", "--uri", "mongodb://127.0.0.1:1", "--database", "d", "--project", "p", "--online", "--source-quiesced", "--yes"},
@@ -49,6 +50,7 @@ func TestCLIOnlineImportFollowAndWriteBack(t *testing.T) {
 	if uri == "" {
 		t.Skip("set ARGON_TEST_MONGODB_URI to run the MongoDB integration workflow")
 	}
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	id := primitive.NewObjectID().Hex()
 	t.Setenv("ARGON_METADATA_DB", "argon_cli_follow_test_"+id)
 	// The source connection string travels in the environment, carrying a

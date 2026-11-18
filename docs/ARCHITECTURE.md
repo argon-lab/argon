@@ -285,11 +285,11 @@ What it does not avoid:
   capture of the branch and of its parent, so that completed native writes are
   in the log. Draining opens the change stream at its stored position, and
   MongoDB scans the oplog written since, whichever database it was written
-  to. A checkout keeps a checked-out parent's position current while it
-  copies, so the new branch's own copy is not in that scan. Anything else
-  written to the deployment since the parent was last drained or watched
-  still is: keep `argon watch` or a managed process on a parent that sits
-  beside heavy unrelated writes.
+  to. If a checked-out parent has a saved capture actor, checkout keeps its
+  position current while it copies, so the new branch's own copy is not in
+  that scan. Anything else written to the deployment since the parent was
+  last drained or watched still is: keep `argon watch` or a managed process
+  on a parent that sits beside heavy unrelated writes.
 
 ## Garbage collection (retention window)
 
@@ -357,8 +357,8 @@ MongoDB:
    point lookups, puts batch into contiguous LSN ranges, and writes to
    live branches are rejected (their WAL is fed by the change stream).
 
-3. **A followed source database** — a branch that follows an external
-   database receives that database's change stream as entries (see
+3. **A followed source database (experimental)** — a branch that follows an
+   external database receives that database's change stream as entries (see
    [Following an external database](#following-an-external-database)).
    It is the branch's only writer.
 
@@ -405,6 +405,11 @@ free, and re-deriving those in the proxy would mean reimplementing
 MongoDB write semantics — the one thing this design refuses to do.
 
 ## Following an external database
+
+Online import, the `argon source` commands, and write-back are experimental
+and off by default. They have known open issues. Set
+`ARGON_EXPERIMENTAL_SOURCE=1` to enable them. A followed branch keeps its
+write and checkout restrictions while the switch is off.
 
 `argon import database --online` imports a database that is in use and leaves
 the new project's `main` following it; `argon merge apply --write-back`

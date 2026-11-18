@@ -132,13 +132,15 @@ Example:
 // importDatabaseCmd imports an existing MongoDB database
 var importDatabaseCmd = &cobra.Command{
 	Use:   "database",
-	Short: "Import an existing MongoDB database into Argon",
+	Short: "Import an existing MongoDB database into Argon (--online is experimental)",
 	Long: `Import an existing MongoDB database into Argon's WAL system.
 
 This creates a new Argon project and imports all data from the source
 database, enabling time travel and branching capabilities.
 
-There are two ways to get a consistent copy.
+There are two ways to get a consistent copy. The --online mode is experimental
+and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it and read
+docs/OPERATIONS.md for known issues.
 
 --online imports a database that keeps being written. The copy is followed
 by the source's own change stream until the project equals the source at one
@@ -162,6 +164,13 @@ given as ARGON_SOURCE_URI instead of --uri.
 Examples:
   argon import database --uri "$SOURCE_URI" --database myapp --project myapp --online
   argon import database --uri "$SOURCE_URI" --database myapp --project myapp --source-quiesced`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		online, _ := cmd.Flags().GetBool("online")
+		if online {
+			return walcli.RequireExperimentalSource()
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -383,7 +392,7 @@ func init() {
 	importDatabaseCmd.Flags().StringP("project", "p", "", "Argon project name to create (required)")
 	importDatabaseCmd.Flags().Bool("dry-run", false, "Preview import without making changes")
 	importDatabaseCmd.Flags().Bool("source-quiesced", false, "Confirm source writers and DDL are paused until the import finishes")
-	importDatabaseCmd.Flags().Bool("online", false, "Import a replica-set database that is being written; main then follows it")
+	importDatabaseCmd.Flags().Bool("online", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Import a replica-set database that is being written; main then follows it")
 	importDatabaseCmd.Flags().Bool("follow", false, "With --online: keep following the source in the foreground after the import")
 	importDatabaseCmd.Flags().Bool("allow-inexact", false, "With --follow: see argon source follow --allow-inexact")
 	importDatabaseCmd.Flags().Bool("enable-source-images", false, "With --online: turn on changeStreamPreAndPostImages for the SOURCE collections (changes how the source stores writes)")

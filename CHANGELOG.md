@@ -13,17 +13,20 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Added
 
-- Online import: `argon import database --online` imports a replica-set
-  database while it is being written. The copy is followed by the source's
-  change stream until the project equals the source at one cluster time,
-  which the command reports with the LSN it corresponds to. Writes made
+- Online import is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. `argon import database --online` imports a
+  replica-set database while it is being written. The copy is followed by the
+  source's change stream until the project equals the source at one cluster
+  time, which the command reports with the LSN it corresponds to. Writes made
   during the import are not lost and not blocked. `--source-quiesced`
   imports are unchanged.
-- Following: a project imported online keeps its `main` branch tied to the
-  source. `argon source follow` applies the source's changes and resumes from
-  its saved position after a restart without skipping or repeating one;
-  `argon source status` reports the position, the newest point at which
-  `main` equalled the source, and which ranges of its history are not exact;
+- The `argon source` commands are experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. A project imported online keeps its `main`
+  branch tied to the source. `argon source follow` applies the source's
+  changes and resumes from its saved position after a restart without
+  skipping or repeating one. `argon source status` reports the position, the
+  newest point at which `main` equalled the source, and which ranges of its
+  history are not exact.
   `argon source detach` ends the tie. Nothing is written to the source.
   Updates are stored as the source held them, read back at their own cluster
   time. A position the oplog no longer holds, a dropped or renamed
@@ -37,12 +40,15 @@ entry — a synchronization barrier, not in-proxy capture).
   source, and when something other than the follower wrote to `main`. A
   follower's writes are conditional on the branch still following its source,
   so `source detach` stops a follower in another process as well.
-- A source is identified by its replica-set ID when the importing user may
+- The source commands, write-back and `--enable-source-images` are
+  experimental and off by default behind `ARGON_EXPERIMENTAL_SOURCE=1`. A
+  source is identified by its replica-set ID when the importing user may
   read it, and otherwise by its set name together with its member hosts; a
   matching set name alone is never accepted, for following, resync,
   write-back or `--enable-source-images`. `argon source status` shows which
   applies.
-- Resync: `argon source resync` repairs a project whose follower ended as
+- Resync is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. `argon source resync` repairs a project whose follower ended as
   degraded, in place, instead of importing the database again: after a
   collection was dropped or renamed on the source, after the database was
   dropped, or when the oplog no longer holds the saved position. It compares
@@ -61,9 +67,11 @@ entry — a synchronization barrier, not in-proxy capture).
   source's current cluster time; it could be one tick later, a time a later
   write might still be given. Dropping a collection Argon does not follow
   (`system.*`) no longer ends following.
-- Write-back: `argon merge apply <plan> --write-back` writes a reviewed plan
-  to the database its target follows, in one transaction that compares every
-  document with the plan's before-image and writes nothing if one differs.
+- Write-back is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. `argon merge apply <plan> --write-back` writes
+  a reviewed plan to the database its target follows, in one transaction that
+  compares every document with the plan's before-image and writes nothing if
+  one differs.
   It happens only when the flag is given on the call; the MCP server and the
   REST API do not offer it. It writes single documents into collections the
   source already has and never creates one; a replaced document keeps the
@@ -71,27 +79,31 @@ entry — a synchronization barrier, not in-proxy capture).
   since the review counts as changed; and it is refused while following is
   degraded. A plan whose write-back was interrupted before it committed is
   pending again.
-- `--enable-source-images` on `import database --online` and `source follow`
-  switches on `changeStreamPreAndPostImages` for the source's collections.
+- `--enable-source-images` is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. `--enable-source-images` on `import database
+  --online` and `source follow` switches on `changeStreamPreAndPostImages` for
+  the source's collections.
   Argon does not alter a source's collections without it, makes the change
   only once the import or the follower can actually start, and names the
   altered collections in the error if the import then fails.
-- An online import copies and follows every collection of the source except
-  `system.*`, including ones named `config.*`, `admin.*` or `local.*`. It
-  skips views and refuses time-series collections. A failed or cancelled
-  import, and `argon import cleanup`, remove the snapshots taken of the
-  unpublished project as well as its rows.
+- Online import is experimental and off by default behind
+  `ARGON_EXPERIMENTAL_SOURCE=1`. An online import copies and follows every
+  collection of the source except `system.*`, including ones named `config.*`,
+  `admin.*` or `local.*`. It skips views and refuses time-series collections.
+  A failed or cancelled import, and `argon import cleanup`, remove the
+  snapshots taken of the unpublished project as well as its rows.
 
 ### Changed
 
 - The first `argon diff` or `argon merge preview` of a new branch no longer
-  takes time that grows with the database when the parent is checked out and
-  nothing is watching it. Both drain the parent's capture first, and the
-  parent's stream position was from before the branch's checkout, so MongoDB
-  scanned the oplog of that whole copy. A checkout (and a sandbox, which
-  includes one) now reads a checked-out parent's stream while it copies and
-  leaves the parent's position after the copy. A parent that is not checked
-  out, or whose capture cannot start, is left as before (#120).
+  takes time that grows with the database when the parent is checked out,
+  has a saved capture actor and nothing is watching it. Both drain the
+  parent's capture first, and the parent's stream position was from before
+  the branch's checkout, so MongoDB scanned the oplog of that whole copy.
+  A checkout (and a sandbox, which includes one) now reads a checked-out
+  parent's stream while it copies and leaves the parent's position after the
+  copy. A parent that is not checked out, or whose capture cannot start, is
+  left as before (#120).
 - A branch that follows an external database accepts changes only from its
   source: `merge apply` without `--write-back`, `undo`, `restore reset`,
   `checkout` and programmatic writes on it are refused, with the alternatives
@@ -111,6 +123,13 @@ entry — a synchronization barrier, not in-proxy capture).
   Git commands beside the Argon command that does the same job and says where
   the comparison stops. "MongoDB sandboxes for AI agents" remains the first
   line everywhere.
+
+### Fixed
+
+- Checking out a child branch no longer assigns the default capture actor to
+  a parent without a saved actor. A later `argon watch -b main --actor etl`
+  can choose its actor and capture the parent's pending writes under that
+  label.
 
 ## [2.5.0] - 2026-11-17
 

@@ -90,11 +90,17 @@ Long-lived branches work the same way with `argon branches create` and
 
 ### A database that is in use
 
+Online import, the `argon source` commands, and write-back are experimental
+and off by default. They have known open issues. Set
+`ARGON_EXPERIMENTAL_SOURCE=1` to enable them after reading
+[the operations guide](docs/OPERATIONS.md#following-a-source-database).
+
 Releases after 2.5.0 can import a replica-set database without stopping its
 writers, keep the project's `main` following it, and write a reviewed plan
 back to it:
 
 ```bash
+export ARGON_EXPERIMENTAL_SOURCE=1
 export ARGON_SOURCE_URI="mongodb://…"     # read per command, never stored
 argon import database --database myapp --project myapp --online
 argon source follow -p myapp              # main tracks the source; leave it running

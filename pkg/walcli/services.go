@@ -205,8 +205,9 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 	// the next time its capture is drained, which is the first diff or merge
 	// preview of the new branch. Reading the parent's stream while the copy
 	// runs spreads that scan over the copy instead. This is an optimization
-	// only: a parent whose capture cannot start is left for that later drain
-	// to report, exactly as before.
+	// only. A parent without a persisted actor is left for its first watcher
+	// to label, and a parent whose capture cannot start is left for the later
+	// drain to report.
 	checkoutService.SetDuringLoad(func(ctx context.Context, parentID string) func(context.Context) {
 		parent, err := branchService.GetBranchByIDContext(ctx, parentID)
 		if err != nil || !parent.IsLive() || parent.IsFollower() {
@@ -214,6 +215,9 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 		}
 		startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
+		if _, found, err := ingestService.PersistedActor(startCtx, parentID); err != nil || !found {
+			return nil
+		}
 		if err := ingestService.Start(startCtx, parentID); err != nil {
 			return nil
 		}

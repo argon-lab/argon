@@ -42,7 +42,7 @@ migration. Everything here reflects what the code does today.
 | `(cd api && go run .)` (or the built binary) | one | REST control plane; supervises ingesters for the sandboxes it creates; `HOST`/`PORT` (default 127.0.0.1:8080) |
 | `argon mcp` | per agent client | MCP server over stdio; supervises ingesters for its sandboxes |
 | `argon proxy` | optional | stable `project~branch` connection strings on `127.0.0.1:27018` (see [Exposure](#exposure-and-credentials) before listening elsewhere) |
-| `argon source follow -p P` | one per project that follows a source | applies the source database's changes to `main`; resumes from its saved position; with `--auto-resync` repairs a degraded end itself |
+| `argon source follow -p P` | one per project that follows a source | [Experimental and off by default](#following-a-source-database). Applies the source database's changes to `main` and resumes from its saved position. With `--auto-resync`, repairs a degraded end itself. |
 | `argon sandbox sweep -p P` | schedule for CLI-only use | reap expired sandboxes (pinned ones are skipped loudly) |
 | `argon gc -p P` | cron | reclaim covered, out-of-retention WAL entries |
 
@@ -57,7 +57,11 @@ target-creation confirmation.
 
 ### Online: the source keeps running
 
+Online import is experimental, off by default, and has known open issues.
+Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it.
+
 ```sh
+export ARGON_EXPERIMENTAL_SOURCE=1
 export ARGON_SOURCE_URI="mongodb://…"      # used per command, never stored
 argon import preview  --database myapp
 argon import database --database myapp --project myapp --online --yes
@@ -132,6 +136,12 @@ Destination metadata needs the normal writable replica set for transactional
 recovery, even when the quiesced source is standalone.
 
 ## Following a source database
+
+The `argon source` commands and `merge apply --write-back` are experimental
+and off by default. They have known open issues. Set
+`ARGON_EXPERIMENTAL_SOURCE=1` to enable them. A branch already bound to a
+source still refuses ordinary merges, undo, reset, checkout, and programmatic
+writes while the switch is off.
 
 A project imported with `--online` stays tied to its source: `main` follows
 that database. Argon keeps a record of which deployment and database that is
