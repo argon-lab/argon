@@ -89,7 +89,7 @@ Long-lived branches work the same way with `argon branches create` and
 
 ### A database that is in use
 
-Releases after 2.4.1 can import a replica-set database without stopping its
+Releases after 2.5.0 can import a replica-set database without stopping its
 writers, keep the project's `main` following it, and write a reviewed plan
 back to it:
 

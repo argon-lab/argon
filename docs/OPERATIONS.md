@@ -64,7 +64,7 @@ argon import database --database myapp --project myapp --online --yes
 argon source follow -p myapp               # keep main current from here on
 ```
 
-`--online` (releases after 2.4.1) needs the source to be a replica set; a
+`--online` (releases after 2.5.0) needs the source to be a replica set; a
 sharded cluster behind mongos is refused, and a standalone has no change
 stream. The import takes the source's cluster time, copies every collection,
 and then replays the source's change stream from that time on top of the copy

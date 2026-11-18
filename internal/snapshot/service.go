@@ -194,6 +194,37 @@ func (s *Service) UsableLSN(branch *wal.Branch, collection string, minLSN, maxLS
 	return snap.LSN, true, nil
 }
 
+// UnrecordedReclaimBound implements materializer.SnapshotSource. Garbage
+// collection in releases up to 2.1.5 deleted entries without recording a
+// reclaim floor. It could delete only what a snapshot covered, and the
+// manifests those releases wrote are the ones without VisibilityRules, so
+// the newest of them bounds what such a run can have deleted: nothing above
+// its LSN. Zero means no such manifest exists. An empty collection name
+// asks about every collection of the branch.
+func (s *Service) UnrecordedReclaimBound(branchID, collection string) (int64, error) {
+	var snap struct {
+		LSN int64 `bson:"lsn"`
+	}
+	filter := bson.M{
+		"branch_id":        branchID,
+		"visibility_rules": bson.M{"$not": bson.M{"$gte": CurrentVisibilityRules}},
+	}
+	if collection != "" {
+		filter["collection"] = collection
+	}
+	err := s.manifests.FindOne(context.Background(),
+		filter,
+		options.FindOne().SetSort(bson.M{"lsn": -1}).SetProjection(bson.M{"lsn": 1}),
+	).Decode(&snap)
+	if err == mongo.ErrNoDocuments {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to query snapshots: %w", err)
+	}
+	return snap.LSN, nil
+}
+
 // newestUsable returns the manifest of the newest snapshot of (branch,
 // collection) with an LSN in [minLSN, maxLSN] that is usable for a read at
 // readUpperBound, or nil.

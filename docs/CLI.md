@@ -54,7 +54,7 @@ argon import status
 Imports auto-snapshot, so reads never replay the whole import. A real import
 needs one of two flags, and `--yes` replaces neither:
 
-- `--online` (releases after 2.4.1) imports a replica-set database while it
+- `--online` (releases after 2.5.0) imports a replica-set database while it
   is being written. The result is the source at one cluster time, which the
   command prints, and the project's `main` then follows that database (next
   section). `--follow` keeps following in the foreground once the import is

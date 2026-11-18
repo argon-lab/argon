@@ -114,7 +114,7 @@ offers only the three read-only tools. A withheld tool is neither listed nor
 callable.
 
 When a project follows an external database (`argon import database
---online`, releases after 2.4.1), an agent cannot change that database
+--online`, releases after 2.5.0), an agent cannot change that database
 through the server at all. `argon_merge_apply` is refused for a plan whose
 target follows a source, and no tool takes a write-back option or a source
 connection string. A person applies the reviewed plan from the CLI with

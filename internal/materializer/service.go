@@ -36,6 +36,11 @@ type SnapshotSource interface {
 	// CollectionsUpTo lists collections with snapshots for the branch in
 	// the LSN window.
 	CollectionsUpTo(branchID string, minLSN, maxLSN int64) ([]string, error)
+	// UnrecordedReclaimBound returns the highest LSN at or below which the
+	// branch's entries of a collection may have been deleted by a release
+	// that recorded no reclaim floor, or 0 when that cannot have happened.
+	// An empty collection name asks about every collection of the branch.
+	UnrecordedReclaimBound(branchID, collection string) (int64, error)
 }
 
 // Service materializes state from WAL entries
@@ -447,6 +452,176 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 		}
 	}
 	return nil, nil
+}
+
+// MaterializeDocumentsAtLSN reconstructs the given documents of one
+// collection as of targetLSN. The result holds the documents that exist at
+// that point; a key that is absent from it names a document that does not.
+//
+// It answers from the documents' own histories, walking the ancestry chain
+// from the branch towards the root and settling each document at the first
+// segment that has an entry for it. The cost therefore follows the number of
+// documents asked for, not the size of the collection. A snapshot is loaded
+// only where garbage collection has, or may have, deleted entries of a
+// segment: there the log can no longer show that a document went unchanged,
+// and the snapshot is the remaining record of its state.
+//
+// The result equals what MaterializeCollectionAtLSN returns for the same
+// keys. Where it cannot be established — reclaimed history without a usable
+// snapshot, or legacy entries whose document cannot be told from the entry
+// alone — an error is returned and the caller should replay the collection.
+func (s *Service) MaterializeDocumentsAtLSN(branch *wal.Branch, collection string, keys []string, targetLSN int64) (map[string]bson.M, error) {
+	result := make(map[string]bson.M, len(keys))
+	if len(keys) == 0 {
+		return result, nil
+	}
+	segments, err := s.ancestrySegments(branch, targetLSN)
+	if err != nil {
+		return nil, err
+	}
+
+	remaining := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		remaining[key] = true
+	}
+	pending := func() []string {
+		list := make([]string, 0, len(remaining))
+		for key := range remaining {
+			list = append(list, key)
+		}
+		sort.Strings(list)
+		return list
+	}
+
+	for i := len(segments) - 1; i >= 0 && len(remaining) > 0; i-- {
+		seg := segments[i]
+		entries, err := s.wal.LatestDocumentEntries(seg.branch.ID, collection, pending(), seg.fromLSN, seg.toLSN,
+			func(lsn int64) bool { return !seg.branch.IsDiscardedForRead(lsn, seg.toLSN) })
+		if err != nil {
+			return nil, fmt.Errorf("failed to get document histories for branch %s: %w", seg.branch.ID, err)
+		}
+		// A point read finds entries by document key. An entry that names no
+		// document (schema-v1 updates and deletes carried a filter instead)
+		// is invisible to it, while a replay would stop at it.
+		unkeyed, err := s.wal.HasUnkeyedDataEntries(seg.branch.ID, collection, seg.fromLSN, seg.toLSN)
+		if err != nil {
+			return nil, err
+		}
+		if unkeyed {
+			return nil, fmt.Errorf("collection %q on branch %q holds entries that name no document; replay the collection", collection, seg.branch.Name)
+		}
+
+		// Read the floor after the entries: GC records it before it deletes,
+		// so entries above a floor read now were all still in the log.
+		floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
+		if err != nil {
+			return nil, err
+		}
+		for key, entry := range entries {
+			if entry.LSN <= floor {
+				// Deletion at or below the floor may be under way or half
+				// done: a newer entry of this document can already be gone.
+				// A replay never applies such an entry either; the snapshot
+				// below answers for this document.
+				continue
+			}
+			state := make(map[string]bson.M, 1)
+			if err := s.ApplyEntry(state, entry); err != nil {
+				return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
+			}
+			if doc, ok := state[key]; ok {
+				result[key] = doc
+			}
+			delete(remaining, key)
+		}
+		if len(remaining) == 0 {
+			break
+		}
+
+		// The documents still pending have no usable entry in this segment.
+		// That shows they went unchanged here only if none of the segment's
+		// entries can be missing. Two things can have removed some: garbage
+		// collection that recorded a floor, and garbage collection by a
+		// release that did not (up to 2.1.5), which is bounded by the
+		// snapshots of that time.
+		suspect := floor
+		if s.snapshots != nil {
+			unrecorded, err := s.snapshots.UnrecordedReclaimBound(seg.branch.ID, collection)
+			if err != nil {
+				return nil, fmt.Errorf("failed to look up snapshots for branch %s: %w", seg.branch.ID, err)
+			}
+			if unrecorded > suspect {
+				suspect = unrecorded
+			}
+		}
+		if !needsReclaimed(seg, seg.fromLSN, suspect) {
+			continue
+		}
+		// The log cannot answer for this segment; its snapshot can, as long
+		// as nothing between the snapshot and the read bound may be missing.
+		// Without one, say so: the caller's collection replay may still
+		// succeed from a snapshot further up the chain, and reports what is
+		// lost if it cannot.
+		if s.snapshots == nil {
+			return nil, reclaimedError(seg.branch, collection, suspect, targetLSN)
+		}
+		state, snapLSN, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up snapshot for branch %s: %w", seg.branch.ID, err)
+		}
+		if !ok || needsReclaimed(seg, snapLSN+1, suspect) {
+			return nil, reclaimedError(seg.branch, collection, suspect, targetLSN)
+		}
+		// Entries above the snapshot were looked at first, so a pending
+		// document is unchanged since the snapshot, which already holds the
+		// state inherited from the rest of the chain.
+		for key := range remaining {
+			if doc, ok := state[key]; ok {
+				result[key] = doc
+			}
+		}
+		remaining = nil
+	}
+	return result, nil
+}
+
+// UnrecordedReclaimBound returns the highest LSN at or below which entries of
+// the branch's own log, in any collection, may have been deleted without a
+// reclaim floor (see SnapshotSource), or 0.
+func (s *Service) UnrecordedReclaimBound(branch *wal.Branch) (int64, error) {
+	if s.snapshots == nil {
+		return 0, nil
+	}
+	return s.snapshots.UnrecordedReclaimBound(branch.ID, "")
+}
+
+// EntryStateKey returns the key under which ApplyEntry stores or removes the
+// entry's document. ok is false when the entry alone does not say: an entry
+// that is not a current put or delete, one without a document ID, or a
+// legacy delete without a pre-image, which ApplyEntry resolves by searching
+// the state it is folding into.
+func EntryStateKey(entry *wal.Entry) (key string, ok bool) {
+	if entry.IsLegacy() || entry.DocumentID == "" {
+		return "", false
+	}
+	switch entry.Operation {
+	case wal.OpPut:
+		if id, err := wal.DocumentIDFromImage(entry.PostImage); err == nil {
+			return wal.DocumentIDString(id), true
+		}
+		return entry.DocumentID, true
+	case wal.OpDelete:
+		if len(entry.PreImage) > 0 {
+			if id, err := wal.DocumentIDFromImage(entry.PreImage); err == nil {
+				return wal.DocumentIDString(id), true
+			}
+			return entry.DocumentID, true
+		}
+		if entry.DocumentKeyVersion > 0 {
+			return entry.DocumentID, true
+		}
+	}
+	return "", false
 }
 
 // MaterializeDocument gets the current state of a specific document.
