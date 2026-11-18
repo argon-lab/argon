@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://argonlabs.tech">
-    <img src=".github/assets/hero.png" alt="Argon — MongoDB sandboxes for AI agents: give every agent run its own database and review what to merge" width="100%">
+    <img src=".github/assets/hero.png" alt="Argon — MongoDB sandboxes for AI agents. Git for MongoDB underneath: branch, diff, merge, undo." width="100%">
   </a>
 </p>
 
@@ -15,8 +15,8 @@
 [![mcp.market](https://mcp.market/badge/argon-lab-argon.svg)](https://mcp.market/server/argon-lab-argon)
 
 **Give every agent run its own real MongoDB database, forked from your data.
-Review what it changed, merge what you want, discard the rest. Git-style
-branching, time travel and merge underneath. Any driver, real mongod.**
+Review what it changed, merge what you want, discard the rest. Git for MongoDB
+underneath: branch, diff, merge, time travel and undo. Any driver, real mongod.**
 
 Three ideas, thirty seconds:
 
@@ -29,7 +29,8 @@ Three ideas, thirty seconds:
    merge.
 3. **Underneath, it is Git for MongoDB** — a branch is a pointer created with a
    metadata write; checkout separately materializes the data. Diff, merge, undo
-   and pins work within the configured retention and capture guarantees.
+   and pins work within the configured retention and capture guarantees. The
+   commands are [side by side with Git](#git-for-mongodb) below.
 
 ## Install
 
@@ -154,6 +155,28 @@ To keep a person in the loop, withhold tools from the MCP server:
 tools that inspect state.
 
 The full agent workflow: [docs/AGENTS.md](docs/AGENTS.md).
+
+## Git for MongoDB
+
+Underneath the sandbox, Argon does for MongoDB documents what Git does for
+files. Side by side:
+
+| In Git | In Argon | What it does to your data |
+|---|---|---|
+| `git branch` | `argon branches create` | adds a pointer into shared history; no documents are copied |
+| `git worktree add` | `argon sandbox create` | gives a new branch its own working copy: a real MongoDB database, with a TTL |
+| `git diff` | `argon diff` | lists the documents a branch would add, change or remove |
+| `git merge` | `argon merge preview`, then `argon merge apply` | saves the change as a plan to review, then applies exactly that plan |
+| `git checkout <commit>` | `argon time-travel query` | reads the data as it was at an earlier position in retained history |
+| `git revert` | `argon undo` | reverses earlier writes with a new change; history is not rewritten |
+| `git tag` | `argon pin create` | names one fixed state and protects its history while the pin exists |
+
+Where it differs from Git: there is no commit step, because a running capture
+process records each document change. A merge goes from a branch into its
+parent and compares whole documents. Checking out a branch copies its data, so
+it takes time and storage that depend on the dataset. Documents are versioned;
+indexes and collection options are not. History older than the retention
+window can be reclaimed unless a pin protects it.
 
 ## What you get
 

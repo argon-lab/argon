@@ -68,6 +68,11 @@ entry — a synchronization barrier, not in-proxy capture).
   any other database as its physical database.
 - Source connection strings are removed from import errors before they are
   printed, and `--uri` may be given as `ARGON_SOURCE_URI`.
+- The README, the npm package description and the MCP Registry description
+  name what is underneath a sandbox as Git for MongoDB. The README sets seven
+  Git commands beside the Argon command that does the same job and says where
+  the comparison stops. "MongoDB sandboxes for AI agents" remains the first
+  line everywhere.
 
 ## [2.5.0] - 2026-11-17
 
