@@ -311,6 +311,8 @@ type ResyncSourceOptions struct {
 	BatchSize int
 	// Progress is called after every batch. Optional.
 	Progress func(ResyncProgress)
+	// Watch is as in ingest.ResyncOptions; tests only.
+	Watch func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error)
 }
 
 // ResyncInfo describes a finished resync.
@@ -363,8 +365,8 @@ func (s *Services) resyncSource(ctx context.Context, branch *wal.Branch, db *mon
 	started := time.Now()
 	result, err := s.Ingest.Resync(ctx, branch.ID, db, ingest.ResyncOptions{
 		State: s.Materializer, Force: opts.Force, BatchSize: opts.BatchSize, Progress: opts.Progress,
-		WriteBacks: writeBackLedger{s.Merge},
-		Redact:     func(text string) string { return source.Redact(text, opts.URI) },
+		WriteBacks: writeBackLedger{s.Merge}, Watch: opts.Watch,
+		Redact: func(text string) string { return source.Redact(text, opts.URI) },
 	})
 	if err != nil {
 		return nil, source.RedactError(err, opts.URI)
