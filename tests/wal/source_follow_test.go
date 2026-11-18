@@ -200,7 +200,12 @@ func (f *followFixture) waitCaughtUp(t *testing.T) *walcli.SourceInfo {
 		require.NoError(t, err)
 		last = info
 		if info.State == "degraded" || info.State == "stopped" {
-			t.Fatalf("following is %s: %s", info.State, info.Error)
+			if info.Owner == nil {
+				t.Fatalf("following is %s: %s", info.State, info.Error)
+			}
+			// A restart can still be replaying from a previously degraded position.
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 		if info.Mode == "exact" && info.Position != nil && !(primitive.Timestamp{T: info.Position.T, I: info.Position.I}).Before(target) {
 			return info

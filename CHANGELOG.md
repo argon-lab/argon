@@ -25,6 +25,8 @@ entry — a synchronization barrier, not in-proxy capture).
   `argon source status` reports the position, the newest point at which
   `main` equalled the source, and which ranges of its history are not exact;
   `argon source detach` ends the tie. Nothing is written to the source.
+  A lease on the metadata deployment allows one follower or resync per
+  project. Status shows the owner's run type, host, process ID and heartbeat.
   Updates are stored as the source held them, read back at their own cluster
   time. A position the oplog no longer holds, a dropped or renamed
   collection, and an update older than MongoDB's snapshot history are
@@ -49,14 +51,13 @@ entry — a synchronization barrier, not in-proxy capture).
   the source with `main` in batches, stores what differs, deletes what the
   source no longer has, replays the changes made meanwhile and reports the
   cluster time at which `main` equals the source again. Nothing is written to
-  the source; the LSNs it writes are recorded as an inexact range; an
-  interrupted resync is reported as unfinished, blocks `source follow`, and
-  is completed by running it again. `argon source follow --auto-resync` runs
-  it when following ends as degraded and continues. Before it writes
-  anything it opens the source's change stream once, so a source user who
-  may not read it is told at the start, and it records its start only while
-  the project still follows the source, so a detach in that instant leaves
-  nothing behind.
+  the source. The LSNs it writes are recorded as an inexact range. An
+  interrupted resync is reported as unfinished and blocks plain `source follow`.
+  Running `source resync` again completes it. `argon source follow --auto-resync`
+  can also complete it on startup or repair a source stream gap during following.
+  A head moved outside the follower requires an explicit resync. Resync checks
+  that the source's change stream can open before recording its start. A failed
+  check preserves the previous status. A detach at that point leaves no marker.
   The consistent point reported on a source nobody is writing to is now the
   source's current cluster time; it could be one tick later, a time a later
   write might still be given. Dropping a collection Argon does not follow

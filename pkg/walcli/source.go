@@ -97,14 +97,26 @@ type SourceInfo struct {
 
 	// ResyncUnfinished is set while a resync has written to main and has not
 	// yet brought it to a state of the source; ResyncStartedAt says since
-	// when. Only `argon source resync` continues from here.
+	// when. `argon source resync` and `argon source follow --auto-resync`
+	// can complete it.
 	ResyncUnfinished bool       `json:"resync_unfinished,omitempty"`
 	ResyncStartedAt  *time.Time `json:"resync_started_at,omitempty"`
+	// Owner records the lease holder and its most recent heartbeat.
+	Owner *SourceOwner `json:"owner,omitempty"`
 
 	UpdatedAt      time.Time `json:"updated_at"`
 	LastCapturedAt time.Time `json:"last_captured_at,omitempty"`
 	LastEventAt    time.Time `json:"last_event_at,omitempty"`
 	LastEventLagMS int64     `json:"last_event_lag_ms,omitempty"`
+}
+
+// SourceOwner describes the run recorded as holding the followed branch's lease.
+type SourceOwner struct {
+	Kind        string    `json:"kind"`
+	Host        string    `json:"host"`
+	PID         int       `json:"pid"`
+	StartedAt   time.Time `json:"started_at"`
+	HeartbeatAt time.Time `json:"heartbeat_at"`
 }
 
 // InexactRange is a span of a followed branch's history that is not exact.
@@ -134,27 +146,47 @@ func (s *Services) followedBranch(ctx context.Context, projectName string) (*wal
 	return project, branch, binding, nil
 }
 
-// openSource connects to the database a project follows and refuses any
-// deployment other than the one the project was imported from.
-func (s *Services) openSource(ctx context.Context, binding *source.Binding, uri string) (*mongo.Client, *mongo.Database, error) {
+// identifySource connects to the database and verifies the recorded binding.
+func identifySource(ctx context.Context, binding *source.Binding, uri string) (*mongo.Database, source.Identity, error) {
 	client, err := source.Connect(ctx, uri)
 	if err != nil {
-		return nil, nil, err
+		return nil, source.Identity{}, err
 	}
 	identity, err := source.Identify(ctx, client)
 	if err == nil {
 		err = binding.Verify(identity)
 	}
-	if err == nil {
-		// A binding made by a user who could not read the replica-set ID
-		// takes it from the first verified connection that can.
-		err = s.Sources.AdoptID(ctx, binding, identity)
-	}
 	if err != nil {
 		disconnect(client)
-		return nil, nil, source.RedactError(err, uri)
+		return nil, source.Identity{}, source.RedactError(err, uri)
 	}
-	return client, client.Database(binding.Database), nil
+	return client.Database(binding.Database), identity, nil
+}
+
+func (s *Services) openSource(ctx context.Context, binding *source.Binding, uri string) (*mongo.Database, error) {
+	db, identity, err := identifySource(ctx, binding, uri)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Sources.AdoptID(ctx, binding, identity); err != nil {
+		disconnect(db.Client())
+		return nil, source.RedactError(err, uri)
+	}
+	return db, nil
+}
+
+// prepareSourceBinding lets a following run adopt a newly readable replica
+// set ID only inside a transaction that holds its lease.
+func (s *Services) prepareSourceBinding(binding *source.Binding, identity source.Identity) func(context.Context) error {
+	if binding.ReplicaSetID != "" || identity.ReplicaSetID == "" {
+		return nil
+	}
+	return func(ctx context.Context) error {
+		// AdoptID changes its argument. Each transaction attempt needs the
+		// original binding while the adoption is still uncommitted.
+		current := *binding
+		return s.Sources.AdoptID(ctx, &current, identity)
+	}
 }
 
 // SourceStatus reports what a project follows and the follower's last state.
@@ -178,6 +210,9 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 	info.State, info.Error = status.State, status.Error
 	info.UpdatedAt, info.LastCapturedAt = status.UpdatedAt, status.LastCapturedAt
 	info.LastEventAt, info.LastEventLagMS = status.LastEventAt, status.LastEventLagMS
+	if owner := status.Owner; owner != nil {
+		info.Owner = &SourceOwner{Kind: owner.Kind, Host: owner.Host, PID: owner.PID, StartedAt: owner.StartedAt, HeartbeatAt: owner.HeartbeatAt}
+	}
 	if src := status.Source; src != nil {
 		info.Mode = src.Mode
 		position := clusterTime(src.Position)
@@ -211,9 +246,8 @@ type FollowSourceOptions struct {
 	EnableSourceImages bool
 	// Ready is closed once the stream is open.
 	Ready chan<- struct{}
-	// AutoResync runs a resync when following ends as degraded and then
-	// follows again, instead of returning. See ResyncSource for what a
-	// resync does to the branch's history.
+	// AutoResync completes an unfinished resync or repairs a source stream
+	// gap before following again. See ResyncSource for the effect on history.
 	AutoResync bool
 	// OnResync is called after each automatic resync. Optional.
 	OnResync func(*ResyncInfo)
@@ -232,55 +266,59 @@ func (s *Services) FollowSource(ctx context.Context, projectName string, opts Fo
 	if err != nil {
 		return err
 	}
-	client, db, err := s.openSource(ctx, binding, opts.URI)
+	db, identity, err := identifySource(ctx, binding, opts.URI)
 	if err != nil {
 		return err
 	}
-	defer disconnect(client)
+	defer disconnect(db.Client())
+	prepare := s.prepareSourceBinding(binding, identity)
+	var beforeStream func(context.Context) error
 	if opts.EnableSourceImages {
-		// The source is altered only once following can actually start:
-		// nothing else is following in this process and there is a position
-		// to follow from.
-		if s.Ingest.Running(branch.ID) {
-			return fmt.Errorf("the source is already being followed for project %q in this process; its collections were not altered", projectName)
+		beforeStream = func(ctx context.Context) error {
+			collections, err := source.Collections(ctx, db)
+			if err == nil {
+				_, err = source.EnableImages(ctx, db, collections)
+			}
+			if err != nil {
+				return source.RedactError(err, opts.URI)
+			}
+			beforeStream = nil
+			return nil
 		}
-		if status, err := s.Ingest.SourceStatusFor(ctx, branch.ID); err != nil {
-			return err
-		} else if status == nil || status.Source == nil {
-			return fmt.Errorf("project %q has no saved source position to follow from; its source's collections were not altered", projectName)
-		}
-		collections, err := source.Collections(ctx, db)
-		if err == nil {
-			_, err = source.EnableImages(ctx, db, collections)
-		}
-		if err != nil {
-			return source.RedactError(err, opts.URI)
+	}
+	var onReady func()
+	if opts.Ready != nil {
+		onReady = func() {
+			close(opts.Ready)
+			onReady = nil
 		}
 	}
 	redact := func(text string) string { return source.Redact(text, opts.URI) }
 	var lastResync time.Time
 	for {
 		err := s.Ingest.Follow(ctx, branch.ID, db, ingest.FollowOptions{
-			AllowInexact: opts.AllowInexact, Ready: opts.Ready,
+			AllowInexact: opts.AllowInexact, OnReady: onReady, Prepare: prepare, BeforeStream: beforeStream,
 			WriteBacks: writeBackLedger{s.Merge}, Redact: redact, Watch: opts.Watch,
 		})
+		if !opts.AutoResync || ctx.Err() != nil {
+			return err
+		}
 		var gap *ingest.CaptureError
-		if !opts.AutoResync || ctx.Err() != nil || !errors.As(err, &gap) {
+		unfinished := errors.Is(err, ingest.ErrUnfinishedResync)
+		if !unfinished && (!errors.As(err, &gap) || !gap.AutoResyncAllowed()) {
 			return err
 		}
 		if !lastResync.IsZero() && time.Since(lastResync) < autoResyncSpacing {
-			return fmt.Errorf("following ended as degraded again within %s of an automatic resync; not resyncing in a loop: %w", autoResyncSpacing, err)
+			return fmt.Errorf("another automatic resync was needed within %s of the previous one: %w", autoResyncSpacing, err)
 		}
-		info, resyncErr := s.resyncSource(ctx, branch, db, ResyncSourceOptions{URI: opts.URI})
+		info, resyncErr := s.resyncSource(ctx, branch, db, ResyncSourceOptions{URI: opts.URI}, prepare)
 		if resyncErr != nil {
-			return fmt.Errorf("following ended as degraded (%v) and the automatic resync failed: %w", err, resyncErr)
+			return fmt.Errorf("automatic resync failed after following stopped (%v): %w", err, resyncErr)
 		}
 		lastResync = time.Now()
 		if opts.OnResync != nil {
 			opts.OnResync(info)
 		}
-		// The channel was closed when the first stream opened.
-		opts.Ready = nil
 	}
 }
 
@@ -332,23 +370,23 @@ func (s *Services) ResyncSource(ctx context.Context, projectName string, opts Re
 	if err != nil {
 		return nil, err
 	}
-	client, db, err := s.openSource(ctx, binding, opts.URI)
+	db, identity, err := identifySource(ctx, binding, opts.URI)
 	if err != nil {
 		return nil, err
 	}
-	defer disconnect(client)
-	info, err := s.resyncSource(ctx, branch, db, opts)
+	defer disconnect(db.Client())
+	info, err := s.resyncSource(ctx, branch, db, opts, s.prepareSourceBinding(binding, identity))
 	if info != nil {
 		info.Project = projectName
 	}
 	return info, err
 }
 
-func (s *Services) resyncSource(ctx context.Context, branch *wal.Branch, db *mongo.Database, opts ResyncSourceOptions) (*ResyncInfo, error) {
+func (s *Services) resyncSource(ctx context.Context, branch *wal.Branch, db *mongo.Database, opts ResyncSourceOptions, prepare func(context.Context) error) (*ResyncInfo, error) {
 	started := time.Now()
 	result, err := s.Ingest.Resync(ctx, branch.ID, db, ingest.ResyncOptions{
 		State: s.Materializer, Force: opts.Force, BatchSize: opts.BatchSize, Progress: opts.Progress,
-		WriteBacks: writeBackLedger{s.Merge}, Watch: opts.Watch,
+		WriteBacks: writeBackLedger{s.Merge}, Watch: opts.Watch, Prepare: prepare,
 		Redact: func(text string) string { return source.Redact(text, opts.URI) },
 	})
 	if err != nil {
@@ -417,11 +455,11 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 			return nil, errors.New("write-back refused: a resync of the followed branch has not finished. Complete it with `argon source resync`, then preview again")
 		}
 	}
-	client, db, err := s.openSource(ctx, binding, uri)
+	db, err := s.openSource(ctx, binding, uri)
 	if err != nil {
 		return nil, err
 	}
-	defer disconnect(client)
+	defer disconnect(db.Client())
 	result, err := s.Merge.ApplyToSource(ctx, planID, strategy, merge.WriteBackTarget{
 		Database: db, Display: binding.Display,
 		Redact: func(text string) string { return source.Redact(text, uri) },

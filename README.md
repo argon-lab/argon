@@ -112,6 +112,11 @@ Argon never drops, renames or rewrites anything in a source database. What is
 and is not guaranteed is in
 [the operations guide](docs/OPERATIONS.md#following-a-source-database).
 
+Each project can run one follower or resync at a time. `argon source status`
+shows the lease owner's host, process ID and last heartbeat. Run
+`argon source follow --auto-resync` to complete an unfinished resync or
+repair a gap in the source stream before continuing to follow.
+
 Prefer clicking? `argon console` serves a local web console (UI + REST API),
 supervises capture, reaps expired sandboxes every minute, and opens your browser.
 The console's MIT-licensed source is in [web/](web/README.md); see the

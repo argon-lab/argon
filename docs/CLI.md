@@ -101,6 +101,9 @@ not offer it.
 
 `source status` exits nonzero when following is degraded or a resync is
 unfinished, and lists the ranges of `main`'s history that are not exact.
+It reports the lease owner's run type, host, process ID and last heartbeat
+in both table and JSON output. Only one follower or resync can hold the
+lease for a project at a time.
 
 `source resync` repairs a project whose follower ended as degraded, in place:
 after a collection was dropped or renamed on the source, after the source
@@ -111,12 +114,14 @@ changes made meanwhile, and prints the cluster time and LSN at which `main`
 equals the source again; `source follow` continues from there. It reads the
 source and writes nothing to it. The LSNs it writes are recorded as an
 inexact range. Run without `--force` it refuses unless following ended as
-degraded or an earlier resync is unfinished. If it is interrupted, or the
-source drops or renames another collection while it runs, `main` stays marked
-as unfinished (`source status` says so and `source follow` refuses to start)
-until `source resync` is run again. `source follow --auto-resync` runs the
-same resync itself when following ends as degraded, then continues; it stops
-instead if that happens twice within a minute.
+degraded or an earlier resync is unfinished. If a resync is interrupted or
+the source drops or renames another collection while it runs, `source status`
+reports the unfinished resync and plain `source follow` refuses to start.
+Run `source resync` again or restart with `source follow --auto-resync` to
+complete it. `--auto-resync` also repairs a gap in the source stream before
+following again. It stops if another automatic resync would be needed
+within a minute. If another process moves the branch head, follow stops as
+degraded and requires `source resync` to be run explicitly.
 
 `source detach` ends the tie for good
 and turns `main` back into an ordinary branch. See

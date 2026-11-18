@@ -279,10 +279,6 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"cli/cmd/doctor.go:probeCapture UpdateOne",
 		// READS A SOURCE: collStats for the import preview.
 		"internal/importer/service.go:PreviewImport RunCommand",
-		// Argon's wal_ingest_state.
-		"internal/ingest/follow.go:CatchUp UpdateOne",
-		"internal/ingest/follow.go:commit UpdateOne",
-		"internal/ingest/follow.go:heartbeat UpdateOne",
 		// READS A SOURCE: hello, and a find at a past cluster time.
 		"internal/ingest/follow.go:primaryTime RunCommand",
 		"internal/ingest/images.go:documentAt RunCommand",
@@ -291,13 +287,16 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/ingest/lifecycle.go:Drain InsertOne",
 		"internal/ingest/lifecycle.go:report FindOneAndUpdate",
 		// Argon's wal_ingest_state.
-		"internal/ingest/resync.go:commit UpdateOne",
-		"internal/ingest/resync.go:resync UpdateOne",
 		"internal/ingest/service.go:ClearResumeState DeleteOne",
 		"internal/ingest/service.go:flush UpdateOne",
 		"internal/ingest/service.go:runStream DeleteOne",
 		"internal/ingest/service.go:runStream InsertOne",
 		"internal/ingest/service.go:runStream UpdateOne",
+		"internal/ingest/source_lease.go:InitSourceState InsertOne",
+		"internal/ingest/source_lease.go:acquireSourceLease UpdateOne",
+		"internal/ingest/source_lease.go:releaseSourceLease UpdateOne",
+		"internal/ingest/source_lease.go:reportSource FindOneAndUpdate",
+		"internal/ingest/source_lease.go:updateSourceLease UpdateOne",
 		// Argon's wal_merge_plans, and a branch's own physical database.
 		"internal/merge/service.go:Apply UpdateOne",
 		"internal/merge/service.go:Preview InsertOne",

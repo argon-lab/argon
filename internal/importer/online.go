@@ -20,6 +20,7 @@ import (
 
 // Follower is the part of the ingest service an online import needs.
 type Follower interface {
+	InitSourceState(ctx context.Context, branchID string) error
 	CatchUp(ctx context.Context, branchID string, src *mongo.Database, startAt primitive.Timestamp, firstLSN int64, reason string, redact func(string) string) (*ingest.ConsistentPoint, error)
 }
 
@@ -141,6 +142,9 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 		SetName: identity.SetName, ReplicaSetID: identity.ReplicaSetID, Hosts: identity.Hosts,
 	}); err != nil {
 		return nil, err
+	}
+	if err := s.follower.InitSourceState(ctx, branch.ID); err != nil {
+		return nil, fmt.Errorf("failed to create the source stream state: %w", err)
 	}
 	// Only now, with the project reserved and bound, is the source altered,
 	// and only because the operator asked for it by name.

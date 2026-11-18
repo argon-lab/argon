@@ -492,13 +492,16 @@ physical entry, as capture does, and differs where the source is not Argon's:
   metadata deployment, so exactly-once does not depend on where the source
   is.
 
-The follower's writes are fenced on more than the branch head. Each one
-requires, in its transaction, that the branch still follows this source and
-is not checked out, and that the status document still exists; a detach by
-another process therefore ends the follower at its next write instead of
-being overwritten by it. A head that moved without the follower, or a saved
-position another process replaced, ends it as degraded: the branch no longer
-equals the source at that position, and only a resync can say so again.
+A follower and a resync take the same per-branch lease in `wal_ingest_state`.
+Acquisition and heartbeat timestamps use the metadata primary's clock. The
+owner releases the lease on exit. If the heartbeat expires, another run can
+take over. Only the current owner can update capture status or advance the
+stream position. Transactions that publish the log and branch head also
+check the lease, the branch's source and its checkout state. Detach removes
+the saved state and a previous owner cannot write into a recreated record.
+A head that moved without the follower, or a saved position another process
+replaced, ends following as degraded and requires a manual resync. Automatic
+resync handles gaps in the source stream and unfinished resyncs.
 
 Which deployment a connection leads to is decided by the replica set's ID
 when it can be read and by the set name plus member hosts otherwise, never by
@@ -530,21 +533,24 @@ degraded back to the source, in place. It is the import's copy-then-replay
 with the copy replaced by a comparison, because the branch already has
 documents:
 
-1. Take the primary's cluster time `T0`, then list the source's collections.
-2. Record in the branch's capture status, before anything is written to the
-   branch: mode `catch_up`, the LSN the inexact range starts at, a resync
-   marker, the stream's start position `T0`, and no resume token.
+1. Acquire the branch's lease, take the source primary's cluster time `T0`,
+   list its collections and check that the change stream can open.
+2. Record mode `catch_up`, the LSN the inexact range starts at, the resync
+   marker and the stream's start position before writing any branch entries.
+   Clear the previous resume token in the same transaction. If a preflight
+   check fails, the previous capture status is preserved.
 3. Source to branch: read every source document with majority reads in a
    causally consistent session that starts at `T0`; append a put unless the
    branch's newest entry for the document is a put of the same bytes.
+   Flush each batch at the document-count or raw BSON byte limit.
 4. Branch to source: walk the branch's document keys, look each batch up on
    the source by `_id` in the same session, and append a delete for every
    document the source does not have. A dropped collection has none of its
    documents on the source; a renamed one is that plus step 3's puts under
    the new name. Collection-level changes thus become the document-level
    operations the WAL has.
-5. Replay the change stream from `T0` until it has passed every read, exactly
-   as the import does. The transaction that stores the first head proven
+5. Replay the change stream from the `T0` boundary held in memory until it
+   has passed every read. The transaction that stores the first head proven
    equal to the source also clears the marker and records the range.
 
 The deletes are covered by the import's argument. A document found missing in
@@ -568,8 +574,8 @@ The branch is visible throughout, and each batch moves its head. What keeps a
 half-compared branch from passing for a healthy one is the status written in
 step 2: the follower refuses to open a stream while the marker is set, and
 the saved position is only meaningful on top of a finished comparison. A
-resync that dies is run again; it takes a new `T0` and compares whatever the
-branch holds, so no progress record is needed and none can be stale.
+resync that dies is run again by `source resync` or `source follow --auto-resync`.
+It takes a new `T0` and compares whatever the branch holds.
 
 A drop or rename that arrives during step 5 fails the resync as it fails the
 follower, with the marker left in place.

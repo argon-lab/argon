@@ -42,7 +42,7 @@ migration. Everything here reflects what the code does today.
 | `(cd api && go run .)` (or the built binary) | one | REST control plane; supervises ingesters for the sandboxes it creates; `HOST`/`PORT` (default 127.0.0.1:8080) |
 | `argon mcp` | per agent client | MCP server over stdio; supervises ingesters for its sandboxes |
 | `argon proxy` | optional | stable `project~branch` connection strings on `127.0.0.1:27018` (see [Exposure](#exposure-and-credentials) before listening elsewhere) |
-| `argon source follow -p P` | one per project that follows a source | applies the source database's changes to `main`; resumes from its saved position; with `--auto-resync` repairs a degraded end itself |
+| `argon source follow -p P` | one per project that follows a source | applies the source database's changes to `main` and resumes from its saved position. With `--auto-resync`, repairs source stream gaps and completes interrupted resyncs |
 | `argon sandbox sweep -p P` | schedule for CLI-only use | reap expired sandboxes (pinned ones are skipped loudly) |
 | `argon gc -p P` | cron | reclaim covered, out-of-retention WAL entries |
 
@@ -157,6 +157,12 @@ read, and `argon source status` shows which (`identity`):
 
 ### What `argon source follow` guarantees
 
+- **One owner per followed branch.** A follower or resync holds a lease on
+  the metadata deployment. An overlapping run is refused while that lease
+  is fresh, without changing the branch's status. `argon source status`
+  shows the owner, its host, process ID and last heartbeat. A clean stop
+  releases the lease. After a crash, another run can take over when the
+  lease expires (60 seconds after the last heartbeat).
 - **No change is skipped or repeated across restarts.** The entries, the
   branch head and the stream's resume token commit in one transaction on the
   metadata deployment. This holds whether or not the source is the same
@@ -243,6 +249,8 @@ hanging. And it ends as `degraded` when something else has written to `main`
 (a process from before following existed does not know the branch is
 read-only) or has replaced its saved position: the head on record no longer
 being the branch's head is checked on every start and on every write.
+When either happens, make sure every process that uses this metadata
+database is current, then run `argon source resync` explicitly.
 
 A time-series collection created on a followed source ends following: its
 measurements never reach a change stream as documents, so `main` could not
@@ -306,30 +314,30 @@ What it guarantees, and what it cannot:
   marked before the first write to `main`. If the resync is interrupted or
   fails after that, the status keeps `resync_unfinished`, mode `catch_up`
   and the old consistent point; `source status` exits nonzero and
-  `source follow` refuses to start. Running `source resync` again completes
-  it, comparing whatever `main` holds by then; the recorded range covers
-  every attempt. A sandbox forked from `main` in that state starts from the
-  mixture, as it does during an `--allow-inexact` catch-up.
+  plain `source follow` refuses to start. Running `source resync` again or
+  starting `source follow --auto-resync` completes it, comparing whatever
+  `main` holds by then. The recorded range covers every attempt. A sandbox
+  forked from `main` in that state starts from the mixture, as it does during
+  an `--allow-inexact` catch-up.
 - **It fails rather than guess** when the source drops or renames another
   collection while it runs; run it again. A source that does this
   continuously (for example an aggregation with `$out`, which renames a
   temporary collection on every run) cannot be followed without repeated
   resyncs.
 
-Memory is bounded by the batch (500 documents), not by collection size. The
-exception is a collection whose history on `main` garbage collection has
-partly reclaimed: its documents are then listed from its snapshot, which is
-loaded whole. The source's oplog has to cover the duration of the resync, as
-for the import.
+The comparison batches hold at most 500 documents by default and flush at
+around 16 MiB of raw BSON. The prune pass works in batches of document keys.
+If garbage collection has partly reclaimed a collection's history on `main`,
+prune lists its documents from the full snapshot, which is loaded into memory.
+The source's oplog has to cover the duration of the resync, as for the import.
 
-`argon source follow --auto-resync` does the same when following ends as
-degraded and then continues following. It is off by default because each
-resync reads the whole source and leaves an inexact range; it gives up if
-following ends as degraded again within a minute of a resync.
+`argon source follow --auto-resync` completes an unfinished resync at startup
+or repairs a gap in the source stream, then continues following. It is off
+by default because each resync reads the whole source and leaves an inexact
+range. It stops if another automatic resync would be needed within a minute.
 
-Resync refuses a project whose follower did not end as degraded (`--force`
-overrides that), and it must not run alongside `argon source follow` for the
-same project: the two would compete for the branch head and one would fail.
+Resync refuses a healthy project unless `--force` is given. It always needs
+the branch's lease, so stop any current follower first.
 
 ### Writing a plan back to the source
 

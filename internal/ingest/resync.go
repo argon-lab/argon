@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -96,15 +95,17 @@ type ResyncOptions struct {
 	State BranchState
 	// Force resyncs a branch whose follower did not end as degraded.
 	Force bool
-	// BatchSize is the number of documents per batch (default 500).
+	// BatchSize is the maximum number of documents per batch (default 500).
 	BatchSize int
 	// Progress is optional.
 	Progress func(ResyncProgress)
+	// Prepare updates metadata in the transaction that records the start.
+	Prepare func(context.Context) error
 	// WriteBacks and Redact are as in FollowOptions.
 	WriteBacks WriteBackLedger
 	Redact     func(string) string
 	// Watch replaces src.Watch for the check that the source's change stream
-	// can be opened, made before anything is written. Tests use it to supply
+	// can be opened, made before the resync is recorded. Tests use it to supply
 	// a refusal that a deployment without access control cannot produce.
 	Watch func(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error)
 }
@@ -138,28 +139,32 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 500
 	}
+	lease, err := s.acquireSourceLease(ctx, branchID, src.Name(), "resync")
+	if err != nil {
+		return nil, redacted(err, opts.Redact)
+	}
+	defer s.releaseSourceLease(lease)
 	stored, err := s.SourceStatusFor(ctx, branchID)
 	if err != nil {
 		return nil, err
 	}
-	unfinished := stored != nil && stored.Source != nil && stored.Source.Resync != nil
-	degraded := stored != nil && stored.State == "degraded"
+	if stored == nil {
+		return nil, s.sourceLeaseMiss(ctx, lease)
+	}
+	unfinished := stored.Source != nil && stored.Source.Resync != nil
+	degraded := stored.State == "degraded"
 	if !degraded && !unfinished && !opts.Force {
 		return nil, &ConfigurationError{"following has not ended as degraded, so there is nothing a resync has to repair; `argon source follow` continues from the saved position. A resync compares the whole source with the branch and records the range it writes as inexact history; pass --force to run one anyway"}
 	}
-	cause := ""
-	if degraded {
-		cause = stored.Error
-	}
 
-	cfg := runConfig{actor: sourceActor, redact: opts.Redact, follower: true}
+	cfg := runConfig{actor: sourceActor, redact: opts.Redact, lease: lease, resync: true}
 	run, runCtx, created := s.register(ctx, branchID, cfg)
 	if !created {
-		return nil, fmt.Errorf("the source is being followed for branch %s in this process; stop that first", branchID)
+		return nil, &ConfigurationError{fmt.Sprintf("the source is being followed for branch %s in this process; stop that first", branchID)}
 	}
 	result := &ResyncResult{}
 	cfg.stream = func(ctx context.Context, run *running) error {
-		return s.resync(ctx, branchID, src, opts, run, cause, result)
+		return s.resync(ctx, branchID, src, opts, run, stored, result)
 	}
 	// No retries: every attempt compares the whole source again, and whether
 	// that is worth repeating is the operator's call.
@@ -175,7 +180,7 @@ func (s *Service) Resync(ctx context.Context, branchID string, src *mongo.Databa
 	return result, nil
 }
 
-func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Database, opts ResyncOptions, run *running, cause string, result *ResyncResult) error {
+func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Database, opts ResyncOptions, run *running, stored *Status, result *ResyncResult) error {
 	branch, err := s.branches.GetBranchByIDContext(ctx, branchID)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -192,9 +197,9 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	if branch.IsLive() {
 		return &ConfigurationError{fmt.Sprintf("branch %s is checked out; a followed branch has no physical database", branch.Name)}
 	}
-	_, _, status, err := s.loadFollowState(ctx, branchID)
-	if err != nil {
-		return err
+	var status SourceStatus
+	if stored.Source != nil {
+		status = *stored.Source
 	}
 
 	// Boundary, then the list of collections, then the reads: the order the
@@ -226,7 +231,10 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	status.InexactFromLSN = from
 	status.InexactReason = "resync: the branch was compared with the source while the source was written"
 	if status.Resync == nil {
-		status.Resync = &ResyncState{StartedAt: time.Now(), Cause: cause}
+		status.Resync = &ResyncState{StartedAt: time.Now()}
+		if stored.State == "degraded" {
+			status.Resync.Cause = stored.Error
+		}
 	}
 	// Every read below is causally at or after the boundary, so the stream
 	// starts with the cluster time after it.
@@ -234,36 +242,45 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	if startAt.I++; startAt.I == 0 {
 		startAt.T++
 	}
-	// Open the change stream once before anything is written. The replay
+	// Open the change stream once before recording the resync. The replay
 	// only starts after the whole comparison; a user without the changeStream
 	// privilege should learn that now, with the branch untouched and no
 	// unfinished resync on record.
 	if err := probeStream(ctx, src, startAt, opts.Watch); err != nil {
 		return err
 	}
-	// The marker is written in a transaction that also requires the branch
-	// to follow this source still. A detach by another process between the
-	// check above and this write then makes the write fail, instead of
-	// leaving a status document behind for a branch that follows nothing.
+	stored.BranchID, stored.State, stored.Actor, stored.Error = branchID, "resyncing", sourceActor, ""
+	stored.UpdatedAt, stored.Source = time.Now(), &status
+	fields := bson.M{
+		"start_at": startAt, "actor": sourceActor,
+		"capture_status.source":    status,
+		"capture_status.branch_id": stored.BranchID, "capture_status.state": stored.State,
+		"capture_status.actor": stored.Actor, "capture_status.error": stored.Error, "capture_status.updated_at": stored.UpdatedAt,
+	}
+	// Record that the branch is inexact only after the source preflight. The
+	// marker and the head check require the lease and binding to remain ours.
 	if _, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		if err := s.updateSourceLease(sc, run.lease, bson.M{"$set": fields, "$unset": bson.M{"resume_token": ""}}); err != nil {
+			return nil, err
+		}
 		if err := s.branches.FollowerCheckpoint(sc, branch.ID, branch.Follows, branch.HeadLSN); err != nil {
 			return nil, err
 		}
-		_, err := s.state.UpdateOne(sc, bson.M{"_id": branchID}, bson.M{
-			"$set":   bson.M{"start_at": startAt, "actor": sourceActor, "capture_status.source": status},
-			"$unset": bson.M{"resume_token": ""},
-		}, options.Update().SetUpsert(true))
-		return nil, err
+		if opts.Prepare != nil {
+			return nil, opts.Prepare(sc)
+		}
+		return nil, nil
 	}); err != nil {
 		if fenced := followerWriteError(branch, err); fenced != err {
 			return fenced
 		}
 		return fmt.Errorf("failed to record the start of the resync: %w", err)
 	}
+	run.resyncStarted = true
+	s.mu.Lock()
+	s.statuses[branchID] = *stored
+	s.mu.Unlock()
 	result.FromLSN = from
-	if err := s.report(branchID, "resyncing", sourceActor, ""); err != nil {
-		return err
-	}
 
 	session, err := src.Client().StartSession()
 	if err != nil {
@@ -274,7 +291,7 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	if err := session.AdvanceOperationTime(&readsFrom); err != nil {
 		return err
 	}
-	r := &resyncer{s: s, branch: branch, src: src, opts: opts, result: result, reads: mongo.NewSessionContext(ctx, session)}
+	r := &resyncer{s: s, branch: branch, src: src, opts: opts, result: result, lease: run.lease, reads: mongo.NewSessionContext(ctx, session)}
 	for _, name := range collections {
 		if err := r.compare(ctx, name); err != nil {
 			return fmt.Errorf("failed to compare source collection %s with the branch: %w", name, err)
@@ -302,7 +319,7 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	}
 
 	point, err := s.followStream(ctx, branchID, src, FollowOptions{
-		AllowInexact: true, WriteBacks: opts.WriteBacks, Redact: opts.Redact, resync: true,
+		AllowInexact: true, WriteBacks: opts.WriteBacks, Redact: opts.Redact, resync: true, startAt: &startAt,
 	}, run, true)
 	if err != nil {
 		return err
@@ -318,6 +335,7 @@ type resyncer struct {
 	src    *mongo.Database
 	opts   ResyncOptions
 	result *ResyncResult
+	lease  *sourceLease
 	// reads is a causally consistent session that starts at the boundary.
 	reads   mongo.SessionContext
 	pending []*wal.Entry
@@ -356,6 +374,8 @@ func (r *resyncer) compare(ctx context.Context, name string) error {
 		doc bson.Raw
 	}
 	batch := make([]read, 0, r.opts.BatchSize)
+	const maxBatchBytes = 16 * 1024 * 1024
+	batchBytes := 0
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
@@ -377,7 +397,9 @@ func (r *resyncer) compare(ctx context.Context, name string) error {
 			r.result.Puts++
 		}
 		r.result.Compared += int64(len(batch))
+		clear(batch)
 		batch = batch[:0]
+		batchBytes = 0
 		if err := r.commit(); err != nil {
 			return err
 		}
@@ -385,11 +407,17 @@ func (r *resyncer) compare(ctx context.Context, name string) error {
 		return ctx.Err()
 	}
 	for cursor.Next(r.reads) {
+		if len(batch) > 0 && batchBytes+len(cursor.Current) > maxBatchBytes {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
 		var id interface{}
 		if err := cursor.Current.Lookup("_id").Unmarshal(&id); err != nil || id == nil {
 			return fmt.Errorf("a document in %s has no _id", name)
 		}
 		batch = append(batch, read{key: wal.DocumentIDString(id), doc: append(bson.Raw(nil), cursor.Current...)})
+		batchBytes += len(cursor.Current)
 		if len(batch) >= r.opts.BatchSize {
 			if err := flush(); err != nil {
 				return err
@@ -533,8 +561,8 @@ func (r *resyncer) prune(ctx context.Context, name string) (int64, error) {
 	return deleted, check(keys, state)
 }
 
-// commit stores the pending entries and the branch head in one transaction.
-// The status is not touched: it already says the branch is catching up.
+// commit stores the pending entries, branch head, and progress under the
+// resync's lease in one transaction.
 func (r *resyncer) commit() error {
 	if len(r.pending) == 0 {
 		return nil
@@ -545,21 +573,20 @@ func (r *resyncer) commit() error {
 	at := time.Now()
 	var head int64
 	if _, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		if err := s.renewSourceLease(sc, r.lease); err != nil {
+			return nil, err
+		}
 		lsns, err := s.wal.AppendBatchContext(sc, batch)
 		if err != nil {
 			return nil, fmt.Errorf("failed to append resync entries: %w", err)
 		}
 		head = lsns[len(lsns)-1]
-		if err := s.branches.FollowerSetHead(sc, branch.ID, branch.Follows, branch.HeadLSN, head); err != nil {
+		if err := s.updateSourceLease(sc, r.lease, bson.M{"$set": bson.M{
+			"updated_at": at, "capture_status.last_captured_at": at, "capture_status.head_lsn": head,
+		}}); err != nil {
 			return nil, err
 		}
-		stored, err := s.state.UpdateOne(sc, bson.M{"_id": branch.ID}, bson.M{"$set": bson.M{
-			"updated_at": at, "capture_status.last_captured_at": at, "capture_status.head_lsn": head,
-		}})
-		if err == nil && stored.MatchedCount != 1 {
-			err = branchwal.ErrNoLongerFollows
-		}
-		return nil, err
+		return nil, s.branches.FollowerSetHead(sc, branch.ID, branch.Follows, branch.HeadLSN, head)
 	}); err != nil {
 		return followerWriteError(branch, err)
 	}
@@ -583,13 +610,13 @@ func probeStream(ctx context.Context, src *mongo.Database, startAt primitive.Tim
 	}
 	stream, err := watch(ctx, src, options.ChangeStream().SetStartAtOperationTime(&startAt).SetMaxAwaitTime(100*time.Millisecond))
 	if err != nil {
-		return &ConfigurationError{fmt.Sprintf("the source's change stream cannot be opened, so the changes made during the comparison could not be replayed (the source user needs the changeStream action on database %s): %v. Nothing was written", src.Name(), err)}
+		return &ConfigurationError{fmt.Sprintf("the source's change stream cannot be opened, so the changes made during the comparison could not be replayed (the source user needs the changeStream action on database %s): %v. Nothing was written to the branch history", src.Name(), err)}
 	}
 	stream.TryNext(ctx)
 	err = stream.Err()
 	_ = stream.Close(context.Background())
 	if err != nil && ctx.Err() == nil {
-		return &ConfigurationError{fmt.Sprintf("the source's change stream cannot be read: %v. Nothing was written", err)}
+		return &ConfigurationError{fmt.Sprintf("the source's change stream cannot be read: %v. Nothing was written to the branch history", err)}
 	}
 	return ctx.Err()
 }

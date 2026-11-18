@@ -92,7 +92,6 @@ type SourceStatus struct {
 	// InexactRanges are the finished ones, oldest first.
 	InexactRanges        []InexactRange `bson:"inexact_ranges,omitempty" json:"inexact_ranges,omitempty"`
 	InexactRangesDropped int            `bson:"inexact_ranges_dropped,omitempty" json:"inexact_ranges_dropped,omitempty"`
-	HeartbeatAt          time.Time      `bson:"heartbeat_at,omitempty" json:"heartbeat_at,omitempty"`
 	// Resync is set from the first write of a resync until the branch equals
 	// the source again. While it is set the saved stream position is not one
 	// to resume from, and only a resync may write to the branch.
@@ -127,13 +126,18 @@ type FollowOptions struct {
 	// current state instead and recording the affected range as inexact.
 	// Without it such an update stops the follower as degraded.
 	AllowInexact bool
-	// Ready is closed once the stream is open at the saved position.
-	Ready chan<- struct{}
+	// OnReady runs once when the stream opens at the saved position.
+	OnReady func()
 	// WriteBacks is optional.
 	WriteBacks WriteBackLedger
 	// Redact cleans error text before it is stored or printed. The caller
 	// knows the connection string; this package never sees it.
 	Redact func(string) string
+	// Prepare updates source binding metadata in a transaction under the lease.
+	Prepare func(context.Context) error
+	// BeforeStream runs once with the lease held, after validating the saved
+	// position and before opening the source stream.
+	BeforeStream func(context.Context) error
 	// Watch replaces src.Watch. Tests use it to supply server errors that a
 	// fresh replica set cannot be made to produce, such as a resume position
 	// its oplog no longer holds.
@@ -141,6 +145,8 @@ type FollowOptions struct {
 	// resync marks the stream that ends a resync, the only one allowed to
 	// run while the branch's status says a resync is unfinished.
 	resync bool
+	// startAt is the owning resync's boundary, taken before its comparison.
+	startAt *primitive.Timestamp
 }
 
 // Follow applies the source database's changes to a branch until ctx ends,
@@ -148,10 +154,36 @@ type FollowOptions struct {
 // failures are retried; a gap that cannot be repaired stops it and is
 // reported as degraded.
 func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Database, opts FollowOptions) error {
-	cfg := runConfig{ready: opts.Ready, actor: sourceActor, redact: opts.Redact, follower: true}
+	lease, err := s.acquireSourceLease(ctx, branchID, src.Name(), "follow")
+	if err != nil {
+		return redacted(err, opts.Redact)
+	}
+	defer s.releaseSourceLease(lease)
+	if prepare, before := opts.Prepare, opts.BeforeStream; prepare != nil || before != nil {
+		opts.BeforeStream = func(ctx context.Context) error {
+			if prepare != nil {
+				if _, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+					if err := s.renewSourceLease(sc, lease); err != nil {
+						return nil, err
+					}
+					return nil, prepare(sc)
+				}); err != nil {
+					return err
+				}
+			}
+			if before != nil {
+				if err := before(ctx); err != nil {
+					return err
+				}
+			}
+			opts.BeforeStream = nil
+			return nil
+		}
+	}
+	cfg := runConfig{actor: sourceActor, redact: opts.Redact, lease: lease}
 	run, runCtx, created := s.register(ctx, branchID, cfg)
 	if !created {
-		return fmt.Errorf("the source is already being followed for branch %s in this process", branchID)
+		return &ConfigurationError{fmt.Sprintf("source follow is already running for branch %s in this process", branchID)}
 	}
 	cfg.stream = func(ctx context.Context, run *running) error {
 		_, err := s.followStream(ctx, branchID, src, opts, run, false)
@@ -166,19 +198,28 @@ func (s *Service) Follow(ctx context.Context, branchID string, src *mongo.Databa
 // being written, so the branch only becomes a state of the source once every
 // change made during the copy has been applied on top.
 func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Database, startAt primitive.Timestamp, firstLSN int64, reason string, redact func(string) string) (*ConsistentPoint, error) {
-	status := SourceStatus{Database: src.Name(), Mode: ModeCatchUp, Position: startAt, InexactFromLSN: firstLSN, InexactReason: reason}
-	if _, err := s.state.UpdateOne(ctx, bson.M{"_id": branchID}, bson.M{"$set": bson.M{
-		"start_at": startAt, "actor": sourceActor, "capture_status.source": status,
-	}}, options.Update().SetUpsert(true)); err != nil {
-		return nil, fmt.Errorf("failed to persist the source stream boundary: %w", err)
+	lease, err := s.acquireSourceLease(ctx, branchID, src.Name(), "follow")
+	if err != nil {
+		return nil, redacted(err, redact)
 	}
-	cfg := runConfig{actor: sourceActor, redact: redact, follower: true}
+	defer s.releaseSourceLease(lease)
+	cfg := runConfig{actor: sourceActor, redact: redact, lease: lease}
 	run, runCtx, created := s.register(ctx, branchID, cfg)
 	if !created {
-		return nil, fmt.Errorf("the source is already being followed for branch %s in this process", branchID)
+		return nil, &ConfigurationError{fmt.Sprintf("source follow is already running for branch %s in this process", branchID)}
 	}
 	var point *ConsistentPoint
+	var initialized bool
 	cfg.stream = func(ctx context.Context, run *running) error {
+		if !initialized {
+			status := SourceStatus{Database: src.Name(), Mode: ModeCatchUp, Position: startAt, InexactFromLSN: firstLSN, InexactReason: reason}
+			if err := s.updateSourceLease(ctx, run.lease, bson.M{"$set": bson.M{
+				"start_at": startAt, "actor": sourceActor, "capture_status.source": status,
+			}}); err != nil {
+				return fmt.Errorf("failed to persist the source stream boundary: %w", err)
+			}
+			initialized = true
+		}
 		reached, err := s.followStream(ctx, branchID, src, FollowOptions{AllowInexact: true}, run, true)
 		if reached != nil {
 			point = reached
@@ -242,7 +283,7 @@ type follower struct {
 	writeBacks map[string]*WriteBack
 	lastCommit time.Time
 	lastToken  bson.Raw
-	lastBeat   time.Time
+	recoverAt  primitive.Timestamp
 }
 
 func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.Database, opts FollowOptions, run *running, untilConsistent bool) (*ConsistentPoint, error) {
@@ -263,9 +304,13 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 		return nil, &ConfigurationError{fmt.Sprintf("branch %s is checked out; a followed branch has no physical database", branch.Name)}
 	}
 
-	token, startAt, status, err := s.loadFollowState(ctx, branchID)
+	saved, err := s.loadFollowState(ctx, branchID)
 	if err != nil {
 		return nil, err
+	}
+	token, startAt := saved.ResumeToken, saved.StartAt
+	if opts.startAt != nil {
+		token, startAt = nil, opts.startAt
 	}
 	if token == nil && startAt == nil {
 		return nil, &ConfigurationError{fmt.Sprintf("branch %s has no saved source position to resume from", branch.Name)}
@@ -275,18 +320,30 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	// predates following and does not know this branch is read-only), or
 	// that replaced the saved state, means the branch no longer equals the
 	// source at that position.
-	if status.Database == "" {
-		return nil, &CaptureError{fmt.Sprintf("the saved source position of branch %s was replaced by another process (one that does not know the branch follows a source); it cannot be resumed. Upgrade every process that uses this metadata database, then run `argon source resync`", branch.Name)}
+	if saved.Status.Source == nil || saved.Status.Source.Database == "" {
+		return nil, &CaptureError{Message: fmt.Sprintf("the saved source position of branch %s was replaced by another process (one that does not know the branch follows a source); it cannot be resumed. Upgrade every process that uses this metadata database, then run `argon source resync`", branch.Name)}
 	}
-	if stored, err := s.storedHead(ctx, branchID); err != nil {
-		return nil, err
-	} else if stored != 0 && stored != branch.HeadLSN && !opts.resync {
-		return nil, &CaptureError{fmt.Sprintf("the head of branch %s moved from LSN %d to %d without the follower: something else wrote to it, so it no longer equals the source. Upgrade every process that uses this metadata database, then run `argon source resync`", branch.Name, stored, branch.HeadLSN)}
-	}
+	status := *saved.Status.Source
 	if status.Resync != nil && !opts.resync {
 		// Its saved position belongs to the resync's replay and is only valid
 		// on top of a finished comparison with the source.
-		return nil, &ConfigurationError{fmt.Sprintf("a resync of branch %s was started and has not finished: the branch is between its last consistent state and the source's current one. Run `argon source resync` again to complete it", branch.Name)}
+		return nil, unfinishedResyncError{&ConfigurationError{fmt.Sprintf("a resync of branch %s was started and has not finished: the branch is between its last consistent state and the source's current one. Run `argon source resync` again to complete it", branch.Name)}}
+	}
+	if stored := saved.Status.HeadLSN; stored != nil && *stored != branch.HeadLSN && !opts.resync {
+		return nil, &CaptureError{Message: fmt.Sprintf("the head of branch %s moved from LSN %d to %d without the follower: something else wrote to it, so it no longer equals the source. Upgrade every process that uses this metadata database, then run `argon source resync`", branch.Name, *stored, branch.HeadLSN)}
+	}
+	if !opts.resync {
+		if err := s.report(branchID, "starting", sourceActor, ""); err != nil {
+			return nil, err
+		}
+	}
+	if opts.BeforeStream != nil {
+		if err := s.renewSourceLease(ctx, run.lease); err != nil {
+			return nil, err
+		}
+		if err := opts.BeforeStream(ctx); err != nil {
+			return nil, &ConfigurationError{err.Error()}
+		}
 	}
 	if status.Mode == "" {
 		status.Mode = ModeExact
@@ -316,7 +373,7 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	}
 	stream, err := watch(ctx, src, csOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open the change stream on source database %s: %w", src.Name(), err)
+		return nil, streamCaptureError(fmt.Errorf("failed to open the change stream on source database %s: %w", src.Name(), err), true)
 	}
 	defer func() { _ = stream.Close(context.Background()) }()
 
@@ -339,6 +396,9 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	f := &follower{s: s, branch: branch, src: src, session: session, opts: opts, status: status, branchID: branchID,
 		writeBacks: make(map[string]*WriteBack), lastCommit: time.Now(), opened: opened,
 		unpublished: untilConsistent && !opts.resync, run: run}
+	if saved.Status.State == "degraded" && !opts.resync {
+		f.recoverAt = now
+	}
 	if f.status.Mode == ModeCatchUp {
 		// Every document read for this catch-up so far happened before now.
 		f.need = now
@@ -349,8 +409,8 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	}
 	run.readyOnce.Do(func() {
 		close(run.ready)
-		if opts.Ready != nil {
-			close(opts.Ready)
+		if opts.OnReady != nil {
+			opts.OnReady()
 		}
 	})
 
@@ -387,7 +447,7 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 			if ctx.Err() != nil {
 				return nil, f.flushReady()
 			}
-			return nil, fmt.Errorf("change stream error: %w", err)
+			return nil, streamCaptureError(fmt.Errorf("change stream error: %w", err), true)
 		}
 
 		// The server had nothing more. Its resume token now marks how far the
@@ -411,7 +471,6 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 					return point, nil
 				}
 			}
-			f.heartbeat()
 			continue
 		}
 		token := append(bson.Raw(nil), stream.ResumeToken()...)
@@ -427,6 +486,21 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 			return point, nil
 		}
 	}
+}
+
+func streamCaptureError(err error, followedSource bool) error {
+	var command mongo.CommandError
+	if errors.As(err, &command) {
+		switch command.Code {
+		case 260, 280, 286, 40573:
+			return &CaptureError{Message: fmt.Sprintf("capture cannot resume safely: %v", err), streamGap: followedSource}
+		case 10334:
+			if followedSource {
+				return &CaptureError{Message: fmt.Sprintf("the source cannot be followed past this position: %v", err), streamGap: true}
+			}
+		}
+	}
+	return err
 }
 
 // reached returns the cluster time an idle stream's token stands for. That is
@@ -574,9 +648,9 @@ func (f *follower) convert(ctx context.Context, raw bson.Raw, event *changeEvent
 			// Neither copied nor followed, so its disappearance changes nothing.
 			return nil, nil
 		}
-		return nil, &CaptureError{fmt.Sprintf("%s of %s on the source is not followed: collection-level changes carry no documents, so the branch would stop matching the source; history is incomplete from here. Run `argon source resync` to bring the branch to the source's current state and follow it from there", event.OperationType, event.NS.Collection)}
+		return nil, &CaptureError{Message: fmt.Sprintf("%s of %s on the source is not followed: collection-level changes carry no documents, so the branch would stop matching the source; history is incomplete from here. Run `argon source resync` to bring the branch to the source's current state and follow it from there", event.OperationType, event.NS.Collection), streamGap: true}
 	case "invalidate":
-		return nil, &CaptureError{"the source change stream was invalidated (database dropped?); the branch cannot follow it past this point. Run `argon source resync` to bring the branch to the source's current state"}
+		return nil, &CaptureError{Message: "the source change stream was invalidated (database dropped?); the branch cannot follow it past this point. Run `argon source resync` to bring the branch to the source's current state", streamGap: true}
 	case "create":
 		// A time-series collection stores its data in system.buckets.*,
 		// which a change stream does not deliver as documents. The import
@@ -585,7 +659,7 @@ func (f *follower) convert(ctx context.Context, raw bson.Raw, event *changeEvent
 		// data the branch can never receive. A view has no data of its own
 		// and is not followed.
 		if on, ok := event.OperationDescription.Lookup("viewOn").StringValueOK(); ok && strings.HasPrefix(on, "system.buckets.") {
-			return nil, &CaptureError{fmt.Sprintf("time-series collection %s was created on the source; its measurements cannot be followed, so the branch no longer equals the source from here. A source with time-series collections cannot be followed", event.NS.Collection)}
+			return nil, &CaptureError{Message: fmt.Sprintf("time-series collection %s was created on the source; its measurements cannot be followed, so the branch no longer equals the source from here. A source with time-series collections cannot be followed", event.NS.Collection)}
 		}
 		return nil, nil
 	default:
@@ -661,7 +735,7 @@ func (f *follower) convert(ctx context.Context, raw bson.Raw, event *changeEvent
 func (f *follower) readPostImage(ctx context.Context, raw bson.Raw, event *changeEvent) (bson.Raw, bool, error) {
 	id, err := raw.LookupErr("documentKey", "_id")
 	if err != nil {
-		return nil, false, &CaptureError{fmt.Sprintf("update on %s carries no document key; history is incomplete", event.NS.Collection)}
+		return nil, false, &CaptureError{Message: fmt.Sprintf("update on %s carries no document key; history is incomplete", event.NS.Collection), streamGap: true}
 	}
 	if f.status.Mode != ModeCatchUp || event.ClusterTime.T >= f.goneBefore {
 		// A snapshot read shows the document after everything that committed
@@ -679,9 +753,9 @@ func (f *follower) readPostImage(ctx context.Context, raw bson.Raw, event *chang
 		// catch-up that was allowed once is not allowed for good.
 		if !f.opts.AllowInexact {
 			if unsupported {
-				return nil, false, &CaptureError{fmt.Sprintf("exact post-image unavailable for an update on %s: %v. This is not a matter of keeping up: the source will not serve this collection at the update's cluster time. That is so for a capped collection on MongoDB 7.0 and earlier, and on MongoDB 6.0 for updates made before the collection was last altered (an index build, a collMod such as enabling images, a rename or a drop). Such an update can only be followed exactly when it carries its own image, which changeStreamPreAndPostImages provides for updates made after it is enabled. The branch is not advanced past this change. Restart following with --allow-inexact to apply it with the document's current state and record the range as inexact history, or run `argon source resync`", event.NS.Collection, err)}
+				return nil, false, &CaptureError{Message: fmt.Sprintf("exact post-image unavailable for an update on %s: %v. This is not a matter of keeping up: the source will not serve this collection at the update's cluster time. That is so for a capped collection on MongoDB 7.0 and earlier, and on MongoDB 6.0 for updates made before the collection was last altered (an index build, a collMod such as enabling images, a rename or a drop). Such an update can only be followed exactly when it carries its own image, which changeStreamPreAndPostImages provides for updates made after it is enabled. The branch is not advanced past this change. Restart following with --allow-inexact to apply it with the document's current state and record the range as inexact history, or run `argon source resync`", event.NS.Collection, err), streamGap: true}
 			}
-			return nil, false, &CaptureError{fmt.Sprintf("exact post-image unavailable for an update on %s: %v. The branch is not advanced past this change. Either enable changeStreamPreAndPostImages on the source collections so updates carry their own images, or restart following with --allow-inexact to converge on the source's current state and record the range in between as inexact history", event.NS.Collection, err)}
+			return nil, false, &CaptureError{Message: fmt.Sprintf("exact post-image unavailable for an update on %s: %v. The branch is not advanced past this change. Either enable changeStreamPreAndPostImages on the source collections so updates carry their own images, or restart following with --allow-inexact to converge on the source's current state and record the range in between as inexact history", event.NS.Collection, err), streamGap: true}
 		}
 		if f.status.Mode != ModeCatchUp {
 			f.status.Mode = ModeCatchUp
@@ -690,7 +764,6 @@ func (f *follower) readPostImage(ctx context.Context, raw bson.Raw, event *chang
 			if unsupported {
 				f.status.InexactReason = fmt.Sprintf("updates to %s, which the source does not serve at a past cluster time, were applied with the document's later state", event.NS.Collection)
 			}
-			_ = f.s.report(f.branchID, f.stateName(), sourceActor, "")
 		}
 		if unsupported {
 			// Age has nothing to do with it; later updates to other
@@ -769,7 +842,6 @@ func (f *follower) commitAndCheck(ctx context.Context, token bson.Raw, at primit
 		f.status = previous
 		return nil, err
 	}
-	_ = f.s.report(f.branchID, f.stateName(), sourceActor, "")
 	return point, nil
 }
 
@@ -799,7 +871,14 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	status := f.status
 	status.Position = at
 	head := branch.HeadLSN
+	// A restarted follower clears a stored gap only after replay reaches the
+	// source time it observed on opening. A gap that still needs a resync
+	// stops replay before then; an old report or a repaired gap does not.
+	recovered := !at.Before(f.recoverAt)
 	_, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		if err := s.renewSourceLease(sc, f.run.lease); err != nil {
+			return nil, err
+		}
 		head = branch.HeadLSN
 		if len(batch) > 0 {
 			lsns, err := s.wal.AppendBatchContext(sc, batch)
@@ -821,18 +900,16 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 			"capture_status.last_captured_at": capturedAt, "capture_status.head_lsn": head,
 			"capture_status.source": status,
 		}
+		if recovered {
+			fields["capture_status.state"] = f.stateName()
+			fields["capture_status.error"] = ""
+		}
 		if !eventAt.IsZero() {
 			fields["capture_status.last_event_at"] = eventAt
 			fields["capture_status.last_event_lag_ms"] = lagMS
 		}
-		// No upsert: the state exists for as long as the branch follows, and
-		// a follower must not bring back what a detach removed.
-		stored, err := s.state.UpdateOne(sc, bson.M{"_id": branch.ID}, bson.M{"$set": fields})
-		if err != nil {
+		if err := s.updateSourceLease(sc, f.run.lease, bson.M{"$set": fields}); err != nil {
 			return nil, fmt.Errorf("failed to persist the source position: %w", err)
-		}
-		if stored.MatchedCount != 1 {
-			return nil, branchwal.ErrNoLongerFollows
 		}
 		for _, wb := range f.settles {
 			if err := f.opts.WriteBacks.Settle(sc, wb.PlanID); err != nil {
@@ -844,13 +921,17 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	if err != nil {
 		return followerWriteError(branch, err)
 	}
-	if f.run != nil {
-		f.run.progress.Add(1)
+	f.run.progress.Add(1)
+	if recovered {
+		f.recoverAt = primitive.Timestamp{}
 	}
 	f.status = status
 	f.lastCommit, f.lastToken = capturedAt, append(f.lastToken[:0], token...)
 	s.mu.Lock()
 	current := s.statuses[branch.ID]
+	if recovered {
+		current.State, current.Error = f.stateName(), ""
+	}
 	current.LastCapturedAt, current.HeadLSN = capturedAt, head
 	if !eventAt.IsZero() {
 		current.LastEventAt, current.LastEventLagMS = eventAt, lagMS
@@ -871,8 +952,7 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 			}
 		}
 	}
-	f.releaseStaleWriteBacks(at)
-	return nil
+	return f.releaseStaleWriteBacks(at)
 }
 
 // followerWriteError names the two ways a follower's write can find that the
@@ -882,7 +962,7 @@ func followerWriteError(branch *wal.Branch, err error) error {
 	case errors.Is(err, branchwal.ErrNoLongerFollows):
 		return &ConfigurationError{fmt.Sprintf("branch %s no longer follows database %q (it was detached, checked out or removed); following has stopped and nothing more was written to it", branch.Name, branch.Follows)}
 	case errors.Is(err, branchwal.ErrBranchChanged):
-		return &CaptureError{fmt.Sprintf("the head of branch %s moved without this follower. If a second follower is running for the project, stop one of them and start following again. Otherwise something else wrote to the branch and it no longer equals the source: make sure every process that uses this metadata database is current, then run `argon source resync`", branch.Name)}
+		return &CaptureError{Message: fmt.Sprintf("the head of branch %s moved without this follower. Something else wrote to the branch and it no longer equals the source: make sure every process that uses this metadata database is current, then run `argon source resync`", branch.Name)}
 	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("%w: %w", errCommitTimeout, err)
 	}
@@ -897,59 +977,43 @@ const writeBackGrace = 10 * time.Minute
 // releaseStaleWriteBacks returns claimed plans to pending once the branch has
 // provably passed the time their transaction could have committed. Only an
 // exact follower can say that.
-func (f *follower) releaseStaleWriteBacks(at primitive.Timestamp) {
+func (f *follower) releaseStaleWriteBacks(at primitive.Timestamp) error {
 	if f.opts.WriteBacks == nil || f.status.Mode != ModeExact || f.pendingOpen || time.Since(f.lastRelease) < 30*time.Second {
-		return
+		return nil
 	}
 	f.lastRelease = time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = f.opts.WriteBacks.Release(ctx, f.branchID, time.Unix(int64(at.T), 0).Add(-writeBackGrace))
+	_, err := f.s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		if err := f.s.renewSourceLease(sc, f.run.lease); err != nil {
+			return nil, err
+		}
+		return nil, f.opts.WriteBacks.Release(sc, f.branchID, time.Unix(int64(at.T), 0).Add(-writeBackGrace))
+	})
+	var lost *ConfigurationError
+	if errors.As(err, &lost) {
+		return lost
+	}
+	return nil
 }
 
-// heartbeat records that the follower is alive while it waits for the stream
-// to move past an open cluster time. When the metadata lives on the source's
-// own deployment this write is also the oplog entry that moves it.
-func (f *follower) heartbeat() {
-	if time.Since(f.lastBeat) < time.Second {
-		return
-	}
-	f.lastBeat = time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, _ = f.s.state.UpdateOne(ctx, bson.M{"_id": f.branchID}, bson.M{"$set": bson.M{"capture_status.source.heartbeat_at": f.lastBeat}})
+type followState struct {
+	ResumeToken bson.Raw             `bson:"resume_token"`
+	StartAt     *primitive.Timestamp `bson:"start_at"`
+	Status      struct {
+		Source  *SourceStatus `bson:"source"`
+		HeadLSN *int64        `bson:"head_lsn"`
+		State   string        `bson:"state"`
+	} `bson:"capture_status"`
 }
 
-// storedHead is the branch head the follower last stored with its position.
-func (s *Service) storedHead(ctx context.Context, branchID string) (int64, error) {
-	var doc struct {
-		Status struct {
-			HeadLSN int64 `bson:"head_lsn"`
-		} `bson:"capture_status"`
-	}
+func (s *Service) loadFollowState(ctx context.Context, branchID string) (*followState, error) {
+	var doc followState
 	err := s.state.FindOne(ctx, bson.M{"_id": branchID}).Decode(&doc)
-	if err == mongo.ErrNoDocuments {
-		return 0, nil
-	}
-	return doc.Status.HeadLSN, err
-}
-
-func (s *Service) loadFollowState(ctx context.Context, branchID string) (bson.Raw, *primitive.Timestamp, SourceStatus, error) {
-	var doc struct {
-		ResumeToken bson.Raw             `bson:"resume_token"`
-		StartAt     *primitive.Timestamp `bson:"start_at"`
-		Status      struct {
-			Source SourceStatus `bson:"source"`
-		} `bson:"capture_status"`
-	}
-	err := s.state.FindOne(ctx, bson.M{"_id": branchID}).Decode(&doc)
-	if err == mongo.ErrNoDocuments {
-		return nil, nil, SourceStatus{}, nil
-	}
 	if err != nil {
-		return nil, nil, SourceStatus{}, fmt.Errorf("failed to load the source position: %w", err)
+		return nil, fmt.Errorf("failed to load the source position: %w", err)
 	}
-	return doc.ResumeToken, doc.StartAt, doc.Status.Source, nil
+	return &doc, nil
 }
 
 // SourceStatusFor returns the stored status of a followed branch, whether or
