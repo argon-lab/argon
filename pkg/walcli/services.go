@@ -191,6 +191,29 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 		return ingestService.Stop(ctx, branchID)
 	})
 	checkoutService.SetBeforeDiscard(ingestService.Cancel)
+	// A checkout writes the branch's whole state through the oplog. A parent
+	// that is checked out but not being watched would have all of it to scan
+	// the next time its capture is drained, which is the first diff or merge
+	// preview of the new branch. Reading the parent's stream while the copy
+	// runs spreads that scan over the copy instead. This is an optimization
+	// only: a parent whose capture cannot start is left for that later drain
+	// to report, exactly as before.
+	checkoutService.SetDuringLoad(func(ctx context.Context, parentID string) func(context.Context) {
+		parent, err := branchService.GetBranchByIDContext(ctx, parentID)
+		if err != nil || !parent.IsLive() || parent.IsFollower() {
+			return nil
+		}
+		startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := ingestService.Start(startCtx, parentID); err != nil {
+			return nil
+		}
+		return func(ctx context.Context) {
+			drainCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			_ = ingestService.Drain(drainCtx, parentID)
+		}
+	})
 	undoService := undo.NewService(walService, branchService, client, materializerService)
 	mergeService := merge.NewService(db, walService, branchService, materializerService, client)
 	if err := mergeService.EnsureIndexes(ctx); err != nil {

@@ -57,6 +57,14 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Changed
 
+- The first `argon diff` or `argon merge preview` of a new branch no longer
+  takes time that grows with the database when the parent is checked out and
+  nothing is watching it. Both drain the parent's capture first, and the
+  parent's stream position was from before the branch's checkout, so MongoDB
+  scanned the oplog of that whole copy. A checkout (and a sandbox, which
+  includes one) now reads a checked-out parent's stream while it copies and
+  leaves the parent's position after the copy. A parent that is not checked
+  out, or whose capture cannot start, is left as before (#120).
 - A branch that follows an external database accepts changes only from its
   source: `merge apply` without `--write-back`, `undo`, `restore reset`,
   `checkout` and programmatic writes on it are refused, with the alternatives
