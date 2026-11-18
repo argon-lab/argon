@@ -1,65 +1,82 @@
 # Combinations by reason (count and SHA-256 of cases and verdicts)
-capture_error 30 a92b925950badec4ddef2c9c8928ac5d373b4ccb361d8431322beb4c65a0004c
-catch_up 25 2a518fe8961502903e6e2da8c0cd1d8b07ebd9c7ac4f6ce5ad363e5a747df031
-checked_out 20736 d25912b31b4e631f97ef2346a6c06b7b0ad5718d22e5386524aaed28bf73e53e
-checkpoint_unverified 108 9fa18c8ca11251db366e1a24ffb1ffff6bb93ccaa92c12a29d83c84b17089ad6
-degraded 40 693812c3cf5e034e1495082953d33965fcdd4a1d621383268fcec13231f4ae7e
-exact 3 f3b696b43c993c2bdf52ae57acdeb7e0f2e40054da39a75df5c7391f7bc4a233
-head_changed 6912 1c8c1959cb4a8384bee03b4dca102b6a0fb329f024924fb7c25c3ead6a53754a
-head_missing 1728 02043c87b036df11d932a1bcab4f4777256099e9af88afec9c7f4c23724fc5bc
-importing 41472 f88591e8cf783b7aa6eb0c3a1277d46c4a5df3c1250ea132b494c1c2520eb81b
-mode_unknown 864 ae4cf9284aaf213761f2a730fe68cbb47e6a5779c5dd8c03c9208efc599505d2
-owner_expired 140 ea4911573e95fe4810643078c03c221e36079aa200c63877ae56517b5b935572
-owner_missing 50 e3216228adbbc657bb07599e8aba8b7f1b9a4975eb0983eb1fdaad3004a22316
-position_missing 3456 19529241c77f99f517b854c01f6ed2c68e07e67350f13ad4df4f00c924ba7e06
-project_missing 41472 c1eba2a287ece4b4c7c2eae3f780cafd224d6a24f49d75f2bbfbd805c5fb9927
-range_inconsistent 216 2284d961e3d73bf4a31ffe30d18b358d4d0e307578c3996c8d00df653f1e6535
-resync_unfinished 6912 6f6de60e2fb890cc6c721e488350eb8603648be1cf086603ecde4e5c90b5d73e
-resyncing 1 af4a9da5087f9d93c23f53a39f1390e66d48338a94e1cd1a4d264ee9c58c06fc
-retrying 10 500db0fbb734500aeea44389ed3ddf1aaa1d100136226a8b336fb081643798a5
-starting 1 7a2ba479537824bd99f42ebeb6c9ac02fb912cd0302e6d82e2d9c9ac2c1a703e
-state_unknown 120 c13a97b8ad3dc727b51baf7c3a1b735f252b728189b9ece41a91751c62cd72ba
-unverified 120 cebddf37bfdba2e90dcb85901ac890dd830a4d1c39414e435145a7d8cc464141
+capture_error 120 17884a6cb4c12c99b70acdf6fd2923cc79a915e85349b7c5d3085e0287cb947d
+catch_up 100 f9ed7548b0781218f27509722e186533e342686e83b128822ba3974956eb07a9
+checked_out 124416 6911e31146d06b94f5642dddbfa549ba4d7e7a6f761d129dd6750e2426aa7b78
+checkpoint_unverified 432 da8d1991ba1dfdfdf29c01434402911106bb984996e396b700542a8852f0601d
+degraded 160 cda5085db9a517452ec11a9f27737e6bc147b4718f428cf3760f2431553370ae
+exact 12 3154979e8704b9e8d61fb7b5202fc0dce5e23e8d6d8f79b0c769372bcdb11e60
+head_changed 41472 2ab28e697e07fb79a9fa02cf4417690d24b7544e0e78f8f67fded85c7edf5f26
+head_missing 6912 e8163d596aa67d32eda2dda354acb719202c94205e7ba1a91519f2f83a4273cb
+importing 248832 ac137cb292f80bdb2dbc95333dbfee51d0cf6928804f16de3dea5f8444ae3fad
+mode_unknown 3456 dc194ee1e4e1ec6dd35d0cbf176f56d942dfe9b2c120ffd399ac7541296c5309
+owner_expired 560 5c30794a6bf0d4c278ab7b6807873e78bf2b3de9bcffe60a335cc90bf801d9b1
+owner_missing 200 d6fa0a429be7fa999dfb3375b823a2ad2f86c5388a72d9687dda755527452de0
+position_missing 27648 504c9e5bc5f916eae8f30493a2c4ed05cf6c7a87b2aba6f3ce69c42409ba5ab6
+project_missing 248832 ae13a2b5adee1387aff09467b7c14bf8767c4a7410c0f148b735a2fc304c8993
+range_inconsistent 864 7bbfb61b3fc9c0c165619ec3873b83fbdb66aab451e7087b386d3b18c9234389
+restarting 2 a2d17ff22a77c1e9088e8db92fa5f5babf7ae7497c6b70ba961e69fb84152272
+resync_unfinished 41472 8be98e732f2412269cc90841c30692dcafebd2fdee9e3a9a178b29f8758d377d
+resyncing 4 f46abb72b36ea4c409a1183389f80a2e954b9d2701b403acaee8b755eddd7d9d
+retrying 40 8a694a74412f408dc24b0c5ca21456b29acddab3835f339c8d24b7bdf900731e
+starting 2 f745f916afd8c748810d8353f80fc89b590b1c07ee87e8e5f9f0fbd6470587cb
+state_unknown 480 1fda74b9a25a320e9f3cee0c9d47aaee0ddbeb3b35d323d72ec9f0fded638571
+unverified 480 6552345b9f081b526380e7908fd8032254b2b47daffa0a5e5ff36136410542fb
 
 # Healthy combinations by axis value
 project=importing 0
 project=missing 0
-project=published 3
-checked_out=no 3
+project=published 14
+checked_out=no 14
 checked_out=yes 0
 head=different 0
-head=equal 3
+head=equal 14
 head=missing 0
-unfinished_resync=no 3
+unfinished_resync=no 14
 unfinished_resync=yes 0
 position_present=no 0
-position_present=yes 3
+position_present=yes 14
+position_digest=absent 7
+position_digest=differs 0
+position_digest=matches 7
 mode=absent 0
 mode=unknown 0
 mode=catch_up 0
-mode=exact 3
-open_range=no 3
+mode=exact 14
+open_range=no 14
 open_range=yes 0
-owner=none 1
+owner=none 4
 owner=expired 0
-owner=live 2
-unverified=no 3
+owner=live 10
+unverified=no 14
 unverified=yes 0
 state=absent 0
 state=unknown 0
-state=starting 0
+state=starting 2
 state=catching_up 0
 state=degraded 0
-state=running 1
-state=stopped 2
+state=running 4
+state=stopped 8
 state=retrying 0
 state=resyncing 0
-stored_error=no 3
+clean_start=no 6
+clean_start=yes 8
+stored_error=no 14
 stored_error=yes 0
 exact_point_at_head=no 0
-exact_point_at_head=yes 3
+exact_point_at_head=yes 14
 
 # Healthy combinations
-project=published checked_out=no head=equal unfinished_resync=no position_present=yes mode=exact open_range=no owner=none unverified=no state=stopped stored_error=no exact_point_at_head=yes
-project=published checked_out=no head=equal unfinished_resync=no position_present=yes mode=exact open_range=no owner=live unverified=no state=running stored_error=no exact_point_at_head=yes
-project=published checked_out=no head=equal unfinished_resync=no position_present=yes mode=exact open_range=no owner=live unverified=no state=stopped stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent mode=exact open_range=no owner=none unverified=no state=stopped clean_start=no stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent mode=exact open_range=no owner=none unverified=no state=stopped clean_start=yes stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent mode=exact open_range=no owner=live unverified=no state=starting clean_start=yes stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent mode=exact open_range=no owner=live unverified=no state=running clean_start=no stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent mode=exact open_range=no owner=live unverified=no state=running clean_start=yes stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent mode=exact open_range=no owner=live unverified=no state=stopped clean_start=no stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent mode=exact open_range=no owner=live unverified=no state=stopped clean_start=yes stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=matches mode=exact open_range=no owner=none unverified=no state=stopped clean_start=no stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=matches mode=exact open_range=no owner=none unverified=no state=stopped clean_start=yes stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=matches mode=exact open_range=no owner=live unverified=no state=starting clean_start=yes stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=matches mode=exact open_range=no owner=live unverified=no state=running clean_start=no stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=matches mode=exact open_range=no owner=live unverified=no state=running clean_start=yes stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=matches mode=exact open_range=no owner=live unverified=no state=stopped clean_start=no stored_error=no exact_point_at_head=yes
+project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=matches mode=exact open_range=no owner=live unverified=no state=stopped clean_start=yes stored_error=no exact_point_at_head=yes

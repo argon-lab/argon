@@ -205,7 +205,7 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 			_, leaseErr = run.lease.renewal()
 		}
 		if leaseErr == nil && (!cfg.resync || run.resyncStarted) && !errors.Is(err, ErrUnfinishedResync) {
-			reportErr := s.report(branchID, state, s.currentActor(run), message)
+			reportErr := s.report(branchID, state, s.currentActor(run), message, nil)
 			var lost *ConfigurationError
 			if run.lease != nil && errors.As(reportErr, &lost) {
 				err = lost
@@ -225,7 +225,7 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		if run.lease != nil {
 			err = nil
 		} else {
-			err = s.report(branchID, "starting", cfg.actor, "")
+			err = s.report(branchID, "starting", cfg.actor, "", nil)
 		}
 		if err == nil {
 			if cfg.stream != nil {
@@ -271,7 +271,7 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 		if cfg.redact != nil {
 			retryMessage = cfg.redact(retryMessage)
 		}
-		reportErr := s.report(branchID, "retrying", s.currentActor(run), retryMessage)
+		reportErr := s.report(branchID, "retrying", s.currentActor(run), retryMessage, nil)
 		if errors.As(reportErr, &configuration) {
 			return configuration
 		}
@@ -311,7 +311,7 @@ func (s *Service) runError(branchID string, run *running) error {
 	return fmt.Errorf("capture stopped for branch %s", branchID)
 }
 
-func (s *Service) report(branchID, state, actor, message string) error {
+func (s *Service) report(branchID, state, actor, message string, admitted *Verdict) error {
 	status := Status{BranchID: branchID, State: state, Actor: actor, Error: message, UpdatedAt: time.Now()}
 	s.mu.Lock()
 	previous := s.statuses[branchID]
@@ -351,7 +351,7 @@ func (s *Service) report(branchID, state, actor, message string) error {
 	}
 	var err error
 	if lease != nil {
-		err = s.reportSource(ctx, lease, fields, state, &stored.Status)
+		err = s.reportSource(ctx, lease, fields, state, admitted, &stored.Status)
 	} else {
 		err = s.state.FindOneAndUpdate(ctx, bson.M{"_id": branchID}, bson.M{"$set": fields},
 			options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)).Decode(&stored)

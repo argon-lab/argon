@@ -23,6 +23,7 @@ var (
 
 const (
 	sourceOwnerPath      = "capture_status.owner"
+	sourceCleanStartPath = sourceOwnerPath + ".clean_start"
 	sourceUnverifiedPath = "capture_status.unverified"
 	leaseExpiredReason   = "lease_expired"
 	missingOwnerReason   = "missing_owner"
@@ -38,6 +39,7 @@ type SourceOwner struct {
 	PID         int       `bson:"pid" json:"pid"`
 	StartedAt   time.Time `bson:"started_at" json:"started_at"`
 	HeartbeatAt time.Time `bson:"heartbeat_at" json:"heartbeat_at"`
+	CleanStart  bool      `bson:"clean_start,omitempty" json:"-"`
 }
 
 type unverifiedSource struct {
@@ -170,6 +172,12 @@ func (s *Service) acquireSourceLease(ctx context.Context, branchID, database, ki
 		// the loss across attempts, including live reports left without an owner.
 		previousOwner := "$" + sourceOwnerPath
 		liveReport := bson.M{"$in": bson.A{"$capture_status.state", sourceLiveStates}}
+		var nextState any = bson.M{"$cond": bson.A{liveReport, "starting", "$capture_status.state"}}
+		if kind == "follow" && prior.Health.Kind == SourceHealthy {
+			// Write-back must wait from acquisition until the stream opens.
+			nextState = "starting"
+			owner["clean_start"] = true
+		}
 		unverified := bson.M{"$cond": bson.A{
 			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{previousOwner, nil}}, nil}},
 			bson.M{"reason": leaseExpiredReason, "previous_owner": previousOwner},
@@ -180,7 +188,7 @@ func (s *Service) acquireSourceLease(ctx context.Context, branchID, database, ki
 		}}
 		err = s.state.FindOneAndUpdate(sc, filter, mongo.Pipeline{{{Key: "$set", Value: bson.M{
 			sourceOwnerPath: owner, sourceUnverifiedPath: unverified,
-			"capture_status.state": bson.M{"$cond": bson.A{liveReport, "starting", "$capture_status.state"}},
+			"capture_status.state": nextState,
 		}}}}).Err()
 		if err == nil {
 			return lease, nil
@@ -345,7 +353,7 @@ func (s *Service) keepSourceLease(ctx context.Context, run *running) <-chan erro
 	return done
 }
 
-func (s *Service) reportSource(ctx context.Context, lease *sourceLease, fields bson.M, state string, stored *Status) error {
+func (s *Service) reportSource(ctx context.Context, lease *sourceLease, fields bson.M, state string, admitted *Verdict, stored *Status) error {
 	if _, err := lease.renewal(); err != nil {
 		return err
 	}
@@ -363,6 +371,10 @@ func (s *Service) reportSource(ctx context.Context, lease *sourceLease, fields b
 				bson.M{"$eq": bson.A{"$capture_status.state", "degraded"}}, "$" + field, literal,
 			}}
 		}
+	}
+	fields[sourceCleanStartPath] = "$$REMOVE"
+	if state == "starting" && admitted != nil && admitted.Kind == SourceHealthy {
+		fields[sourceCleanStartPath] = true
 	}
 	var doc struct {
 		Status Status `bson:"capture_status"`

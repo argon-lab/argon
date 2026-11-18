@@ -11,6 +11,18 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Fixed
+
+- Source and deployment status stay healthy while a follower reopens its
+  stream from a verified exact checkpoint. Write-back still requires
+  `exact`. Status confirms apparent lease expiry in a fresh snapshot.
+- Followed checkpoints record a digest of the complete resume position so
+  status and follow detect a replaced token even at the same cluster time.
+- Deployment health skips unpublished imports before loading their checkpoints.
+- Documentation now gives the default wait for the last change on an idle
+  source as ten to twenty seconds. The reported time to store it includes
+  that wait.
+
 ## [2.7.0] - 2026-11-18
 
 Online import and following a source database are available by default.

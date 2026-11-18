@@ -15,15 +15,16 @@ import (
 
 var updateSourceHealth = flag.Bool("update", false, "regenerate the source health golden file")
 
-// An omitted column matches every value. The two fully specified healthy rows
-// are disjoint from all failures. Overlapping failures are in remedy order.
+// An omitted column matches every value. The healthy rows spell out the
+// checkpoint requirements. Overlapping failures are in remedy order.
 var sourceDecisionTable = []struct {
 	when   string
 	kind   VerdictKind
 	reason Reason
 }{
-	{"project=published checked_out=no head=equal unfinished_resync=no position_present=yes mode=exact open_range=no owner=live unverified=no state=running stored_error=no exact_point_at_head=yes", "healthy", "exact"},
-	{"project=published checked_out=no head=equal unfinished_resync=no position_present=yes mode=exact open_range=no owner=none|live unverified=no state=stopped stored_error=no exact_point_at_head=yes", "healthy", "exact"},
+	{"project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent|matches mode=exact open_range=no owner=live unverified=no state=running stored_error=no exact_point_at_head=yes", "healthy", "exact"},
+	{"project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent|matches mode=exact open_range=no owner=none|live unverified=no state=stopped stored_error=no exact_point_at_head=yes", "healthy", "exact"},
+	{"project=published checked_out=no head=equal unfinished_resync=no position_present=yes position_digest=absent|matches mode=exact open_range=no owner=live unverified=no state=starting clean_start=yes stored_error=no exact_point_at_head=yes", "healthy", "restarting"},
 
 	{"project=importing", "importing", "importing"},
 	{"project=missing", "unhealthy", "project_missing"},
@@ -31,6 +32,7 @@ var sourceDecisionTable = []struct {
 	{"head=different", "unhealthy", "head_changed"},
 	{"unfinished_resync=yes", "unhealthy", "resync_unfinished"},
 	{"position_present=no", "unhealthy", "position_missing"},
+	{"position_digest=differs", "unhealthy", "position_missing"},
 	{"head=missing", "unhealthy", "head_missing"},
 	{"mode=absent|unknown", "unhealthy", "mode_unknown"},
 	{"mode=exact open_range=yes", "unhealthy", "range_inconsistent"},
@@ -51,7 +53,7 @@ var sourceDecisionTable = []struct {
 	{"mode=catch_up", "unhealthy", "catch_up"},
 	{"state=catching_up", "unhealthy", "catch_up"},
 
-	{"state=starting", "unhealthy", "starting"},
+	{"state=starting clean_start=no", "unhealthy", "starting"},
 	{"state=resyncing", "unhealthy", "resyncing"},
 }
 
@@ -76,6 +78,9 @@ var healthAxes = []healthAxis{
 	}},
 	healthBoolean("unfinished_resync", func(f *Facts, b bool) { f.UnfinishedResync = b }),
 	healthBoolean("position_present", func(f *Facts, b bool) { f.PositionPresent = b }),
+	{"position_digest", "absent differs matches", "-dm", func(f *Facts, v string) {
+		f.PositionDigest = map[string]PositionDigest{"absent": DigestAbsent, "differs": DigestDiffers, "matches": DigestMatches}[v]
+	}},
 	{"mode", "absent unknown catch_up exact", "-?ce", func(f *Facts, v string) { f.Mode = checkpointMode(storedHealthValue(v)) }},
 	healthBoolean("open_range", func(f *Facts, b bool) { f.OpenRange = b }),
 	{"owner", "none expired live", "-el", func(f *Facts, v string) {
@@ -83,6 +88,7 @@ var healthAxes = []healthAxis{
 	}},
 	healthBoolean("unverified", func(f *Facts, b bool) { f.Unverified = b }),
 	{"state", "absent unknown starting catching_up degraded running stopped retrying resyncing", "-?bcdrsty", func(f *Facts, v string) { f.State = followerState(storedHealthValue(v)) }},
+	healthBoolean("clean_start", func(f *Facts, b bool) { f.CleanStart = b }),
 	healthBoolean("stored_error", func(f *Facts, b bool) { f.HasError = b }),
 	healthBoolean("exact_point_at_head", func(f *Facts, b bool) { f.ExactPointAtHead = b }),
 }
@@ -134,9 +140,11 @@ func (p healthPattern) matches(key string) bool {
 func healthyBySourceRule(f Facts) bool {
 	running := f.State == FollowerRunning && f.Owner == OwnerLive
 	stopped := f.State == FollowerStopped && (f.Owner == OwnerNone || f.Owner == OwnerLive)
+	restarting := f.State == FollowerStarting && f.CleanStart && f.Owner == OwnerLive
 	return f.Project == ProjectPublished && !f.CheckedOut && f.Head == HeadEqual &&
-		!f.UnfinishedResync && f.PositionPresent && f.Mode == CheckpointModeExact &&
-		!f.OpenRange && f.ExactPointAtHead && !f.HasError && !f.Unverified && (running || stopped)
+		!f.UnfinishedResync && f.PositionPresent && f.PositionDigest != DigestDiffers &&
+		f.Mode == CheckpointModeExact && !f.OpenRange && f.ExactPointAtHead &&
+		!f.HasError && !f.Unverified && (running || stopped || restarting)
 }
 
 func TestSourceHealthDecisionTable(t *testing.T) {
@@ -187,8 +195,8 @@ func TestSourceHealthDecisionTable(t *testing.T) {
 		if v.Message == "" || v.NextAction == "" || (f.HasError && !strings.Contains(v.Message, f.StoredError)) {
 			t.Fatalf("missing operator detail for facts %s: %+v", key, v)
 		}
-		if (v.HealthError() == nil) != (want.kind == SourceHealthy) || (v.WriteBackAdmission() == nil) != (want.kind == SourceHealthy) {
-			t.Fatalf("exit or write-back disagrees with %s for %s", want.kind, key)
+		if (v.HealthError() == nil) != (want.kind == SourceHealthy) || (v.WriteBackAdmission() == nil) != (want.reason == ReasonExact) {
+			t.Fatalf("exit or write-back disagrees with %s/%s for %s", want.kind, want.reason, key)
 		}
 		reason := byReason[v.Reason]
 		if reason == nil {
@@ -218,8 +226,8 @@ func TestSourceHealthDecisionTable(t *testing.T) {
 			t.Fatalf("decision-table row %d (%s) is unreachable", row+1, sourceDecisionTable[row].when)
 		}
 	}
-	if combinations != 124416 {
-		t.Fatalf("enumerated %d combinations, want 124416", combinations)
+	if combinations != 746496 || len(healthyCombinations) != 14 {
+		t.Fatalf("enumerated %d combinations (%d healthy), want 746496 (14 healthy)", combinations, len(healthyCombinations))
 	}
 
 	var got bytes.Buffer

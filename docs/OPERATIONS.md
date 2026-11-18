@@ -209,9 +209,14 @@ source online into a new project. Use a source user allowed to run
   deployment as the metadata.
 - **A verified exact head is the source at one cluster time.** Changes are
   published a whole cluster time at a time, so a transaction is never half
-  visible. `argon source status` shows the newest such point. On a source
-  nobody else writes to, the last change appears only when the source's next
-  oplog entry does; MongoDB writes one every ten seconds when idle.
+  visible. `argon source status` shows the newest such point. The last change
+  waits for the next oplog entry. MongoDB's idle writer checks every ten
+  seconds by default and writes only if nothing was written since its previous
+  check. On an otherwise idle source the wait is ten to twenty seconds, or
+  between one and two check intervals if `periodicNoopIntervalSecs` was
+  changed. Any other write to the source deployment ends this wait at once.
+  The “stored N ms after it happened” time in `argon source status` includes
+  this wait.
 - **Exact mode preserves source documents.** An insert or replacement carries its
   document. An update's document is read from the source as of the update's
   own cluster time and stored byte for byte.
@@ -229,12 +234,15 @@ Both output formats report a reason and a next action. In JSON, read
 `health.kind`, `health.reason`, `health.message` and `health.next_action`.
 The message retains any stored capture error. The report also shows the
 position, last consistent point and lease owner's host, process ID and last
-heartbeat. The metadata server's clock determines lease freshness.
+heartbeat. The metadata server's clock determines lease freshness. Status
+confirms an expired heartbeat by reading the metadata again in a fresh snapshot.
 
 The table is in precedence order. When several conditions apply, the first
 matching row determines the reason. An exact checkpoint establishes what
 `main` held **at the reported source cluster time**. A cleanly stopped
 follower can have a healthy checkpoint while newer source writes await replay.
+Checkpoints without a position digest keep their existing health rules and
+gain a digest the next time a follower or resync saves a position.
 
 | Reason | What Argon found | What to do |
 | --- | --- | --- |
@@ -243,7 +251,7 @@ follower can have a healthy checkpoint while newer source writes await replay.
 | `checked_out` | The followed branch is checked out or records a physical database. | Upgrade processes sharing the metadata, stop writers to the checkout, run `argon release -p P -b main`, then resync. Release discards checkout writes that never reached the WAL. |
 | `head_changed` | The saved head and branch head differ. | Upgrade processes using this metadata, then run `argon source resync -p P`. |
 | `resync_unfinished` | A resync started and has yet to commit its final checkpoint. | Let the owner finish. After interruption, run `argon source resync -p P` or `argon source follow -p P --auto-resync`. |
-| `position_missing` | The saved position is missing or no longer identifies a usable position for this source. | Upgrade processes using this metadata, then resync. |
+| `position_missing` | The saved position is missing, differs from its stored digest, or no longer identifies a usable position for this source. | Upgrade processes using this metadata, then resync. |
 | `head_missing` | The branch or its checkpoint is missing its head LSN. | Resync, then start following. |
 | `mode_unknown` | The checkpoint mode is absent or unrecognized. | Resync, then start following. |
 | `range_inconsistent` | The checkpoint reports exact mode with an open inexact range. | Resync, then start following. |
@@ -256,13 +264,14 @@ follower can have a healthy checkpoint while newer source writes await replay.
 | `retrying` | The follower is retrying its source stream. | Restore access to the source and wait for the stream to reopen. |
 | `capture_error` | A capture error is stored, including after a terminal stream failure leaves the state stopped. | Correct the reported error. Start following if stopped, or wait for the live owner to verify a checkpoint. |
 | `catch_up` | Catch-up is still open, including after the follower stops. | Let the follower reach an exact checkpoint, or restart it from the saved position. |
-| `starting` | The follower is opening its stream. | Wait for the follower to reach an exact checkpoint. |
+| `restarting` | A live owner is reopening its stream from a verified exact checkpoint. | The checkpoint is healthy. Wait for the follower to be ready before write-back. |
+| `starting` | The follower is opening its stream without a recorded healthy start. | Wait for the follower to reach an exact checkpoint. |
 | `resyncing` | The owner reports a resync in progress. | Wait for it to finish. |
 | `exact` | A live owner or a clean stop left a verified exact checkpoint at the published branch head. | No repair is needed. To apply later source writes after a clean stop, start following. |
 
-`exact` is healthy and exits zero. An unhealthy verdict exits nonzero in
-table and JSON output and blocks write-back. `argon status` and
-`argon doctor` use the same verdict for published followed projects.
+`exact` and `restarting` are healthy and exit zero. An unhealthy verdict exits
+nonzero in table and JSON output. `argon status` and `argon doctor` use the
+same verdict for published followed projects. Write-back requires `exact`.
 
 ### Source changes that interrupt following
 
