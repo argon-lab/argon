@@ -313,10 +313,15 @@ func (s *Service) GetDocumentHistory(branchID, collection, documentID string, st
 	}
 	filtered := entries[:0]
 	for _, entry := range entries {
-		if err := settleDocumentKey(entry); err != nil {
+		named, err := settleDocumentKey(entry)
+		if err != nil {
 			return nil, err
 		}
-		if entry.DocumentID != documentID {
+		// An entry that names its document counts only for that document.
+		// A legacy delete without an image names none: the query matched it
+		// by this document's current or legacy key, and it is kept, as a
+		// replay removes whichever document that key describes.
+		if named && entry.DocumentID != documentID {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -324,22 +329,51 @@ func (s *Service) GetDocumentHistory(branchID, collection, documentID string, st
 	return filtered, nil
 }
 
-// settleDocumentKey makes a stored entry's DocumentID the current key of the
-// document it is about. Entries are found by their stored key, and history
-// written before typed keys stored one that two different BSON IDs can share
-// (an ObjectID and the string of its hex form, for example), so a lookup by
-// stored key can return another document's entries. An image settles it: the
-// image carries the real _id. A delete without an image is trusted when it
-// was written with a current key, and refused when it predates them and its
-// key reads as more than one ID.
-func settleDocumentKey(entry *Entry) error {
+// settleDocumentKey works out which document a stored entry is about. Entries
+// are found by their stored key, and history written before typed keys (up
+// to 2.0.x) stored one that different BSON IDs can share — an ObjectID and
+// the string of its hex form, for example — so a lookup by stored key can
+// return another document's entries.
+//
+// named is true when the entry itself says: an image carries the real _id
+// (DocumentID is set from it), and a delete written with a current key is
+// trusted as it stands. A legacy delete without an image names no document:
+// it is refused when its key reads as more than one ID, and otherwise left
+// to the caller, which matched it by a stored key.
+func settleDocumentKey(entry *Entry) (named bool, err error) {
 	if len(entry.PostImage) > 0 || len(entry.PreImage) > 0 {
-		return entry.NormalizeDocumentKey()
+		return true, entry.NormalizeDocumentKey()
 	}
-	if entry.Operation == OpDelete && entry.DocumentKeyVersion == 0 && DocumentIDString(entry.DocumentID) != entry.DocumentID {
-		return fmt.Errorf("legacy delete at LSN %d has an ambiguous BSON ID and no pre-image; full collection replay is required", entry.LSN)
+	if entry.Operation == OpDelete && entry.DocumentKeyVersion == 0 {
+		if DocumentIDString(entry.DocumentID) != entry.DocumentID {
+			return false, fmt.Errorf("legacy delete at LSN %d has an ambiguous BSON ID and no pre-image; full collection replay is required", entry.LSN)
+		}
+		return false, nil
 	}
-	return nil
+	return true, nil
+}
+
+// HasUnkeyedDataEntries reports whether the branch's log holds, for one
+// collection in [startLSN, endLSN], an entry without a document key. Current
+// entries always carry one; schema-v1 updates and deletes carried a filter
+// instead. Lookups by document key cannot see such entries, so callers that
+// read documents one by one check for them first. Served by the (branch,
+// collection, document, lsn) index.
+func (s *Service) HasUnkeyedDataEntries(branchID, collection string, startLSN, endLSN int64) (bool, error) {
+	if startLSN > endLSN {
+		return false, nil
+	}
+	err := s.collection.FindOne(context.Background(), bson.M{
+		"branch_id":   branchID,
+		"collection":  collection,
+		"document_id": bson.M{"$in": bson.A{nil, ""}},
+		"lsn":         bson.M{"$gte": startLSN, "$lte": endLSN},
+		"operation":   bson.M{"$in": []OperationType{OpPut, OpDelete, LegacyOpInsert, LegacyOpUpdate}},
+	}, options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
+	if err == mongo.ErrNoDocuments {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // documentLookupBatch bounds how many documents one history query names.
@@ -366,7 +400,9 @@ func (s *Service) LatestDocumentEntries(branchID, collection string, keys []stri
 			end = len(keys)
 		}
 		wanted := make(map[string]bool, end-start)
-		seen := make(map[string]bool, 2*(end-start))
+		// byStored maps every key an entry may be stored under to the
+		// requested documents it can belong to.
+		byStored := make(map[string][]string, 2*(end-start))
 		stored := make([]string, 0, 2*(end-start))
 		for _, key := range keys[start:end] {
 			id, err := DocumentIDValue(key)
@@ -374,10 +410,14 @@ func (s *Service) LatestDocumentEntries(branchID, collection string, keys []stri
 				return nil, err
 			}
 			wanted[key] = true
-			for _, k := range []string{key, LegacyDocumentIDString(id)} {
-				if !seen[k] {
-					seen[k] = true
+			legacy := LegacyDocumentIDString(id)
+			for _, k := range []string{key, legacy} {
+				if _, known := byStored[k]; !known {
 					stored = append(stored, k)
+				}
+				byStored[k] = append(byStored[k], key)
+				if legacy == key {
+					break
 				}
 			}
 		}
@@ -403,14 +443,25 @@ func (s *Service) LatestDocumentEntries(branchID, collection string, keys []stri
 				if err := s.compressor.DecompressEntry(entry); err != nil {
 					return fmt.Errorf("failed to decompress WAL entry LSN %d: %w", entry.LSN, err)
 				}
-				if err := settleDocumentKey(entry); err != nil {
+				storedKey := entry.DocumentID
+				named, err := settleDocumentKey(entry)
+				if err != nil {
 					return err
 				}
-				if !wanted[entry.DocumentID] {
-					continue
+				// An entry that names its document counts for that one. A
+				// legacy delete without an image counts for every requested
+				// document its stored key can describe, as in a replay.
+				targets := byStored[storedKey]
+				if named {
+					targets = nil
+					if wanted[entry.DocumentID] {
+						targets = []string{entry.DocumentID}
+					}
 				}
-				if current := latest[entry.DocumentID]; current == nil || entry.LSN > current.LSN {
-					latest[entry.DocumentID] = entry
+				for _, key := range targets {
+					if current := latest[key]; current == nil || entry.LSN > current.LSN {
+						latest[key] = entry
+					}
 				}
 			}
 			return cursor.Err()

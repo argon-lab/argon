@@ -36,11 +36,11 @@ entry — a synchronization barrier, not in-proxy capture).
   fork, on the branch and on the parent is read from each document's own
   history. The plans are the same, and the REST API, the MCP tools and the
   console use the same path. Two cases still read a whole collection. When
-  `argon gc` has deleted the parent's entries, the fork state of a changed
-  document comes from the parent's snapshot, which is loaded once per
-  collection. When it has deleted entries of the branch itself, or the branch
-  holds a delete from before 2.1 that kept no pre-image, the plan is computed
-  the previous way.
+  `argon gc` has deleted the parent's entries, the state of a changed document
+  at the fork and on the parent comes from the parent's snapshot, which is
+  loaded for each. When it has deleted entries of the branch itself, or the
+  history holds entries from before 2.1 that do not identify their document,
+  the plan is computed the previous way.
 
 - CI's audit of the console's dependencies can excuse an advisory by name. The
   whole tree is still audited, a production install must be clean, and an

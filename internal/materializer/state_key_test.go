@@ -36,6 +36,11 @@ func TestEntryStateKeyMatchesApplyEntry(t *testing.T) {
 		if !ok {
 			t.Fatalf("put of %#v: no key", id)
 		}
+		// The image decides, whatever key the envelope carries.
+		legacyPut := &wal.Entry{SchemaVersion: 2, Operation: wal.OpPut, DocumentID: wal.LegacyDocumentIDString(id), PostImage: image}
+		if legacyKey, ok := EntryStateKey(legacyPut); !ok || legacyKey != key {
+			t.Fatalf("put of %#v under its legacy key: key %q ok=%v, want %q", id, legacyKey, ok, key)
+		}
 		state := map[string]bson.M{}
 		if err := s.ApplyEntry(state, put); err != nil {
 			t.Fatal(err)
