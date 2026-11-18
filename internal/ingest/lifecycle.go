@@ -71,9 +71,12 @@ type Status struct {
 	// SourceLeaseExpired is evaluated against the metadata server's clock.
 	SourceLeaseExpired bool `bson:"-" json:"-"`
 
-	hasResumeToken         bool
-	resumeToken            bson.Raw
-	synthesizedDegradation bool
+	// Health is populated by the snapshot reader for followed branches.
+	Health           *Verdict `bson:"-" json:"health,omitempty"`
+	facts            Facts
+	checkpointExists bool
+	resumeToken      bson.Raw
+	startAt          *primitive.Timestamp
 }
 
 type running struct {

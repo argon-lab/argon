@@ -61,3 +61,11 @@ func TestCLIExperimentalSourceHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestCLIAutoResyncRequiresOptIn(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "")
+	stdout, stderr, err := invokeCLI(t, "invalid", "source", "follow", "--auto-resync")
+	if err == nil || stdout != "" || !strings.Contains(stderr, "--auto-resync is experimental") {
+		t.Fatalf("expected the option's opt-in error before argument validation, got %v (stdout %q, stderr %q)", err, stdout, stderr)
+	}
+}

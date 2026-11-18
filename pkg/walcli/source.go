@@ -31,6 +31,11 @@ func RequireExperimentalSourceImages() error {
 	return source.RequireExperimentalImages()
 }
 
+// RequireExperimentalAutoResync checks the opt-in before follow can resync main.
+func RequireExperimentalAutoResync() error {
+	return source.RequireExperimentalAutoResync()
+}
+
 // SourceURI returns the connection string to use for a source: the given one,
 // or the environment's.
 func SourceURI(given string) string {
@@ -111,8 +116,9 @@ type SourceInfo struct {
 	// WriteBackUnavailableReason reports the restriction of a name-and-host binding.
 	WriteBackUnavailableReason string `json:"write_back_unavailable_reason,omitempty"`
 
+	// Health describes the saved checkpoint at its source cluster time.
+	Health ingest.Verdict `json:"health"`
 	// State comes from the last follower report and the saved branch state.
-	// Owner records the lease separately.
 	State string `json:"state"`
 	Error string `json:"error,omitempty"`
 	// Mode is exact while every stored change is the source's document at
@@ -140,7 +146,7 @@ type SourceInfo struct {
 	ResyncStartedAt  *time.Time `json:"resync_started_at,omitempty"`
 	// Owner records the lease holder and its most recent heartbeat.
 	Owner *SourceOwner `json:"owner,omitempty"`
-	// LeaseExpired marks a live report whose owner can no longer renew.
+	// LeaseExpired marks an expired owner or a live report left without one.
 	LeaseExpired bool `json:"lease_expired,omitempty"`
 	// Unverified marks a lost run whose replacement has yet to verify a checkpoint.
 	Unverified bool `json:"unverified,omitempty"`
@@ -223,7 +229,7 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 	info := &SourceInfo{
 		Project: project.Name, Branch: branch.Name, BranchID: branch.ID,
 		Database: binding.Database, Location: binding.Display, ReplicaSet: binding.SetName, Identity: binding.Strength(),
-		HeadLSN: branch.HeadLSN, State: status.State, Error: status.Error, Mode: ingest.ModeExact, InexactRanges: []InexactRange{},
+		HeadLSN: branch.HeadLSN, State: status.State, Error: status.Error, Health: *status.Health, InexactRanges: []InexactRange{},
 		LeaseExpired: status.SourceLeaseExpired, Unverified: status.SourceUnverified != nil,
 	}
 	if binding.ReplicaSetID == "" {
@@ -283,6 +289,11 @@ const autoResyncSpacing = time.Minute
 // FollowSource keeps a project's main branch up with the database it was
 // imported from until ctx ends, resuming from the saved position.
 func (s *Services) FollowSource(ctx context.Context, projectName string, opts FollowSourceOptions) (err error) {
+	if opts.AutoResync {
+		if err := source.RequireExperimentalAutoResync(); err != nil {
+			return err
+		}
+	}
 	if opts.EnableSourceImages {
 		if err := source.RequireExperimentalImages(); err != nil {
 			return err
@@ -510,7 +521,7 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	if branch.Follows != binding.Database {
 		return nil, fmt.Errorf("branch %s no longer follows database %q", branch.Name, binding.Database)
 	}
-	if err := status.RequireSourceWriteBackReady(); err != nil {
+	if err := status.Health.WriteBackAdmission(); err != nil {
 		return nil, err
 	}
 	db, err := openSource(ctx, binding, uri)

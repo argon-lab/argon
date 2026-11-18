@@ -191,7 +191,7 @@ func (s *Service) CatchUp(ctx context.Context, branchID string, src *mongo.Datab
 	if err := source.RequireExperimental(); err != nil {
 		return nil, err
 	}
-	lease, err := s.acquireSourceLease(ctx, branchID, src.Name(), "follow")
+	lease, err := s.acquireSourceLease(ctx, branchID, src.Name(), "import")
 	if err != nil {
 		return nil, redacted(err, redact)
 	}
@@ -279,7 +279,7 @@ type follower struct {
 }
 
 func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.Database, opts FollowOptions, run *running, untilConsistent bool) (*ConsistentPoint, error) {
-	branch, err := s.branches.GetBranchByIDContext(ctx, branchID)
+	branch, saved, err := s.CaptureStatusFor(ctx, branchID)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, &ConfigurationError{fmt.Sprintf("branch %s not found", branchID)}
@@ -292,50 +292,34 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	if branch.Follows != src.Name() {
 		return nil, &ConfigurationError{fmt.Sprintf("branch %s follows database %q, not %q", branch.Name, branch.Follows, src.Name())}
 	}
-	if branch.IsLive() || branch.PhysicalDB != "" {
-		return nil, sourceCheckoutError(branch.Name)
-	}
-
-	saved, err := s.loadFollowState(ctx, branchID)
-	if err != nil {
+	token, startAt := saved.resumeToken, saved.startAt
+	if untilConsistent {
+		// Only the importing copy or the owning resync may replay its own
+		// boundary. Fence the handoff against the head that writer produced.
+		if opts.expectedHead == nil {
+			return nil, &ConfigurationError{"source replay requires the copy or comparison head"}
+		}
+		if *opts.expectedHead != branch.HeadLSN {
+			return nil, sourceHeadMismatch(branch, *opts.expectedHead)
+		}
+		if saved.facts.CheckedOut {
+			return nil, sourceCheckoutError(branch.Name)
+		}
+		if opts.startAt != nil {
+			token, startAt = nil, opts.startAt
+		}
+		if saved.Source == nil || saved.Source.Database != src.Name() || (len(token) == 0 && startAt == nil) {
+			return nil, sourcePositionError(branch.Name)
+		}
+	} else if err := saved.Health.FollowAdmission(); err != nil {
 		return nil, err
 	}
-	token, startAt := saved.ResumeToken, saved.StartAt
-	if opts.startAt != nil {
-		token, startAt = nil, opts.startAt
-	}
-	// The saved position is only meaningful on top of the branch the
-	// follower left. Something else that moved the head (a process that
-	// predates following and does not know this branch is read-only), or
-	// that replaced the saved state, means the branch no longer equals the
-	// source at that position.
-	if saved.Status.Source == nil || saved.Status.Source.Database != src.Name() {
-		return nil, sourcePositionError(branch.Name)
-	}
-	status := *saved.Status.Source
-	if status.Resync != nil && !opts.resync {
-		// Its saved position belongs to the resync's replay and is only valid
-		// on top of a finished comparison with the source.
-		return nil, unfinishedResyncError{&ConfigurationError{fmt.Sprintf("a resync of branch %s was started and has not finished: the branch is between its last consistent state and the source's current one. Run `argon source resync` again to complete it", branch.Name)}}
-	}
-	if len(token) == 0 && (startAt == nil || (!opts.resync && !untilConsistent)) {
-		return nil, sourcePositionError(branch.Name)
-	}
-	expectedHead := saved.Status.HeadLSN
-	if opts.expectedHead != nil {
-		expectedHead = opts.expectedHead
-	}
-	if expectedHead != nil && *expectedHead != branch.HeadLSN {
-		return nil, sourceHeadMismatch(branch, *expectedHead)
-	}
+	status := *saved.Source
 	// Keep reporting a capture error until the source stream opens successfully.
-	if !opts.resync && (saved.Status.State != "retrying" || saved.Status.Error == "") {
+	if !opts.resync && (saved.facts.State != FollowerRetrying || !saved.facts.HasError) {
 		if err := s.report(branchID, "starting", sourceActor, ""); err != nil {
 			return nil, err
 		}
-	}
-	if status.Mode == "" {
-		status.Mode = ModeExact
 	}
 	status.Database = src.Name()
 
@@ -378,8 +362,8 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 
 	f := &follower{s: s, branch: branch, src: src, session: session, opts: opts, status: status,
 		writeBacks: make(map[string]*WriteBack), lastCommit: time.Now(), opened: opened,
-		unpublished: untilConsistent && !opts.resync, run: run, unverified: saved.Status.Unverified != nil}
-	if saved.Status.State == "degraded" && !opts.resync {
+		unpublished: untilConsistent && !opts.resync, run: run, unverified: saved.facts.Unverified}
+	if saved.facts.State == FollowerDegraded && !opts.resync {
 		f.recoverAt = now
 	}
 	if f.unverified && !opts.resync && run.lease.verifyAt.IsZero() {
@@ -1010,27 +994,6 @@ func followerWriteError(branch *wal.Branch, err error) error {
 		return fmt.Errorf("%w: %w", errCommitTimeout, err)
 	}
 	return err
-}
-
-type followState struct {
-	ResumeToken bson.Raw             `bson:"resume_token"`
-	StartAt     *primitive.Timestamp `bson:"start_at"`
-	Status      struct {
-		Source     *SourceStatus     `bson:"source"`
-		HeadLSN    *int64            `bson:"head_lsn"`
-		State      string            `bson:"state"`
-		Error      string            `bson:"error"`
-		Unverified *unverifiedSource `bson:"unverified"`
-	} `bson:"capture_status"`
-}
-
-func (s *Service) loadFollowState(ctx context.Context, branchID string) (*followState, error) {
-	var doc followState
-	err := s.state.FindOne(ctx, bson.M{"_id": branchID}).Decode(&doc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load the source position: %w", err)
-	}
-	return &doc, nil
 }
 
 // primaryTime is the primary's current cluster time. Nothing any node has

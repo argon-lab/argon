@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"sync"
 	"time"
 
@@ -47,11 +46,11 @@ type unverifiedSource struct {
 }
 
 type sourceLease struct {
-	branch             *wal.Branch
-	id                 string
-	initialized        bool
-	replacedExpiredRun bool
-	verifyAt           primitive.Timestamp
+	branch      *wal.Branch
+	id          string
+	initialized bool
+	prior       *Status
+	verifyAt    primitive.Timestamp
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -91,16 +90,6 @@ func (l *sourceLease) revoke(err error) error {
 	return l.err
 }
 
-func (s *Status) applySourceLeaseFreshness(fresh bool) {
-	if fresh || !slices.Contains(sourceLiveStates, s.State) {
-		return
-	}
-	s.State, s.SourceLeaseExpired = "stopped", true
-	if s.Owner != nil || s.SourceUnverified == nil {
-		s.Error = sourceOwnerLoss(s.Owner)
-	}
-}
-
 func sourceOwnerLoss(owner *SourceOwner) string {
 	if owner == nil {
 		return "the source has no current lease owner; see the last saved position"
@@ -127,43 +116,55 @@ func (s *Service) acquireSourceLease(ctx context.Context, branchID, database, ki
 		host = "unknown host"
 	}
 	result, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
-		branch, err := s.branches.GetBranchByIDContext(sc, branchID)
+		branch, prior, err := s.CaptureStatusFor(sc, branchID)
 		if err != nil {
 			if errors.Is(err, mongo.ErrNoDocuments) {
 				return nil, &ConfigurationError{fmt.Sprintf("branch %s not found", branchID)}
 			}
 			return nil, err
 		}
-		if branch.Follows != database {
+		if !branch.IsFollower() || branch.Follows != database {
 			return nil, sourceDetached(branch.Name, database)
 		}
-		if branch.IsLive() || branch.PhysicalDB != "" {
-			return nil, sourceCheckoutError(branch.Name)
+		if prior.Health.Reason == ReasonCheckedOut {
+			return nil, prior.Health.FollowAdmission()
 		}
-		lease := &sourceLease{branch: branch, id: id}
-		if kind == "resync" {
-			err := s.state.FindOne(sc, bson.M{"_id": branchID}, options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
-			if errors.Is(err, mongo.ErrNoDocuments) {
-				// Resync can rebuild a missing position. Serialize the new
-				// state with detach or checkout before reserving it.
-				if err := s.branches.FollowerCheckpoint(sc, branchID, database, branch.HeadLSN); err != nil {
-					return nil, followerWriteError(branch, err)
-				}
-				if err := s.InitSourceState(sc, branchID); err != nil {
-					return nil, err
-				}
-				lease.initialized = true
-			} else if err != nil {
+		// Decide admission and ownership at the same snapshot. An owner's
+		// deadline can pass between this read and a subsequent command.
+		if prior.facts.Owner == OwnerLive {
+			return nil, prior.Owner.conflict(branch.ProjectID)
+		}
+		ownerKind := kind
+		switch kind {
+		case "follow":
+			if err := prior.Health.FollowAdmission(); err != nil {
 				return nil, err
 			}
+		case "import":
+			if prior.Health.Kind != SourceImporting {
+				return nil, &ConfigurationError{"online import replay requires an unpublished project"}
+			}
+			ownerKind = "follow"
 		}
+		lease := &sourceLease{branch: branch, id: id, prior: prior}
+		if kind == "resync" && !prior.checkpointExists {
+			// Rebuilding a missing checkpoint must serialize with detach or checkout.
+			if err := s.branches.FollowerCheckpoint(sc, branchID, database, branch.HeadLSN); err != nil {
+				return nil, followerWriteError(branch, err)
+			}
+			if err := s.InitSourceState(sc, branchID); err != nil {
+				return nil, err
+			}
+			lease.initialized = true
+		}
+
 		// The branch and state must be read in the same snapshot. Checkout
 		// can create a different state document after a detach deletes this one.
 		filter := bson.M{"_id": branchID, "$or": bson.A{
 			bson.M{sourceOwnerPath: bson.M{"$exists": false}},
 			bson.M{"$expr": bson.M{"$not": bson.A{sourceLeaseFresh()}}},
 		}}
-		owner := bson.M{"id": id, "kind": kind, "host": bson.M{"$literal": host}, "pid": os.Getpid(),
+		owner := bson.M{"id": id, "kind": ownerKind, "host": bson.M{"$literal": host}, "pid": os.Getpid(),
 			"started_at": "$$NOW", "heartbeat_at": "$$NOW"}
 		// Ownership alone cannot verify the previous run's checkpoint. Keep
 		// the loss across attempts, including live reports left without an owner.
@@ -177,29 +178,18 @@ func (s *Service) acquireSourceLease(ctx context.Context, branchID, database, ki
 				bson.M{"reason": missingOwnerReason}, "$$REMOVE",
 			}}}},
 		}}
-		var previous struct {
-			Status Status `bson:"capture_status"`
-		}
 		err = s.state.FindOneAndUpdate(sc, filter, mongo.Pipeline{{{Key: "$set", Value: bson.M{
 			sourceOwnerPath: owner, sourceUnverifiedPath: unverified,
 			"capture_status.state": bson.M{"$cond": bson.A{liveReport, "starting", "$capture_status.state"}},
-		}}}}).Decode(&previous)
+		}}}}).Err()
 		if err == nil {
-			lease.replacedExpiredRun = previous.Status.Owner != nil ||
-				(previous.Status.SourceUnverified == nil && slices.Contains(sourceLiveStates, previous.Status.State))
 			return lease, nil
 		}
 		if !errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, err
 		}
-		status, err := s.loadSourceLeaseStatus(sc, branchID)
-		if err != nil {
-			return nil, err
-		}
-		if status != nil && status.Owner != nil {
-			owner := status.Owner
-			return nil, &ConfigurationError{fmt.Sprintf("source %s is already running for project %s on %s (pid %d) since %s",
-				owner.Kind, branch.ProjectID, owner.Host, owner.PID, owner.StartedAt.UTC().Format(time.RFC3339))}
+		if prior.Owner != nil {
+			return nil, prior.Owner.conflict(branch.ProjectID)
 		}
 		return nil, sourcePositionError(branch.Name)
 	})
@@ -214,6 +204,11 @@ func (s *Service) acquireSourceLease(ctx context.Context, branchID, database, ki
 	return lease, nil
 }
 
+func (o *SourceOwner) conflict(project string) *ConfigurationError {
+	return &ConfigurationError{fmt.Sprintf("source %s is already running for project %s on %s (pid %d) since %s",
+		o.Kind, project, o.Host, o.PID, o.StartedAt.UTC().Format(time.RFC3339))}
+}
+
 func sourceDetached(branch, database string) *ConfigurationError {
 	return &ConfigurationError{fmt.Sprintf("branch %s no longer follows database %q (it was detached, rebound or removed)", branch, database)}
 }
@@ -226,45 +221,26 @@ func sourcePositionError(branch string) *CaptureError {
 	return &CaptureError{Message: fmt.Sprintf("the saved source position of branch %s is missing or was replaced by another process. Upgrade every process that uses this metadata database, then run `argon source resync`", branch)}
 }
 
-// loadSourceLeaseStatus reads the stored ownership and position for lease
-// operations, which need the original owner even when its lease has expired.
-func (s *Service) loadSourceLeaseStatus(ctx context.Context, branchID string) (*Status, error) {
-	var doc struct {
-		Status      Status   `bson:"capture_status"`
-		ResumeToken bson.Raw `bson:"resume_token"`
-	}
-	err := s.state.FindOne(ctx, bson.M{"_id": branchID}).Decode(&doc)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	doc.Status.hasResumeToken = len(doc.ResumeToken) > 0
-	return &doc.Status, nil
-}
-
 func (s *Service) sourceLeaseMiss(ctx context.Context, lease *sourceLease) error {
-	branch, err := s.branches.GetBranchByIDContext(ctx, lease.branch.ID)
+	branch, status, err := s.CaptureStatusFor(ctx, lease.branch.ID)
 	if errors.Is(err, mongo.ErrNoDocuments) || (err == nil && branch.Follows != lease.branch.Follows) {
 		return sourceDetached(lease.branch.Name, lease.branch.Follows)
 	}
 	if err != nil {
 		return err
 	}
-	if branch.IsLive() || branch.PhysicalDB != "" {
-		return sourceCheckoutError(branch.Name)
+	if status.Health.Reason == ReasonCheckedOut {
+		return status.Health.FollowAdmission()
+	}
+	if !status.checkpointExists {
+		return &ConfigurationError{fmt.Sprintf("the checkpoint for branch %s was removed while this run held the lease", branch.Name)}
 	}
 	// A legacy checkout replaces the position before publishing the physical
 	// database. This is observable even while that checkout is still running.
-	status, err := s.loadSourceLeaseStatus(ctx, branch.ID)
-	if err != nil {
-		return err
-	}
-	if status != nil && status.Owner == nil && !status.hasSavedSourcePosition(branch.Follows) {
+	if status.Owner == nil && status.Health.Reason == ReasonPositionMissing {
 		return sourcePositionError(branch.Name)
 	}
-	if status != nil && status.Owner != nil && status.Owner.ID == lease.id {
+	if status.Owner != nil && status.Owner.ID == lease.id {
 		return lease.revoke(&ConfigurationError{fmt.Sprintf("the source lease for branch %s expired; run `argon source follow` again", branch.Name)})
 	}
 	return &ConfigurationError{fmt.Sprintf("another process took over following branch %s for project %s", branch.Name, branch.ProjectID)}
@@ -372,6 +348,11 @@ func (s *Service) keepSourceLease(ctx context.Context, run *running) <-chan erro
 func (s *Service) reportSource(ctx context.Context, lease *sourceLease, fields bson.M, state string, stored *Status) error {
 	if _, err := lease.renewal(); err != nil {
 		return err
+	}
+	// Starting a stream or canceling its open cannot clear a capture error.
+	// A successful open reports running or catching_up and clears it there.
+	if (state == "starting" || state == "stopped") && fields["capture_status.error"] == "" {
+		delete(fields, "capture_status.error")
 	}
 	for field, value := range fields {
 		literal := bson.M{"$literal": value}

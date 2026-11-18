@@ -163,7 +163,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if !branch.IsFollower() {
 		return nil, fmt.Errorf("branch %s does not follow an external database; apply the plan without write-back", branch.Name)
 	}
-	if err := status.RequireSourceWriteBackReady(); err != nil {
+	if err := status.Health.WriteBackAdmission(); err != nil {
 		return nil, err
 	}
 	if target.Database == nil || target.Database.Name() != branch.Follows {
