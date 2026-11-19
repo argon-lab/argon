@@ -6,6 +6,9 @@ the sandbox, so you can review the changes before anything reaches the main
 branch. A second run with `--apply` merges them as a scripted merge. No LLM
 account is needed: `agent.py` stands in for the code an agent would write.
 
+boxd's documentation has
+[a shorter page for this integration](https://docs.boxd.sh/use-cases/oss-integrations/argon).
+
 ```
 data machine (host)                              agent machine (isolated)
   mongod with auth, argon console, host.py  ──▶   agent.py

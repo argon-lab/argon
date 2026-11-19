@@ -218,6 +218,12 @@ To keep a person in the loop, withhold tools from the MCP server:
 `argon merge apply <plan-id>`, and `argon mcp --read-only` offers only the
 tools that inspect state.
 
+Agent-written code that runs in a code sandbox can write to an Argon sandbox
+through a MongoDB user made for one run:
+[examples/boxd-sandbox](examples/boxd-sandbox/) does that with an isolated
+[boxd](https://boxd.sh/) machine, and boxd's documentation has
+[a page for the integration](https://docs.boxd.sh/use-cases/oss-integrations/argon).
+
 The full agent workflow: [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Git for MongoDB
