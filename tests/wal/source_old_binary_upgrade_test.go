@@ -210,7 +210,7 @@ func TestResync_AmbiguousOldBinaryUpgrade(t *testing.T) {
 				require.Equal(t, collection, ambiguous.Collection)
 				require.Equal(t, shared, ambiguous.Key)
 				require.Equal(t, tomb, ambiguous.LSN)
-				for _, phrase := range []string{"empty old-binary", "four-zero-byte", "argon source resync -p <project> --force", "re-import"} {
+				for _, phrase := range []string{"empty old-binary", "four-zero-byte", "argon source resync -p <project> --force", "argon import database"} {
 					require.Contains(t, err.Error(), phrase)
 				}
 			}

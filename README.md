@@ -141,11 +141,15 @@ Write-back refuses capped collections and byte-identical replacements
 before claiming a plan. Ordinary merge also checks the
 inner length of deprecated BSON binary subtype 2 when decoding stored images.
 
-Older history can contain a delete that could refer to either an empty
-subtype-2 `_id` or one containing four zero bytes. Reads that depend on it
-stop with the branch, collection and key. For a followed branch, stop the
-follower and run `argon source resync -p myapp --force`. On another branch,
-re-import the collection.
+An older delete can refer to either an empty subtype-2 `_id` or four zero
+bytes. Reads that depend on it report the key. If GC removed the relevant
+WAL and subtype-2 ID evidence survives, reads that need the old snapshot
+report the unknown LSN range. For a followed branch, stop the follower and
+run `argon source resync -p myapp --force`. On an ordinary branch, fork
+from an earlier readable LSN with `argon restore branch` or rewind its
+head with `argon restore reset`. With `argon import database`, the copy
+goes into a new project and the existing branch keeps its history. See
+[upgrade and recovery details](docs/OPERATIONS.md#upgrading-older-snapshots).
 
 If a plan stays `writing_back`, check the affected documents on the source,
 let following catch up, and run `argon merge preview` again for the sandbox.

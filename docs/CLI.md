@@ -181,11 +181,15 @@ MongoDB can still open the stream from the saved position. If it can, run
 `source follow` to catch up. `--force` starts the full comparison immediately.
 
 `source detach` ends following and turns `main` back into an ordinary branch.
-If a historical delete cannot distinguish an empty old-binary `_id` from
-four zero bytes, reads of that history report the branch, collection and
-key. Stop the follower and run `argon source resync -p <project> --force`.
-The consistent LSN it prints starts a readable history for the collection.
-On another branch, re-import the collection.
+An ambiguous old-binary delete reports the branch, collection and key.
+When GC removed the WAL needed to check an older snapshot and subtype-2
+ID evidence survives, reads that depend on it report the unknown LSN range.
+Stop the follower and run `argon source resync -p <project> --force` to
+recover the collection from the printed consistent LSN onward. On an
+ordinary branch, check an earlier readable LSN with `argon time-travel query`.
+Use `argon restore branch` to fork there or `argon restore reset` to rewind
+the existing head. To start from a fresh copy, `argon import database`
+imports the whole database into a new project and preserves the original branch.
 
 A write-back claim less than five minutes old blocks detach. The error names
 the plans to wait for. After that window, detach reports unsettled plan IDs

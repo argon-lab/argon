@@ -54,10 +54,15 @@ func (s *Service) RecordReclaimFloor(ctx context.Context, branchID, collection s
 // were. Databases collected only by releases up to 2.1.5 have no floors:
 // those releases did not record them.
 func (s *Service) ReclaimFloor(branchID, collection string) (int64, error) {
+	return s.ReclaimFloorContext(context.Background(), branchID, collection)
+}
+
+// ReclaimFloorContext reads one collection's floor within the caller's deadline.
+func (s *Service) ReclaimFloorContext(ctx context.Context, branchID, collection string) (int64, error) {
 	var floor struct {
 		LSN int64 `bson:"lsn"`
 	}
-	err := s.db.Collection(reclaimFloorsCollection).FindOne(context.Background(),
+	err := s.db.Collection(reclaimFloorsCollection).FindOne(ctx,
 		bson.M{"_id": reclaimFloorID(branchID, collection)}).Decode(&floor)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {

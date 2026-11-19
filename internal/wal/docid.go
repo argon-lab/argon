@@ -150,13 +150,31 @@ func storedKeyVersion(key string) int {
 		}
 	}
 	value, err := RawDocumentID(key)
-	if err == nil {
-		var id any
-		if err := value.UnmarshalWithRegistry(keyRegistry, &id); errors.Is(err, errOldBinaryKey) {
-			return exactOldBinaryVersion
-		}
+	if err == nil && IsOldBinaryID(value) {
+		return exactOldBinaryVersion
 	}
 	return 1
+}
+
+// IsOldBinaryKey examines the BSON type in a stored key envelope.
+func IsOldBinaryKey(key string) bool {
+	return storedKeyVersion(key) == exactOldBinaryVersion
+}
+
+// IsOldBinaryID detects subtype 2 at any depth of an _id, including a
+// compound key. Scalar values of other types need no decoding.
+func IsOldBinaryID(value bson.RawValue) bool {
+	switch value.Type {
+	case bson.TypeBinary:
+		if len(value.Value) < 5 || value.Value[4] != bson.TypeBinaryBinaryOld {
+			return false
+		}
+	case bson.TypeEmbeddedDocument, bson.TypeArray, bson.TypeCodeWithScope:
+	default:
+		return false
+	}
+	var id any
+	return errors.Is(value.UnmarshalWithRegistry(keyRegistry, &id), errOldBinaryKey)
 }
 
 // DocumentIDFromImage preserves embedded-document field order, unlike

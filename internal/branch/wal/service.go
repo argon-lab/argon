@@ -193,7 +193,11 @@ func (s *BranchService) GetBranchByIDContext(ctx context.Context, branchID strin
 // state. Ancestry resolution uses this: a force-deleted parent must still
 // anchor its descendants' history, whose entries remain in the WAL.
 func (s *BranchService) GetBranchByIDAny(branchID string) (*wal.Branch, error) {
-	ctx := context.Background()
+	return s.GetBranchByIDAnyContext(context.Background(), branchID)
+}
+
+// GetBranchByIDAnyContext includes deleted ancestors and respects the caller's deadline.
+func (s *BranchService) GetBranchByIDAnyContext(ctx context.Context, branchID string) (*wal.Branch, error) {
 	var branch wal.Branch
 
 	err := s.collection.FindOne(ctx, bson.M{"_id": branchID}).Decode(&branch)

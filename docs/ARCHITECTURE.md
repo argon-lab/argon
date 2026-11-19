@@ -822,10 +822,15 @@ entries removed). Migration is idempotent.
   A shared-key delete with no pre-image raises an ambiguous-history error.
   Current snapshot manifests attest to exact keys. Old snapshots with a
   shared key in a frame or a visible ambiguous delete cannot cover replay
-  or GC. On upgrade, snapshot initialization inspects unclassified manifests
-  and records which are usable. A manifest still pending when a read needs
-  it is checked then. A certified manifest serves coverage queries without
-  reading its chunks.
+  or GC. A reclaimed WAL prefix also disqualifies an old snapshot if the
+  collection's snapshot frames, retained WAL or current branch state show a
+  subtype-2 `_id`. Startup shares ordered WAL scans across manifests and
+  their inherited prefixes. One five-second deadline covers the pending
+  manifest index and the checks. The regular snapshot lookup indexes are
+  built synchronously if missing. An earlier boolean-only decision is
+  checked once more. Pending manifests are checked on demand or at a later
+  start. Both paths persist the result. Coverage checks can then use the
+  manifest alone.
   Resync copies the affected collection into the WAL from a new collection
   marker. The final checkpoint publishes its first LSN and consistent LSN
   together. Reads before that checkpoint keep their original ancestry.

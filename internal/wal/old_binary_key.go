@@ -95,8 +95,14 @@ type AmbiguousOldBinaryError struct {
 	LSN                       int64
 }
 
+// OldBinaryRecovery describes the available recovery paths for uncertain keys.
+const OldBinaryRecovery = "For a followed branch, stop following and run `argon source resync -p <project> --force`. " +
+	"For an ordinary branch, use `argon time-travel query` to check a readable LSN before the affected history. " +
+	"Fork there with `argon restore branch` or rewind the existing branch with `argon restore reset`. " +
+	"To start from a fresh copy, `argon import database` imports the database into a new project and leaves the original branch in place."
+
 func (e *AmbiguousOldBinaryError) Error() string {
-	return fmt.Sprintf("branch %q, collection %q, key %q at LSN %d: history recorded before the upgrade cannot tell an empty old-binary _id from a four-zero-byte one. For a followed branch, stop following and run `argon source resync -p <project> --force`. For another branch, re-import the collection", e.BranchID, e.Collection, e.Key, e.LSN)
+	return fmt.Sprintf("branch %q, collection %q, key %q at LSN %d: history recorded before the upgrade cannot tell an empty old-binary _id from a four-zero-byte one. %s", e.BranchID, e.Collection, e.Key, e.LSN, OldBinaryRecovery)
 }
 
 // CheckStoredKey reports whether an entry can rely on its envelope when
