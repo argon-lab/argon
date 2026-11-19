@@ -621,7 +621,7 @@ func (r *Router) diffBranch(c *gin.Context) {
 		abortErr(c, http.StatusBadRequest, err)
 		return
 	}
-	c.JSON(http.StatusOK, plan)
+	writePlanJSON(c, http.StatusOK, walcli.ViewMergePlan(plan, "", false))
 }
 
 func (r *Router) mergePreview(c *gin.Context) {
@@ -638,7 +638,7 @@ func (r *Router) mergePreview(c *gin.Context) {
 		abortErr(c, http.StatusBadRequest, err)
 		return
 	}
-	c.JSON(http.StatusCreated, walcli.ViewMergePlan(plan, c.Param("project"), plan.FollowedDatabase != ""))
+	writePlanJSON(c, http.StatusCreated, walcli.ViewMergePlan(plan, c.Param("project"), plan.FollowedDatabase != ""))
 }
 
 func (r *Router) mergeApply(c *gin.Context) {

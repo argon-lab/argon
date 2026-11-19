@@ -642,7 +642,7 @@ func (s *Service) ApplyEntry(state map[string]bson.M, entry *wal.Entry) error {
 			return fmt.Errorf("put entry LSN %d has no document ID", entry.LSN)
 		}
 		var doc bson.M
-		if err := bson.Unmarshal(entry.PostImage, &doc); err != nil {
+		if err := wal.UnmarshalDocument(entry.PostImage, &doc); err != nil {
 			return fmt.Errorf("failed to unmarshal post-image: %w", err)
 		}
 		id, err := wal.DocumentIDFromImage(entry.PostImage)

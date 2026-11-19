@@ -586,7 +586,7 @@ func (f *follower) promote() {
 // receive converts one change event and adds it to the open cluster time.
 func (f *follower) receive(ctx context.Context, raw bson.Raw) error {
 	var event changeEvent
-	if err := bson.Unmarshal(raw, &event); err != nil {
+	if err := wal.UnmarshalDocument(raw, &event); err != nil {
 		return fmt.Errorf("failed to decode change event: %w", err)
 	}
 	if f.pendingOpen && !event.ClusterTime.Equal(f.pendingAt) {

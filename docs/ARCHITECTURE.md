@@ -661,8 +661,11 @@ ordered BSON in the existing change and conflict fields. Preview selects the
 newest visible verified WAL image at each side's LSN, including inherited
 history. If a collection contains older untyped keys, lookup falls back to
 the history of each planned key. An unavailable or unverified image gets a
-deterministic encoding and its name in `sorted_images`. Ordinary merges also
-use this encoding for documents with repeated field names. Plans for followed
+deterministic encoding and its name in `sorted_images`. Ordinary merges
+collapse repeated document fields, including inside arrays, keeping the last
+value at the first occurrence in the raw image. The first top-level `_id`
+supplies document identity. JavaScript code scopes retain
+their stored order and repeated names. Plans for followed
 targets retain the full verified BSON so every occurrence can be inspected.
 Ordinary apply can recover
 replacement order from history for older plans. Programmatic puts sort Go
@@ -673,7 +676,10 @@ documents. Their `exact_bytes` entries supply original BSON type and value
 bytes when Extended JSON is lossy. Current saves record a provenance version and the followed
 database and replica-set identity. Earlier plans, including format 3, require
 a fresh preview before write-back. Only CLI JSON preview and list render
-`approval_digest` alongside all images of an eligible pending plan.
+`approval_digest` alongside all images of an eligible pending plan with an
+assigned ID. A present BSON null `document_key` contributes its type byte
+to the digest. REST diff, preview, list and get use Extended JSON
+`$numberDouble` for NaN and both infinities in their decoded plan views.
 
 Digest scheme 1 hashes the following fields with SHA-256, in order.
 
@@ -703,11 +709,16 @@ for audit. Status, the apply-time conflict strategy, claim and outcome fields,
 errors, and timestamps are outside the digest.
 
 An empty write-back completes in one majority-acknowledged metadata
-transaction. For a nonempty plan, admission checks the selected changes for
-verified images and duplicate field names before making a claim. The source
+transaction. For a nonempty plan, admission checks image provenance and field
+uniqueness. Each raw image key must match the saved key in BSON type and
+bytes. Each selected after-image must start with `_id` and have a nonzero
+value for any other top-level timestamp. The source
 transaction checks typed-key absence for an insert, or compares the live
 document with the plan's verified before-image byte for byte for a replacement
-or delete. Inserts and replacements write the plan's saved after-image.
+or delete. Inserts and replacements write the plan's saved after-image. After
+all batch writes, the same transaction reads each raw key once more before
+commit. A stored image must match every approved byte, and a deleted key
+must be absent. A mismatch aborts the batch and releases the claim.
 Reclaiming history after preview has no effect on those checks. A collection
 that existed at preflight can still be dropped before an insert. The follower
 delivers committed changes to `main`.
@@ -796,7 +807,10 @@ entries removed). Migration is idempotent.
 
 - **Deterministic replay:** full BSON outcomes are logged. Typed IDs remain
   distinct, including ObjectID versus a same-looking string and ordered
-  composite IDs. Legacy image-backed IDs are normalized when read.
+  composite IDs. Legacy image-backed IDs are normalized when read. Some
+  older WAL entries indexed an empty subtype-2 binary as four zero payload
+  bytes. Point lookups inspect the stored image when those two keys can
+  share an index entry.
 - **Atomic publication:** metadata writer batches, merge data/audit/plan state,
   capture WAL/head/resume token and reset metadata are transactionally
   published. Concurrent writers compare the observed branch head/incarnation.

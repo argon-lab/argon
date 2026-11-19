@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/bsoncodec"
 	"go.mongodb.org/mongo-driver/bson/bsonrw"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // MarshalDocument preserves the BSON order of ordered inputs and sorts
@@ -33,10 +34,49 @@ func MarshalDocument(doc any) (bson.Raw, error) {
 	return buf.Bytes(), nil
 }
 
+// UnmarshalDocument decodes a stored image, including BSON's old binary subtype.
+func UnmarshalDocument(raw bson.Raw, dest any) error {
+	dec, err := bson.NewDecoder(bsonrw.NewBSONDocumentReader(raw))
+	if err != nil {
+		return err
+	}
+	if err := dec.SetRegistry(orderedRegistry); err != nil {
+		return err
+	}
+	return dec.Decode(dest)
+}
+
+// UnmarshalValue uses the same decoder for a single BSON element.
+func UnmarshalValue(raw bson.RawValue, dest any) error {
+	return raw.UnmarshalWithRegistry(orderedRegistry, dest)
+}
+
 var orderedRegistry = newOrderedRegistry()
 
 func newOrderedRegistry() *bsoncodec.Registry {
 	reg := bson.NewRegistry()
+	// The v1 value reader counts the inner int32 length as data for an empty
+	// subtype-2 binary. Read the raw value so its payload always excludes it.
+	binaryType := reflect.TypeFor[primitive.Binary]()
+	binaryDecoder, _ := reg.LookupDecoder(binaryType)
+	rawDecoder, _ := reg.LookupDecoder(reflect.TypeFor[bson.RawValue]())
+	reg.RegisterTypeDecoder(binaryType, bsoncodec.ValueDecoderFunc(func(ctx bsoncodec.DecodeContext, r bsonrw.ValueReader, dst reflect.Value) error {
+		if r.Type() != bson.TypeBinary {
+			return binaryDecoder.DecodeValue(ctx, r, dst)
+		}
+		var raw bson.RawValue
+		if err := rawDecoder.DecodeValue(ctx, r, reflect.ValueOf(&raw).Elem()); err != nil {
+			return err
+		}
+		subtype, data, ok := raw.BinaryOK()
+		if !ok {
+			// Older WALs can contain the short, lengthless form accepted
+			// by the driver. Limit that decoder to this element's bytes.
+			return binaryDecoder.DecodeValue(ctx, bsonrw.NewBSONValueReader(raw.Type, raw.Value), dst)
+		}
+		dst.Set(reflect.ValueOf(primitive.Binary{Subtype: subtype, Data: data}))
+		return nil
+	}))
 	// Keep the driver's handling of BSON tags, custom encoders and map keys.
 	// Only the order in which map fields are emitted changes.
 	type mapSample map[string]any

@@ -17,11 +17,19 @@ import (
 )
 
 func duplicateMergeDocument(id, shape string, units ...int32) bson.D {
-	fields := bson.D{}
-	for _, n := range units {
+	fields := bson.D{{Key: "z", Value: int32(3)}}
+	for i, n := range units {
 		fields = append(fields, bson.E{Key: "units", Value: n})
+		if i == 0 {
+			fields = append(fields, bson.E{Key: "a", Value: int64(4)})
+		}
 	}
-	doc := bson.D{{Key: "_id", Value: id}}
+	doc := bson.D{
+		{Key: "_id", Value: id},
+		{Key: "ordered", Value: primitive.CodeWithScope{Code: "z+a", Scope: bson.D{
+			{Key: "z", Value: int32(1)}, {Key: "a", Value: int64(2)},
+		}}},
+	}
 	switch shape {
 	case "top":
 		return append(doc, fields...)
@@ -57,11 +65,20 @@ func mergeUnits(t *testing.T, raw bson.Raw, shape string) []int32 {
 	return values
 }
 
-// 2.7.0 kept the last field in top-level maps, nested maps and arrays. Its
-// Go BSON decoder kept both fields in a code scope's ordered document. The
-// single-value rule also applies to scope fields in an ordinary merge.
+func expectedUnits(shape string, n int32, repeated bool) []int32 {
+	if shape == "scope" && repeated {
+		return []int32{n - 1, n}
+	}
+	return []int32{n}
+}
+
+// 2.7.0 kept both fields inside a code scope's ordered document, including
+// when a separate, repeated field in the enclosing document was collapsed.
 func TestWriteBack_OrdinaryMergeDuplicateImages(t *testing.T) {
 	for _, target := range []string{"wal", "checkout"} {
+		t.Run(target+"/linear", func(t *testing.T) {
+			ordinaryDuplicateImages(t, target == "checkout", "", false)
+		})
 		for _, strategy := range []string{merge.StrategyOurs, merge.StrategyTheirs} {
 			t.Run(target+"/"+strategy, func(t *testing.T) {
 				ordinaryDuplicateImages(t, target == "checkout", strategy, false)
@@ -131,9 +148,10 @@ func ordinaryDuplicateImages(t *testing.T, live bool, strategy string, previousl
 		put(child, "insert-"+shape, shape, 5, 6)
 		put(child, "replace-"+shape, shape, 5, 6)
 		put(child, "conflict-"+shape, shape, 5, 6)
-		if strategy == merge.StrategyOurs {
+		switch strategy {
+		case merge.StrategyOurs:
 			put(main, "conflict-"+shape, shape, 4)
-		} else {
+		case merge.StrategyTheirs:
 			put(main, "conflict-"+shape, shape, 3, 4)
 		}
 	}
@@ -142,16 +160,25 @@ func ordinaryDuplicateImages(t *testing.T, live bool, strategy string, previousl
 	}
 	plan, err := service.Preview(ctx, child.ID)
 	require.NoError(t, err)
-	require.Len(t, plan.Changes, 3*len(shapes))
-	require.Len(t, plan.Conflicts, len(shapes))
+	if strategy == "" {
+		require.Len(t, plan.Changes, 4*len(shapes))
+		require.Empty(t, plan.Conflicts)
+	} else {
+		require.Len(t, plan.Changes, 3*len(shapes))
+		require.Len(t, plan.Conflicts, len(shapes))
+	}
 	// Previous format-3 plans could store the complete repeated fields for
 	// any target. Restore that record before ordinary apply.
 	record := bson.M{}
 	checkSaved := func(item, id, field string, data bson.Raw, marks []string, shape string, n int32, duplicate bool) {
 		t.Helper()
-		assert.Equal(t, []int32{n}, mergeUnits(t, data, shape), "%s %s", id, field)
+		assert.Equal(t, expectedUnits(shape, n, duplicate), mergeUnits(t, data, shape), "%s %s", id, field)
 		if duplicate {
-			assert.Contains(t, marks, field, "%s %s", id, field)
+			if shape == "scope" {
+				assert.NotContains(t, marks, field, "%s %s", id, field)
+			} else {
+				assert.Contains(t, marks, field, "%s %s", id, field)
+			}
 			record[item+"."+field] = duplicateMergeDocument(id, shape, n-1, n)
 			record[item+".sorted_images"] = bson.A{}
 		}
@@ -198,7 +225,7 @@ func ordinaryDuplicateImages(t *testing.T, live bool, strategy string, previousl
 			rows, err := f.wal.GetDocumentHistory(main.ID, collection, id, plan.TargetHead+1, main.HeadLSN)
 			require.NoError(t, err)
 			require.Len(t, rows, 1)
-			assert.Equal(t, []int32{2}, mergeUnits(t, rows[0].PreImage, shape))
+			assert.Equal(t, expectedUnits(shape, 2, true), mergeUnits(t, rows[0].PreImage, shape))
 		}
 		for _, op := range []string{"insert", "replace", "conflict"} {
 			id := op + "-" + shape
@@ -215,17 +242,25 @@ func ordinaryDuplicateImages(t *testing.T, live bool, strategy string, previousl
 				image, err = physical.physical.Collection(collection).FindOne(ctx, bson.M{"_id": id}).Raw()
 				require.NoError(t, err)
 				assert.Equal(t, mergeUnits(t, image, shape), mergeUnits(t, row.PostImage, shape))
-			} else if op == "replace" || op == "conflict" && strategy == merge.StrategyTheirs {
+			} else if op == "replace" || op == "conflict" && strategy != merge.StrategyOurs {
 				before := int32(2)
-				if op == "conflict" {
+				if op == "conflict" && strategy == merge.StrategyTheirs {
 					before = 4
 				}
-				assert.Equal(t, []int32{before}, mergeUnits(t, row.PreImage, shape), "%s pre-image", id)
+				assert.Equal(t, expectedUnits(shape, before, true), mergeUnits(t, row.PreImage, shape), "%s pre-image", id)
 			}
-			assert.Equal(t, []int32{expected}, mergeUnits(t, image, shape), "%s raw", id)
+			units := expectedUnits(shape, expected, op != "conflict" || strategy != merge.StrategyOurs)
+			assert.Equal(t, units, mergeUnits(t, image, shape), "%s raw", id)
+			ordered := image.Lookup("ordered")
+			assert.Equal(t, row.PostImage.Lookup("ordered"), ordered)
+			_, scope := ordered.CodeWithScope()
+			assert.Equal(t, "z", scope.Index(0).Key())
+			assert.Equal(t, "a", scope.Index(1).Key())
 			var want, decoded bson.M
-			raw, err := bson.Marshal(duplicateMergeDocument(id, shape, expected))
+			wantDoc := duplicateMergeDocument(id, shape, units...)
+			raw, err := bson.Marshal(wantDoc)
 			require.NoError(t, err)
+			assert.Equal(t, bson.Raw(raw), image, "%s field order", id)
 			require.NoError(t, bson.Unmarshal(raw, &want))
 			require.NoError(t, bson.Unmarshal(image, &decoded))
 			assert.Equal(t, want, decoded, "%s decoded", id)
@@ -249,7 +284,7 @@ func TestWriteBack_OrdinaryFormat2ScopeOrder(t *testing.T) {
 	f := newMergeFixture(t, db, "merge-scope-order")
 	const id = "item"
 	scope := func(n int32) bson.D {
-		return bson.D{{Key: "z", Value: n}, {Key: "a", Value: int32(0)}}
+		return bson.D{{Key: "z", Value: n}, {Key: "a", Value: int32(0)}, {Key: "z", Value: int64(5)}}
 	}
 	put := func(branch *wal.Branch, n int32) {
 		raw, err := bson.Marshal(bson.D{{Key: "_id", Value: id}, {Key: "value", Value: primitive.CodeWithScope{Code: "z", Scope: scope(n)}}})
@@ -359,7 +394,7 @@ func TestWriteBack_ProgrammaticDuplicateImages(t *testing.T) {
 			const id = "parcel"
 			// The raw image is authoritative even when the caller left an old
 			// map in the proposal. A field sorting before _id checks key order.
-			doc := append(duplicateMergeDocument(id, "scope", 1, 2), bson.E{Key: "0tag", Value: true})
+			doc := append(duplicateMergeDocument(id, "scope", 1, 2), bson.E{Key: "0tag", Value: false}, bson.E{Key: "0tag", Value: true})
 			raw, err := bson.Marshal(doc)
 			require.NoError(t, err)
 			stale := bson.M{"_id": id, "obsolete": true}
@@ -375,7 +410,7 @@ func TestWriteBack_ProgrammaticDuplicateImages(t *testing.T) {
 				c, conflict := plan.Changes[0], plan.Conflicts[0]
 				rawUnits, mapUnits := []int32{1, 2}, []int32{3, 4}
 				if target == "checkout" {
-					rawUnits, mapUnits = []int32{2}, []int32{4}
+					mapUnits = []int32{4}
 					require.ElementsMatch(t, []string{"document", "before"}, c.SortedImages)
 					require.ElementsMatch(t, []string{"base", "ours", "theirs"}, conflict.SortedImages)
 					require.NotContains(t, c.Document, "obsolete")
@@ -396,6 +431,74 @@ func TestWriteBack_ProgrammaticDuplicateImages(t *testing.T) {
 					require.Equal(t, mapUnits, mergeUnits(t, image, "nested"))
 				}
 			}
+		})
+	}
+}
+
+// The old sorted before-image lost the order and repetitions inside its scope.
+// Only the captured head can distinguish an unchanged live row from a new
+// scope that happens to have the same last values.
+func TestWriteBack_OrdinaryCheckedOutScopeComparison(t *testing.T) {
+	sorted := bson.D{{Key: "a", Value: 1}, {Key: "z", Value: 2}}
+	reordered := bson.D{{Key: "z", Value: 2}, {Key: "a", Value: 1}}
+	repeated := bson.D{{Key: "a", Value: 0}, {Key: "a", Value: 1}, {Key: "z", Value: 2}}
+	for _, tc := range []struct {
+		name         string
+		stored, live bson.D
+		legacy       bool
+	}{
+		{"reorder", sorted, reordered, false},
+		{"repeat", sorted, repeated, false},
+		{"older pending", reordered, reordered, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			const project = "merge-live-scope"
+			f := newIngestFixture(t, project)
+			catalog := f.physical.Collection("catalog")
+			doc := func(scope bson.D) bson.D {
+				return bson.D{{Key: "_id", Value: "one"}, {Key: "script", Value: primitive.CodeWithScope{Code: "a+z", Scope: scope}},
+					{Key: "units", Value: 1}, {Key: "units", Value: 2}}
+			}
+			func() {
+				stop := f.startIngester(t)
+				defer stop()
+				_, err := catalog.InsertOne(ctx, doc(tc.stored))
+				require.NoError(t, err)
+				f.waitForEntries(t, "catalog", 1)
+			}()
+			child, err := f.branches.CreateBranch(project, "edits", f.branchID)
+			require.NoError(t, err)
+			writer := walwriter.New(f.wal, f.branches, f.mat, child)
+			_, err = writer.Put(ctx, "catalog", bson.M{"_id": "one", "edited": true})
+			require.NoError(t, err)
+			svc := merge.NewService(f.metaDB, f.wal, f.branches, f.mat, f.client)
+			plan, err := svc.Preview(ctx, child.ID)
+			require.NoError(t, err)
+			require.Contains(t, plan.Changes[0].SortedImages, "before")
+			key := bson.M{"_id": "one"}
+			if tc.legacy {
+				before := doc(sorted)
+				before = append(before[:2], before[3])
+				_, err = f.metaDB.Collection("wal_merge_plans").UpdateByID(ctx, plan.ID, bson.M{"$set": bson.M{"changes.0.before": before}})
+				require.NoError(t, err)
+				result, err := svc.Apply(ctx, plan.ID, "")
+				require.NoError(t, err)
+				require.Equal(t, 1, result.Applied)
+				return
+			}
+			_, err = catalog.ReplaceOne(ctx, key, doc(tc.live))
+			require.NoError(t, err)
+			expected, err := catalog.FindOne(ctx, key).Raw()
+			require.NoError(t, err)
+			_, err = svc.Apply(ctx, plan.ID, "")
+			require.ErrorContains(t, err, "physical document")
+			actual, err := catalog.FindOne(ctx, key).Raw()
+			require.NoError(t, err)
+			require.Equal(t, expected, actual)
+			saved, err := svc.GetPlan(ctx, plan.ID)
+			require.NoError(t, err)
+			require.Equal(t, merge.StatusPending, saved.Status)
 		})
 	}
 }

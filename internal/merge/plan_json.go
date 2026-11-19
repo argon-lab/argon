@@ -45,7 +45,7 @@ func (p *Plan) CLIJSON(targetFollowed bool) (json.RawMessage, error) {
 		}
 		out.Conflicts = append(out.Conflicts, item)
 	}
-	if targetFollowed && p.FollowedDatabase != "" && p.Status == StatusPending && p.approvalEligible() {
+	if targetFollowed && p.FollowedDatabase != "" && p.Status == StatusPending && !p.ID.IsZero() && p.approvalEligible() {
 		digest, err := ApprovalDigest(p)
 		if err != nil {
 			return nil, err
@@ -135,7 +135,7 @@ func (p *Plan) itemJSON(collection, key string, documentKey any, fields bson.D, 
 		return nil, err
 	}
 	var item bson.D
-	if err := bson.Unmarshal(raw, &item); err != nil {
+	if err := wal.UnmarshalDocument(raw, &item); err != nil {
 		return nil, err
 	}
 
@@ -194,7 +194,7 @@ func extendedJSONValue(value any, path string, paths *[]string) any {
 func (p *Plan) LiteralDollarPathCount() (int, error) {
 	return p.countImagePaths(func(raw bson.Raw, name string) (int, error) {
 		var doc bson.D
-		if err := bson.Unmarshal(raw, &doc); err != nil {
+		if err := wal.UnmarshalDocument(raw, &doc); err != nil {
 			return 0, err
 		}
 		var paths []string

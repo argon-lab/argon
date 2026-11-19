@@ -595,7 +595,7 @@ func (r *resyncer) prune(ctx context.Context, name string, onSource bool) (int64
 		if err == nil {
 			err = flush(nil)
 		}
-		if err == nil || !replay {
+		if err == nil || (!replay && !errors.Is(err, wal.ErrLegacyDocumentKeys)) {
 			return deleted, err
 		}
 	}

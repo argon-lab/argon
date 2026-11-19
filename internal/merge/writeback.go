@@ -98,6 +98,17 @@ func (e *ConflictError) Error() string {
 	return fmt.Sprintf("write-back aborted, nothing was written: document %s/%s in the source database differs from the state this plan was reviewed against. Let following catch up and run preview again", e.Collection, e.DocumentID)
 }
 
+// StoredImageError means MongoDB's final document differs from the approved
+// after-image. The transaction has no commit attempt to reconcile.
+type StoredImageError struct {
+	Collection string
+	DocumentID string
+}
+
+func (e *StoredImageError) Error() string {
+	return fmt.Sprintf("write-back aborted, nothing was written: for %s/%s the server stored something other than the approved image", e.Collection, e.DocumentID)
+}
+
 // WriteBackTarget is the source database as the caller connected to it. The
 // caller has already checked that it is the deployment the branch follows.
 type WriteBackTarget struct {
@@ -520,23 +531,29 @@ func prepareWriteBack(plan *Plan, changes []Change) error {
 	failures := evidenceFailures{}
 	for i := range changes {
 		c := &changes[i]
-		id, err := documentIDValue(*c)
-		if err != nil {
+		if !c.Delete && c.DocumentRaw != nil {
+			checkAfterLayout(*c, failures)
+		}
+		key, err := wal.RawDocumentID(c.DocumentID)
+		if err != nil || (!c.storedKey.IsZero() && !c.storedKey.Equal(key)) {
 			failures.add("invalid typed document key. Run preview again", *c)
 		}
-		c.ID = id
+		for _, image := range c.cliImages() {
+			if image.raw == nil || (c.Delete && image.name == "document") {
+				continue
+			}
+			id, err := image.raw.LookupErr("_id")
+			if err != nil || !id.Equal(key) {
+				failures.add(image.name+" image has a missing or different BSON _id. Run preview again", *c)
+			}
+			// The transaction's MongoDB filter uses the image element itself.
+			c.ID = id
+		}
 		if slices.Contains(c.SortedImages, "before") || (c.BeforeRaw == nil && (c.Delete || c.Before != nil)) {
 			failures.add(unverifiedBefore, *c)
 		}
-		if !c.Delete {
-			if slices.Contains(c.SortedImages, "document") || c.DocumentRaw == nil {
-				failures.add(unverifiedAfter, *c)
-			} else {
-				storedID, err := wal.DocumentIDFromImage(c.DocumentRaw)
-				if err != nil || wal.DocumentIDString(storedID) != c.DocumentID {
-					failures.add("after-image has a missing or different _id. Run preview again", *c)
-				}
-			}
+		if !c.Delete && (slices.Contains(c.SortedImages, "document") || c.DocumentRaw == nil) {
+			failures.add(unverifiedAfter, *c)
 		}
 		// Report each document once for each cause, even when both images have it.
 		for _, image := range c.cliImages() {
@@ -550,6 +567,20 @@ func prepareWriteBack(plan *Plan, changes []Change) error {
 		}
 	}
 	return failures.err()
+}
+
+func checkAfterLayout(c Change, failures evidenceFailures) {
+	fields, err := c.DocumentRaw.Elements()
+	if err != nil || len(fields) == 0 || fields[0].Key() != "_id" {
+		failures.add("after-image must start with _id; preview again", c)
+	}
+	for _, field := range fields {
+		t, i, ok := field.Value().TimestampOK()
+		if ok && t == 0 && i == 0 && field.Key() != "_id" {
+			failures.add("MongoDB replaces a top-level non-_id Timestamp(0,0) with the current time on write", c)
+			break
+		}
+	}
 }
 
 // writeChanges is the body of the source transaction: compare, then write,
@@ -591,6 +622,17 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, changes []
 			if result.MatchedCount != 1 {
 				return conflict
 			}
+		}
+	}
+	// Read the final state of the entire batch while the transaction can
+	// still roll back every write, including earlier writes to other keys.
+	for _, c := range changes {
+		stored, err := database.Collection(c.Collection).FindOne(ctx, bson.M{"_id": c.ID}).Raw()
+		if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+			return err
+		}
+		if c.Delete && err == nil || !c.Delete && (err != nil || !bytes.Equal(stored, c.DocumentRaw)) {
+			return &StoredImageError{Collection: c.Collection, DocumentID: c.DocumentID}
 		}
 	}
 	return nil

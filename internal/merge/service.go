@@ -475,14 +475,19 @@ func (s *Service) SavePlan(ctx context.Context, proposal *Plan) error {
 			return err
 		}
 	}
-	ordinary := plan.approvalEligible() && plan.FollowedDatabase == ""
+	mode := imagesAsStored
+	if plan.FollowedDatabase != "" {
+		mode = followedImages
+	} else if plan.approvalEligible() {
+		mode = ordinaryImages
+	}
 	for i := range plan.Changes {
-		if err := plan.Changes[i].encodeImages(ordinary); err != nil {
+		if err := plan.Changes[i].encodeImages(mode); err != nil {
 			return err
 		}
 	}
 	for i := range plan.Conflicts {
-		if err := plan.Conflicts[i].encodeImages(ordinary); err != nil {
+		if err := plan.Conflicts[i].encodeImages(mode); err != nil {
 			return err
 		}
 	}
@@ -669,11 +674,11 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 		if !c.Delete && c.DocumentRaw == nil {
 			return nil, fmt.Errorf("merge plan has no replacement for %s/%s; run preview again", c.Collection, c.DocumentID)
 		}
-		c.DocumentRaw, err = ordinaryImage(c.DocumentRaw, c.Document, c.ID)
+		c.DocumentRaw, _, err = ordinaryImage(c.DocumentRaw)
 		if err != nil {
 			return nil, err
 		}
-		c.BeforeRaw, err = ordinaryImage(c.BeforeRaw, c.Before, c.ID)
+		c.BeforeRaw, _, err = ordinaryImage(c.BeforeRaw)
 		if err != nil {
 			return nil, err
 		}
@@ -773,15 +778,23 @@ func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes
 			return err
 		}
 		if changed && current != nil && slices.Contains(c.SortedImages, "before") {
-			// In particular, a stored code scope can still contain duplicate
-			// fields. Compare it under the same encoding used at preview.
-			// MongoDB can match numerically equal keys with different BSON
-			// types. Preserve the live key's type and compound field order.
-			sorted, err := sortedImage(current, currentRaw.Lookup("_id"), false)
+			// Earlier writers collapsed even code scopes in marked images.
+			// Confirm the live document still matches the captured target before
+			// accepting the old encoding, which can hide scope-only edits.
+			sorted, err := legacySortedBefore(current, currentRaw.Lookup("_id"))
 			if err != nil {
 				return err
 			}
-			changed = !bytes.Equal(sorted, c.BeforeRaw)
+			if bytes.Equal(sorted, c.BeforeRaw) {
+				state, err := s.materializer.MaterializeDocumentsAtLSN(target, c.Collection, []string{c.DocumentID}, target.HeadLSN)
+				if err != nil {
+					return err
+				}
+				changed, err = docsUnequal(current, state[c.DocumentID])
+				if err != nil {
+					return err
+				}
+			}
 		}
 		if changed {
 			return fmt.Errorf("stale merge plan: physical document %s/%s changed since preview; wait for capture and preview again", c.Collection, c.DocumentID)

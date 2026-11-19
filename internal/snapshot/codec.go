@@ -110,7 +110,7 @@ func decodeChunk(compressed []byte, compressor *wal.Compressor, state map[string
 			return fmt.Errorf("failed to decode snapshot frame at offset %d: %w", offset, err)
 		}
 		var doc bson.M
-		if err := bson.Unmarshal(f.Doc, &doc); err != nil {
+		if err := wal.UnmarshalDocument(f.Doc, &doc); err != nil {
 			return fmt.Errorf("failed to decode document %s: %w", f.Key, err)
 		}
 		// The document is authoritative: old snapshots used keys which

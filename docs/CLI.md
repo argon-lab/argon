@@ -128,8 +128,9 @@ programmatic writes on `main` are refused. Sandboxes forked from it work as
 usual. To bring a sandbox's changes back, `merge apply <plan-id> --write-back --approve <digest>`
 writes the plan to the source database in one transaction. It starts after
 a majority-acknowledged metadata claim, and checks replacements and deletes byte for byte
-against verified before-images in the plan. Inserts require an absent key. One mismatch aborts the
-transaction. `main` shows the result once following has read it back from
+against verified before-images in the plan. Inserts require an absent key.
+After all writes it reads each key again to verify the stored image or deletion.
+One mismatch aborts the transaction. `main` shows the result once following has read it back from
 the source. The MCP server and REST API do not offer write-back.
 
 `source status` reports the saved position and consistent point, inexact
@@ -262,7 +263,10 @@ alone then maps to type `03` and the complete BSON document in hex. Empty
 paths requiring exact bytes. Use `--output json` to inspect them.
 
 A `sorted_images` entry identifies an image for which only decoded values
-were available or an ordinary merge collapsed repeated field names. Ordinary
+were available or an ordinary merge collapsed repeated field names. When a
+raw image is available, ordinary merge keeps the last value at the field's
+first position. The first top-level `_id` supplies document identity. JavaScript
+scope documents keep their order and repetitions. Ordinary
 apply can use these images and older formats. A repeated field within a
 compound `_id` would change the lookup key if collapsed. Ordinary merge
 refuses that document.
@@ -271,7 +275,12 @@ verified after-images for inserts and replacements. Use this version for
 write-back even when an older executable can load the plan. Older writers use
 their own comparison rules. Preview plans saved by older versions again,
 including format 3. This version refuses a selected write with a duplicate
-field name. The error groups affected documents by cause. See the recovery steps in
+field name. Write-back also checks that the BSON type and bytes of each
+image's `_id` match the saved key and that the after-image starts with `_id`.
+MongoDB sets top-level zero timestamps to the current time on insert and
+replacement, so a selected after-image with such a field outside `_id` is
+refused before claim. Nested zero timestamps and a zero timestamp in `_id`
+are allowed. The error groups affected documents by cause. See the recovery steps in
 [Writing a plan back to the source](OPERATIONS.md#writing-a-plan-back-to-the-source).
 When listing older plans, CLI JSON shows the field order actually stored in
 each image and the typed lookup key separately. Unreadable plans appear by ID.
@@ -282,6 +291,10 @@ For a followed parent, inspect `merge preview --output json` or
 `merge list -p <project> --output json`. Each eligible pending plan includes
 an `approval_digest` alongside the images. Use that plan's 64 lowercase hex
 characters in `merge apply <plan-id> --write-back --approve <digest>`.
+The source transaction reads each key again after all writes and before
+commit. It compares the entire stored BSON with the approved after-image
+and checks that each deletion left the key absent. A mismatch rolls back
+the batch and leaves the plan pending for retry or a fresh preview.
 Approval is explicit on each invocation, including plans with zero writes.
 An absent, malformed or mismatched digest leaves the plan pending. Ordinary
 apply rejects `--approve`. Write-back is experimental, off by default, and has known

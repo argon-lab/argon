@@ -254,7 +254,7 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 	rest := body[1+docLen:]
 
 	var doc bson.D
-	if err := bson.Unmarshal(rawDoc, &doc); err != nil {
+	if err := wal.UnmarshalDocument(rawDoc, &doc); err != nil {
 		return message, nil, nil
 	}
 

@@ -339,7 +339,7 @@ func (e *changeEvent) txnID() string {
 // its snapshot history; see images.go.
 func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, branch *wal.Branch, raw bson.Raw, step *timeStep) (*wal.Entry, error) {
 	var event changeEvent
-	if err := bson.Unmarshal(raw, &event); err != nil {
+	if err := wal.UnmarshalDocument(raw, &event); err != nil {
 		return nil, fmt.Errorf("failed to decode change event: %w", err)
 	}
 

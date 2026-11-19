@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -17,9 +18,12 @@ import (
 	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsoncodec"
+	"go.mongodb.org/mongo-driver/bson/bsonrw"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/event"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type sourceDifference struct {
@@ -110,6 +114,9 @@ const (
 	written            = "written"
 	refusedBeforeClaim = "refused before claim"
 	aborted            = "aborted in the transaction"
+	zeroAfterTime      = "top-level zero timestamp"
+	nestedAfterTime    = "nested zero timestamp"
+	rewrittenAfterTime = "timestamp transformed in transaction"
 )
 
 // The oracle uses only the scenario inputs. History reclaimed after saving a
@@ -123,7 +130,10 @@ func (c sourceEvidenceCell) outcome(t *testing.T, provenance string) string {
 	default:
 		t.Fatalf("missing expectation for %q", provenance)
 	}
-	if c.name == "none" || c.name == "none with NaN payload" {
+	switch c.name {
+	case zeroAfterTime:
+		return refusedBeforeClaim
+	case "none", "none with NaN payload", nestedAfterTime:
 		return written
 	}
 	return aborted
@@ -138,6 +148,16 @@ func exactSourceCells(t *testing.T) []sourceEvidenceCell {
 			variants = []sourceDifference{
 				{name: "none"},
 				{name: "document present", live: bson.D{{Key: "v", Value: true}}},
+			}
+		}
+		if operation != "delete" {
+			var original bson.D
+			if operation == "replace" {
+				original = bson.D{{Key: "v", Value: int32(1)}}
+			}
+			variants = slices.Clone(variants)
+			for _, name := range []string{zeroAfterTime, nestedAfterTime, rewrittenAfterTime} {
+				variants = append(variants, sourceDifference{name, original, original})
 			}
 		}
 		for i, variant := range variants {
@@ -175,12 +195,39 @@ func seedEvidenceBranch(t *testing.T, f *followFixture, cells []sourceEvidenceCe
 			require.NoError(t, err)
 			require.True(t, deleted)
 		} else {
-			puts = append(puts, bson.M{"_id": cell.id, "action": "changed"})
+			doc := bson.M{"_id": cell.id, "action": "changed"}
+			switch cell.name {
+			case zeroAfterTime:
+				doc["eventTime"] = primitive.Timestamp{}
+			case nestedAfterTime:
+				doc["event"] = bson.M{"time": primitive.Timestamp{}}
+			case rewrittenAfterTime:
+				doc["eventTime"] = primitive.Timestamp{T: 42}
+			}
+			puts = append(puts, doc)
 		}
 	}
 	_, err = writer.PutMany(ctx, "samples", puts)
 	require.NoError(t, err)
 	return main.ID, child.ID
+}
+
+// Let a zero timestamp reach MongoDB after admission without exposing a
+// bypass in the production writer. Only this source connection uses the hook.
+func zeroTimestampOnWrite(t *testing.T, db *mongo.Database) *mongo.Database {
+	t.Helper()
+	reg := bson.NewRegistry()
+	rawType := reflect.TypeFor[bson.Raw]()
+	encoder, err := reg.LookupEncoder(rawType)
+	require.NoError(t, err)
+	reg.RegisterTypeEncoder(rawType, bsoncodec.ValueEncoderFunc(func(ec bsoncodec.EncodeContext, w bsonrw.ValueWriter, v reflect.Value) error {
+		raw := v.Interface().(bson.Raw)
+		if timestamp := raw.Lookup("eventTime"); timestamp.Type == bson.TypeTimestamp {
+			clear(timestamp.Value)
+		}
+		return encoder.EncodeValue(ec, w, v)
+	}))
+	return db.Client().Database(db.Name(), options.Database().SetRegistry(reg))
 }
 
 func markEvidenceCapture(t *testing.T, f *followFixture, branchID string, unverified bool) {
@@ -296,7 +343,7 @@ func TestWriteBack_SourceEvidenceTable(t *testing.T) {
 
 	// Count claim attempts even if the writer later removes its claim. On
 	// the source, observe the earlier, valid insert inside the transaction.
-	var claims, guardInserts, aborts atomic.Int64
+	var claims, guardInserts, aborts, writes, finalReads atomic.Int64
 	meta := electionClient(t, metadataDeploymentURI, &event.CommandMonitor{
 		Started: func(_ context.Context, e *event.CommandStartedEvent) {
 			if e.DatabaseName == f.metadataName && e.CommandName == "update" && e.Command.Lookup("autocommit").Type != 0 &&
@@ -314,10 +361,20 @@ func TestWriteBack_SourceEvidenceTable(t *testing.T) {
 				e.Command.Lookup("insert").StringValue() == "catalog" {
 				guardInserts.Add(1)
 			}
+			if e.DatabaseName == f.source.Name() && e.Command.Lookup("autocommit").Type != 0 {
+				switch e.CommandName {
+				case "insert", "update", "delete":
+					writes.Add(1)
+				case "find":
+					if writes.Load() == 2 {
+						finalReads.Add(1)
+					}
+				}
+			}
 		},
 	}).Database(f.source.Name())
 	writer := merge.NewService(meta, f.services.WAL, f.services.Branches, f.services.Materializer, meta.Client())
-	target := merge.WriteBackTarget{Database: src}
+	transformed := zeroTimestampOnWrite(t, src)
 	storedPlans := f.services.Client.Database(f.metadataName).Collection("wal_merge_plans")
 	catalog, samples := f.source.Collection("catalog"), f.source.Collection("samples")
 	count := map[string]int{}
@@ -388,6 +445,12 @@ func TestWriteBack_SourceEvidenceTable(t *testing.T) {
 						claims.Store(0)
 						guardInserts.Store(0)
 						aborts.Store(0)
+						writes.Store(0)
+						finalReads.Store(0)
+						target := merge.WriteBackTarget{Database: src}
+						if cell.name == rewrittenAfterTime {
+							target.Database = transformed
+						}
 						result, applyErr := writer.ApplyToSource(ctx, p.ID, "", target, digest)
 						state := f.plan(t, p)
 						outcome := refusedBeforeClaim
@@ -402,6 +465,7 @@ func TestWriteBack_SourceEvidenceTable(t *testing.T) {
 							require.EqualValues(t, 1, claims.Load())
 							require.EqualValues(t, 1, guardInserts.Load())
 							require.Zero(t, aborts.Load())
+							require.EqualValues(t, 2, finalReads.Load(), "read each result after all writes")
 							require.Equal(t, guard.DocumentRaw, readSourceCase(t, catalog, "parcel"))
 							live = proposal.DocumentRaw // nil after a successful delete
 						case refusedBeforeClaim:
@@ -409,6 +473,9 @@ func TestWriteBack_SourceEvidenceTable(t *testing.T) {
 								require.ErrorContains(t, applyErr, "preview again with this version")
 							} else if approval == "correct" {
 								require.ErrorContains(t, applyErr, "samples/"+cell.id)
+								if cell.name == zeroAfterTime && (provenance == verifiedEvidence || provenance == reclaimedAfter) {
+									require.ErrorContains(t, applyErr, "current time on write")
+								}
 							} else {
 								require.ErrorContains(t, applyErr, "--output json")
 							}
@@ -421,9 +488,20 @@ func TestWriteBack_SourceEvidenceTable(t *testing.T) {
 							require.Zero(t, aborts.Load())
 							require.Nil(t, readSourceCase(t, catalog, "parcel"))
 						case aborted:
-							var conflict *merge.ConflictError
-							require.ErrorAs(t, applyErr, &conflict)
-							require.Equal(t, cell.id, conflict.DocumentID)
+							if cell.name == rewrittenAfterTime {
+								var mismatch *merge.StoredImageError
+								require.ErrorAs(t, applyErr, &mismatch)
+								require.Equal(t, "samples", mismatch.Collection)
+								require.Equal(t, cell.id, mismatch.DocumentID)
+								require.Contains(t, state.WriteBackLastError, "the server stored something other than the approved image")
+								require.Equal(t, digest, approvalFor(t, state))
+								require.Nil(t, state.AppliedAt)
+								require.EqualValues(t, 2, finalReads.Load())
+							} else {
+								var conflict *merge.ConflictError
+								require.ErrorAs(t, applyErr, &conflict)
+								require.Equal(t, cell.id, conflict.DocumentID)
+							}
 							require.Nil(t, result)
 							require.Equal(t, merge.StatusPending, state.Status)
 							require.Nil(t, state.WriteBack)
@@ -437,6 +515,12 @@ func TestWriteBack_SourceEvidenceTable(t *testing.T) {
 						}
 						require.True(t, bytes.Equal(live, readSourceCase(t, samples, cell.id)), "source bytes after apply")
 						count[outcome]++
+						if outcome == aborted && cell.name == rewrittenAfterTime {
+							result, err := writer.ApplyToSource(ctx, p.ID, "", merge.WriteBackTarget{Database: src}, digest)
+							require.NoError(t, err, "the released plan accepts the same approval")
+							require.Equal(t, 2, result.Applied)
+							require.Equal(t, proposal.DocumentRaw, readSourceCase(t, samples, cell.id))
+						}
 					})
 				}
 			})

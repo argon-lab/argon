@@ -457,8 +457,8 @@ ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back --approve <
 
 | Apply target | What Argon checks | Accepted plans |
 | --- | --- | --- |
-| An Argon branch | Preview compares decoded BSON values with document keys sorted recursively. Apply checks the saved branch heads and, for formats that record them, branch versions. On a checked-out target, the transaction also compares each live document's decoded values with the plan. | Current plans, including sorted images. Repeated fields in ordinary replacements collapse to their last decoded value. A repeated field within a compound `_id` requires correcting the key first. Older formats can recover IDs and images from branch history. |
-| A followed source | After conflict resolution, one source transaction requires an absent typed key for every insert and byte-for-byte equality with the saved target BSON for every replacement or delete. One mismatch rolls back all writes. | A plan saved by this version, its matching approval digest, and verified, unambiguous images for every selected write. |
+| An Argon branch | Preview compares decoded BSON values with document keys sorted recursively. Apply checks the saved branch heads and, for formats that record them, branch versions. On a checked-out target, the transaction also compares each live document's decoded values with the plan. | Current plans, including sorted images. Ordinary replacements keep the last value of a repeated data field at its first position in the raw document. The first top-level `_id` supplies document identity. JavaScript code scopes preserve their field order and repetitions. A repeated field within a compound `_id` requires correcting the key first. Older formats can recover IDs and images from branch history. |
+| A followed source | The transaction requires an absent key for each insert and exact saved target BSON for each replacement or delete. After all writes, it reads each key again and verifies the final BSON or absence. One mismatch rolls back all writes. | A plan saved by this version, its matching approval digest, and verified, unambiguous images for every selected write. |
 
 #### Applying to the source
 
@@ -481,8 +481,21 @@ untouched and the plan pending.
   can be recreated by the insert. Collection identity and intervening changes
   that restore the same document state are outside the comparison.
 - Inserts and replacements write the saved sandbox BSON, with `_id` first.
+  Each lookup uses the raw BSON `_id` from the image. Its type and bytes must
+  match the saved key and every selected image for that document. Preview again
+  if an older after-image has a field ahead of `_id`.
   Reclaiming either branch's history after preview leaves verified plan images
   usable. The comparison reads its before-image from the saved plan.
+- Before claim, Argon refuses a top-level BSON timestamp `(0,0)` outside
+  `_id` in a selected after-image. MongoDB replaces that value with the
+  current time on write. Set the intended timestamp on the editable branch
+  and preview again. A zero timestamp inside an embedded document or in
+  `_id` is allowed.
+- Verification costs one extra source read per written document. If the
+  server stores different bytes or a deleted document still exists, the
+  transaction aborts. Argon releases the claim, records the reason in
+  `write_back_last_error` and leaves the plan pending. You can retry the
+  same approval or create a fresh preview.
 - Before claiming, Argon reports all evidence problems by reason, with the
   total and up to five collection/ID pairs per reason. The plan stays pending.
   For a plan from any older writer, including format 3, preview again with

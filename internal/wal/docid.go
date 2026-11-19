@@ -31,29 +31,44 @@ func DocumentIDString(id interface{}) string {
 	return documentKeyPrefix + base64.RawURLEncoding.EncodeToString(raw)
 }
 
+// RawDocumentID returns the exact typed value in a WAL key. Modern BSON
+// envelopes already contain its bytes, including the order of compound IDs.
+func RawDocumentID(key string) (bson.RawValue, error) {
+	if strings.HasPrefix(key, documentKeyPrefix) {
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, documentKeyPrefix))
+		if err != nil {
+			return bson.RawValue{}, fmt.Errorf("invalid BSON document key: %w", err)
+		}
+		return bson.Raw(raw).LookupErr("i")
+	}
+	id, err := DocumentIDValue(key)
+	if err != nil {
+		return bson.RawValue{}, err
+	}
+	t, data, err := bson.MarshalValue(id)
+	return bson.RawValue{Type: t, Value: data}, err
+}
+
 // DocumentIDValue reverses a current key without guessing the type of an
 // escaped string. Legacy extended-JSON numeric keys are accepted for plans
 // created before typed keys were introduced.
 func DocumentIDValue(key string) (interface{}, error) {
-	var raw []byte
-	var err error
-	var wrapped struct {
-		ID interface{} `bson:"i"`
-	}
 	if strings.HasPrefix(key, documentKeyPrefix) {
-		raw, err = base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, documentKeyPrefix))
-		if err == nil {
-			err = bson.Unmarshal(raw, &wrapped)
-		}
+		raw, err := RawDocumentID(key)
 		if err != nil {
-			return nil, fmt.Errorf("invalid BSON document key: %w", err)
+			return nil, err
 		}
-		return wrapped.ID, nil
+		var id any
+		err = UnmarshalValue(raw, &id)
+		return id, err
 	}
 	if oid, err := primitive.ObjectIDFromHex(key); err == nil {
 		return oid, nil
 	}
 	if strings.HasPrefix(key, "{") {
+		var wrapped struct {
+			ID any `bson:"i"`
+		}
 		if err := bson.UnmarshalExtJSON([]byte(`{"i":`+key+`}`), true, &wrapped); err == nil {
 			return wrapped.ID, nil
 		}
@@ -107,7 +122,7 @@ func DocumentIDFromImage(image bson.Raw) (interface{}, error) {
 		return nil, fmt.Errorf("document image has no _id: %w", err)
 	}
 	var id interface{}
-	if err := value.Unmarshal(&id); err != nil {
+	if err := UnmarshalValue(value, &id); err != nil {
 		return nil, err
 	}
 	return id, nil

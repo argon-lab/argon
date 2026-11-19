@@ -164,7 +164,7 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 		switch {
 		case len(entry.PreImage) > 0:
 			var pre bson.M
-			if err := bson.Unmarshal(entry.PreImage, &pre); err != nil {
+			if err := wal.UnmarshalDocument(entry.PreImage, &pre); err != nil {
 				return nil, fmt.Errorf("failed to decode pre-image for %s/%s: %w", key.collection, key.id, err)
 			}
 			id, err := wal.DocumentIDFromImage(entry.PreImage)
@@ -189,7 +189,7 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 				continue
 			}
 			var post bson.M
-			if err := bson.Unmarshal(entry.PostImage, &post); err != nil {
+			if err := wal.UnmarshalDocument(entry.PostImage, &post); err != nil {
 				return nil, fmt.Errorf("failed to decode post-image for %s/%s: %w", key.collection, key.id, err)
 			}
 			id, err := wal.DocumentIDFromImage(entry.PostImage)
@@ -275,7 +275,12 @@ func (s *Service) applyPhysical(ctx context.Context, branch *wal.Branch, plan *P
 		for _, c := range plan.Compensations {
 			coll := physical.Collection(c.Collection)
 			var current bson.M
-			if err := coll.FindOne(sc, bson.M{"_id": c.ID}).Decode(&current); err != nil && err != mongo.ErrNoDocuments {
+			raw, err := coll.FindOne(sc, bson.M{"_id": c.ID}).Raw()
+			if err == nil {
+				if err := wal.UnmarshalDocument(raw, &current); err != nil {
+					return nil, err
+				}
+			} else if err != mongo.ErrNoDocuments {
 				return nil, err
 			}
 			equal, err := mongoexpr.CanonicalEqual(current, c.Before)

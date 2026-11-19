@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -316,7 +317,7 @@ func cloneDoc(doc bson.M) (bson.M, error) {
 		return nil, fmt.Errorf("failed to clone document: %w", err)
 	}
 	var clone bson.M
-	if err := bson.Unmarshal(raw, &clone); err != nil {
+	if err := wal.UnmarshalDocument(raw, &clone); err != nil {
 		return nil, fmt.Errorf("failed to clone document: %w", err)
 	}
 	return clone, nil

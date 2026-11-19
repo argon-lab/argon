@@ -124,9 +124,12 @@ requires a verified, saved before-image for every replacement or delete and
 a verified after-image for every insert or replacement. An empty plan
 completes in metadata. For a nonempty plan, Argon checks capture health and
 claims the plan with majority acknowledgment, then checks existing documents
-byte for byte and insert keys for absence in one source transaction. A mismatch aborts every
-write. Detach refuses while a recent claim is unsettled and reports older unsettled
-plans for inspection.
+byte for byte and insert keys for absence in one source transaction. Before
+commit, it reads each affected key again to verify the exact stored BSON or
+confirm deletion. A mismatch rolls back the batch and returns the plan to
+pending. A top-level zero BSON timestamp outside `_id` must be changed on the
+editable branch before write-back. Detach refuses while a recent claim is
+unsettled and reports older unsettled plans for inspection.
 Write-back and `--enable-source-images`
 require importing with a user allowed to run `replSetGetConfig`, such as one
 with the `clusterMonitor` role. Use `argon source status` to see which identity
