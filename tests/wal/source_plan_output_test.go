@@ -31,7 +31,7 @@ func TestWriteBackPlanOutput(t *testing.T) {
 	run := func(args ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, cli, args...)
 		cmd.Env = append(os.Environ(), "MONGODB_URI="+metadataDeploymentURI, "ARGON_METADATA_DB="+f.metadataName,
-			"ARGON_SOURCE_URI="+f.sourceURI, "ARGON_EXPERIMENTAL_SOURCE=1")
+			"ARGON_SOURCE_URI="+f.sourceURI)
 		body, err := cmd.Output()
 		if failed, ok := err.(*exec.ExitError); ok {
 			return failed.Stderr, err
@@ -98,7 +98,7 @@ func TestWriteBackPlanOutput(t *testing.T) {
 	t.Run("followed target", func(t *testing.T) {
 		body, err := run(preview...)
 		require.NoError(t, err, "%s", body)
-		require.Contains(t, string(body), "ARGON_EXPERIMENTAL_SOURCE=1")
+		require.NotContains(t, string(body), "ARGON_EXPERIMENTAL_SOURCE")
 		require.Contains(t, string(body), "ARGON_SOURCE_URI")
 		require.Contains(t, string(body), "argon merge list -p "+f.project+" --output json")
 		require.Contains(t, string(body), "--write-back --approve <digest from that output>")

@@ -20,7 +20,6 @@ import (
 
 func electionFixture(t *testing.T) (*followFixture, *merge.Plan) {
 	t.Helper()
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, reproSourceURI(t))
 	sourceID, err := source.Identify(t.Context(), f.sourceClient)
 	require.NoError(t, err)

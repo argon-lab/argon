@@ -66,10 +66,14 @@ as long as it runs.
 Use `argon import database --online` to copy a replica-set database while
 writers keep running. Run `argon source follow -p myapp` to keep the imported
 `main` current. Online import and following, introduced in 2.6.0, are now
-available by default. The experimental options `--write-back`, `--auto-resync`
-and `--enable-source-images` are off by default and each requires
-`ARGON_EXPERIMENTAL_SOURCE=1`. For known issues and limits, see
-[importing existing data](OPERATIONS.md#importing-existing-data).
+available by default. Write-back is also available by default for reviewed
+plans targeting a followed source. Review the plan with
+`argon merge list -p myapp --output json`, then pass its `approval_digest`
+to `argon merge apply <plan-id> --write-back --approve <digest>`.
+The experimental options `--auto-resync` and `--enable-source-images` are off
+by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. See
+[importing existing data](OPERATIONS.md#importing-existing-data) and the
+[write-back requirements and limits](OPERATIONS.md#writing-a-plan-back-to-the-source).
 
 ```bash
 # Bring existing data in once, with source writers and DDL stopped

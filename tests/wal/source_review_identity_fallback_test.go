@@ -47,7 +47,6 @@ func TestSource_IdentityNeverRestsOnTheSetNameAlone(t *testing.T) {
 // other deployment's set name. Every operation pointed at the other deployment
 // is refused, and the real source can still be followed once its name matches.
 func TestSource_AnotherDeploymentWithTheSameSetNameIsRefused(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	deployments := sourceDeployments()
 	if len(deployments) < 2 {
 		t.Skip("set ARGON_TEST_SOURCE_MONGODB_URI to a second replica set")
@@ -106,6 +105,7 @@ func TestSource_AnotherDeploymentWithTheSameSetNameIsRefused(t *testing.T) {
 	require.ErrorContains(t, err, "write-back refused")
 	requireWeakBindingRemedy(t, err)
 	untouched("write-back")
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	err = f.services.FollowSource(ctx, f.project, walcli.FollowSourceOptions{URI: other, EnableSourceImages: true})
 	require.ErrorContains(t, err, "--enable-source-images refused")
 	requireWeakBindingRemedy(t, err)

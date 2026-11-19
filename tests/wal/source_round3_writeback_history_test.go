@@ -10,7 +10,6 @@ import (
 )
 
 func TestWriteBack_TargetHistoryReclaimedAfterPreview(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

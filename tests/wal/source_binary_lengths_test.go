@@ -69,7 +69,6 @@ func TestWriteBack_OrdinaryMergeMalformedOldBinary(t *testing.T) {
 }
 
 func TestSource_ImportAndCaptureMalformedOldBinary(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, reproSourceURI(t))
 	ctx := t.Context()
 	// A decoder that consumes only the inner count can read the rest of

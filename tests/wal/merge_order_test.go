@@ -20,7 +20,6 @@ func TestWriteBack_SavedCompoundConflict(t *testing.T) {
 }
 
 func savedCompoundConflictOnSource(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	ctx := t.Context()
 	id := bson.D{{Key: "zone", Value: "east"}, {Key: "bay", Value: int32(12)}}
@@ -160,7 +159,6 @@ func checkCompoundReplacement(t *testing.T, catalog *mongo.Collection, id bson.D
 }
 
 func TestWriteBack_ProgrammaticNestedMapOrder(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})
@@ -193,7 +191,6 @@ func TestWriteBack_ProgrammaticNestedMapOrder(t *testing.T) {
 }
 
 func TestWriteBack_RequiresVerifiedSandboxImage(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})
@@ -261,7 +258,6 @@ func TestWriteBack_RequiresVerifiedSandboxImage(t *testing.T) {
 }
 
 func TestWriteBack_RecaptureSandboxAfterImage(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := t.Context()
 	f := newFollowFixture(t, reproSourceURI(t))
 	const id = "parcel"

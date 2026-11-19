@@ -33,10 +33,11 @@ the database it was imported from: its main branch follows that database.
 
 The source connection string is given to commands that contact the source
 (--uri, or the ARGON_SOURCE_URI environment variable) and is never stored.
-"argon merge apply <plan> --write-back --approve <digest>" writes the documents in a plan.
-The --enable-source-images option changes how the source stores writes.
-Both options are experimental and require ARGON_EXPERIMENTAL_SOURCE=1
-and a replica-set ID recorded at import. Operators can also enable
+"argon merge apply <plan> --write-back --approve <digest>" writes the documents
+in a plan and requires a replica-set ID recorded at import.
+The --enable-source-images option also requires that ID and changes how the
+source stores writes. Both --enable-source-images and --auto-resync are
+experimental and require ARGON_EXPERIMENTAL_SOURCE=1. Operators can also enable
 changeStreamPreAndPostImages directly in MongoDB. Argon never drops,
 renames or rewrites the source database.`,
 	Args: cobra.NoArgs,

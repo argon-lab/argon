@@ -14,7 +14,6 @@ import (
 // and a write-back is refused and applied. Everything in it must be a
 // document write the test made or one of the plan's four documents.
 func TestSource_OnlyPlannedDocumentsChangeWhileFollowingAndWritingBack(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
