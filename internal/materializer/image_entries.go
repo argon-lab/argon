@@ -32,16 +32,9 @@ func (s *Service) DocumentImageEntries(branch *wal.Branch, collection string, ke
 		}
 		// The floor is published before deletion. A surviving older image
 		// cannot prove which bytes were last, even if its values match.
-		floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
+		floor, err := s.DocumentImageReclaimFloor(seg.branch.ID, collection)
 		if err != nil {
 			return nil, err
-		}
-		if s.snapshots != nil {
-			bound, err := s.snapshots.UnrecordedReclaimBound(seg.branch.ID, collection)
-			if err != nil {
-				return nil, err
-			}
-			floor = max(floor, bound)
 		}
 		remaining := make([]string, 0, len(keys))
 		for _, key := range keys {
@@ -57,6 +50,17 @@ func (s *Service) DocumentImageEntries(branch *wal.Branch, collection string, ke
 		keys = remaining
 	}
 	return entries, nil
+}
+
+// DocumentImageReclaimFloor includes reclamation performed before GC recorded floors.
+// Only WAL images above this LSN can establish the collection's latest BSON bytes.
+func (s *Service) DocumentImageReclaimFloor(branchID, collection string) (int64, error) {
+	floor, err := s.wal.ReclaimFloor(branchID, collection)
+	if err != nil || s.snapshots == nil {
+		return floor, err
+	}
+	bound, err := s.snapshots.UnrecordedReclaimBound(branchID, collection)
+	return max(floor, bound), err
 }
 
 func (s *Service) mixedImageEntries(seg segment, collection string, keys []string, visible func(int64) bool) (map[string]*wal.Entry, error) {

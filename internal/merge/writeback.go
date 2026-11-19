@@ -5,12 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/argon-lab/argon/v2/internal/ingest"
-	"github.com/argon-lab/argon/v2/internal/mongoexpr"
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -32,10 +32,9 @@ import (
 // disagree about what happened.
 //
 // The write is one transaction on the source. Inside it every document is
-// read and compared with the before-image the plan was reviewed against,
-// exactly as a merge into a checked-out branch does; the first document that
-// differs aborts the transaction and nothing is written. A plan does not
-// have to match the target's head, which moves with every production write:
+// read as raw BSON and compared byte for byte with the image saved at preview.
+// The first difference aborts the entire transaction. A plan does not have to
+// match the target's head, which moves with every production write:
 // the per-document comparison is the staleness check, and it is made at the
 // only moment that counts.
 //
@@ -173,8 +172,12 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if err := plan.RequirePending(); err != nil {
 		return nil, err
 	}
-	if plan.FormatVersion < 2 {
-		return nil, errors.New("this plan predates before-images and cannot be checked against the source; run preview again")
+	changes, resolved, err := resolveChanges(plan, strategy)
+	if err != nil {
+		return nil, err
+	}
+	if err := prepareWriteBack(plan, changes); err != nil {
+		return nil, err
 	}
 
 	var databaseName string
@@ -191,16 +194,6 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	}
 	if source.HeadLSN != plan.SourceHead || source.MutationVersion != plan.SourceVersion {
 		return nil, fmt.Errorf("stale plan: branch %s changed since preview; run preview again", source.Name)
-	}
-
-	changes, resolved, err := resolveChanges(plan, strategy)
-	if err != nil {
-		return nil, err
-	}
-	for _, c := range changes {
-		if _, err := documentIDValue(c); err != nil {
-			return nil, err
-		}
 	}
 
 	if len(changes) == 0 {
@@ -223,13 +216,9 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	for _, name := range existing {
 		present[name] = true
 	}
-	writes := make([]sourceWrite, len(changes))
-	for i, c := range changes {
+	for _, c := range changes {
 		if !present[c.Collection] && !c.Delete {
 			return nil, fmt.Errorf("collection %s does not exist in the source database, and write-back does not create collections. Create it there with the options it should have, let following catch up, and preview again", c.Collection)
-		}
-		if writes[i], err = s.sourceWriteFor(source, branch, plan, c); err != nil {
-			return nil, err
 		}
 	}
 
@@ -262,7 +251,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		return nil, err
 	}
 
-	uncertain, txnErr := writeSourceTransaction(writerCtx, session, target.Database, writes)
+	uncertain, txnErr := writeSourceTransaction(writerCtx, session, target.Database, changes)
 
 	// The outcome is recorded even if the caller's context has ended.
 	record2, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
@@ -316,7 +305,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 // The driver's WithTransaction detaches commit from the caller's deadline.
 // Drive the same body/commit retry decisions with one deadline for all attempts.
 // Once a commit has been sent, only a definitive abort can release the claim.
-func writeSourceTransaction(ctx context.Context, session mongo.Session, db *mongo.Database, writes []sourceWrite) (uncertain bool, err error) {
+func writeSourceTransaction(ctx context.Context, session mongo.Session, db *mongo.Database, changes []Change) (uncertain bool, err error) {
 	maxCommit := writeBackDeadline
 	opts := options.Transaction().SetReadConcern(readconcern.Snapshot()).SetWriteConcern(writeconcern.Majority()).
 		SetReadPreference(readpref.Primary()).SetMaxCommitTime(&maxCommit)
@@ -324,7 +313,7 @@ func writeSourceTransaction(ctx context.Context, session mongo.Session, db *mong
 		if err := session.StartTransaction(opts); err != nil {
 			return false, err
 		}
-		err := writeChanges(mongo.NewSessionContext(ctx, session), db, writes)
+		err := writeChanges(mongo.NewSessionContext(ctx, session), db, changes)
 		if err == nil {
 			err = ctx.Err()
 		}
@@ -453,203 +442,141 @@ func (s *Service) ClaimsForDetach(ctx context.Context, branchID string) ([]strin
 	return unsettled, nil
 }
 
-// sourceWrite is one planned change prepared for the source transaction.
-type sourceWrite struct {
-	change Change
-	id     interface{}
-	// before is the document as the followed branch stored it when the plan
-	// was made, byte for byte, when that is known. The comparison then sees
-	// field order too.
-	before bson.Raw
-	// A current plan supplies raw BSON. An older plan supplies a bson.D
-	// to be ordered against the existing source document on replacement.
-	document any
+// A refusal identifies a bounded sample from every group, even for a large plan.
+type evidenceFailures map[string]*affectedDocuments
+
+type affectedDocuments struct {
+	count int
+	names []string
 }
 
-// sourceWriteFor resolves what the comparison and the write need from the
-// two branches' histories, before the transaction starts.
-func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Change) (sourceWrite, error) {
-	id, err := documentIDValue(c)
-	if err != nil {
-		return sourceWrite{}, err
+func (failures evidenceFailures) add(reason string, c Change) {
+	const maxExamples = 5
+	group := failures[reason]
+	if group == nil {
+		group = &affectedDocuments{}
+		failures[reason] = group
 	}
-	write := sourceWrite{change: c, id: id}
-	if c.Before != nil {
-		// A followed branch stores the source's own bytes.
-		entry, err := s.storedImage(target, plan.TargetHead, c.Collection, c.DocumentID, c.Before)
+	group.count++
+	if len(group.names) < maxExamples {
+		group.names = append(group.names, c.Collection+"/"+c.DocumentID)
+	}
+}
+
+func (failures evidenceFailures) err() error {
+	if len(failures) == 0 {
+		return nil
+	}
+	var message strings.Builder
+	message.WriteString("write-back refused before claim")
+	for _, reason := range slices.Sorted(maps.Keys(failures)) {
+		group := failures[reason]
+		noun := "documents"
+		if group.count == 1 {
+			noun = "document"
+		}
+		fmt.Fprintf(&message, "\n%s (%d %s): %s", reason, group.count, noun, strings.Join(group.names, ", "))
+		if more := group.count - len(group.names); more > 0 {
+			fmt.Fprintf(&message, ", and %d more", more)
+		}
+	}
+	return errors.New(message.String())
+}
+
+const (
+	oldPlanEvidence   = "older plan format lacks verified ordered images. Run preview again with this version"
+	unverifiedBefore  = "unverified before-image: capture recorded an unverified image or target history was reclaimed. Stop following, run argon source resync -p <project> --force, then preview again"
+	unverifiedAfter   = "unverified after-image: capture recorded an unverified image or sandbox history was reclaimed. Record the intended sandbox document again with verified capture, then preview again"
+	duplicateEvidence = "duplicate fields in a plan image. Remove the repeated field names, recapture the document and preview again"
+	lossyEvidence     = "an image rendered lossily without exact_bytes in its original preview. Inspect exact_bytes for the listed documents with argon merge list -p <project> --output json, then run preview again with this version"
+)
+
+// prepareWriteBack validates only images selected by the conflict strategy.
+// The transaction will consume these saved images without consulting either branch's history.
+func prepareWriteBack(plan *Plan, changes []Change) error {
+	failures := evidenceFailures{}
+	for i := range changes {
+		c := &changes[i]
+		if plan.FormatVersion < orderedPlanVersion {
+			failures.add(oldPlanEvidence, *c)
+			continue
+		}
+		id, err := documentIDValue(*c)
 		if err != nil {
-			return sourceWrite{}, fmt.Errorf("could not read write-back before-image for %s/%s: %w", c.Collection, c.DocumentID, err)
+			failures.add("invalid typed document key. Run preview again", *c)
 		}
-		// GC publishes the floor before deleting entries. At or below it,
-		// a missing or surviving image cannot prove which bytes were latest.
-		floor, err := s.wal.ReclaimFloor(target.ID, c.Collection)
-		if err != nil {
-			return sourceWrite{}, fmt.Errorf("could not check write-back before-image history for %s/%s: %w", c.Collection, c.DocumentID, err)
+		c.ID = id
+		if slices.Contains(c.SortedImages, "before") || (c.BeforeRaw == nil && (c.Delete || c.Before != nil)) {
+			failures.add(unverifiedBefore, *c)
 		}
-		if floor > target.BaseLSN && (entry == nil || entry.LSN <= floor) {
-			return sourceWrite{}, fmt.Errorf("the exact write-back before-image for %s/%s at LSN %d may have been reclaimed: %w", c.Collection, c.DocumentID, plan.TargetHead, wal.ErrHistoryReclaimed)
-		}
-		// An unverified change-stream image may contain a moved field
-		// twice. It records the decoded values but lacks the exact bytes.
-		if plan.FormatVersion >= orderedPlanVersion && !slices.Contains(c.SortedImages, "before") {
-			write.before = c.BeforeRaw
-		} else if entry != nil && entry.Metadata["capture_images"] != "attached_unverified" {
-			if plan.FormatVersion >= orderedPlanVersion && ingest.HasDuplicateFields(entry.PostImage) {
-				return sourceWrite{}, fmt.Errorf("write-back before-image for %s/%s contains duplicate fields; run preview again after capturing an unambiguous document", c.Collection, c.DocumentID)
+		if !c.Delete {
+			if slices.Contains(c.SortedImages, "document") || c.DocumentRaw == nil {
+				failures.add(unverifiedAfter, *c)
+			} else {
+				storedID, err := wal.DocumentIDFromImage(c.DocumentRaw)
+				if err != nil || wal.DocumentIDString(storedID) != c.DocumentID {
+					failures.add("after-image has a missing or different _id. Run preview again", *c)
+				}
 			}
-			write.before = entry.PostImage
+		}
+		// Report each document once for each cause, even when both images have it.
+		duplicates, unmarked := false, false
+		for _, image := range c.cliImages() {
+			if image.raw == nil || (c.Delete && image.name == "document") {
+				continue
+			}
+			if ingest.HasDuplicateKeys(image.raw) {
+				duplicates = true
+			} else if plan.ExactBytesVersion != exactBytesVersion {
+				markers, err := imageExactBytes(image.raw, image.name)
+				if err != nil || len(markers) != 0 {
+					unmarked = true
+				}
+			}
+		}
+		if duplicates {
+			failures.add(duplicateEvidence, *c)
+		}
+		if unmarked {
+			failures.add(lossyEvidence, *c)
 		}
 	}
-	if c.Delete {
-		return write, nil
-	}
-	if plan.FormatVersion >= orderedPlanVersion {
-		if c.DocumentRaw == nil || slices.Contains(c.SortedImages, "document") {
-			return sourceWrite{}, fmt.Errorf("no verified write-back replacement for %s/%s; run a new preview after the sandbox history is intact", c.Collection, c.DocumentID)
-		}
-		storedID, err := wal.DocumentIDFromImage(c.DocumentRaw)
-		if err != nil || wal.DocumentIDString(storedID) != c.DocumentID {
-			return sourceWrite{}, fmt.Errorf("write-back replacement for %s/%s has a different _id; run preview again", c.Collection, c.DocumentID)
-		}
-		write.document = c.DocumentRaw
-		return write, nil
-	}
-	// The replacement needs the sandbox's field order. A map in the
-	// plan also cannot distinguish a repeated field from its last value.
-	entry, err := s.storedImage(source, plan.SourceHead, c.Collection, c.DocumentID, c.Document)
-	if err != nil {
-		return sourceWrite{}, fmt.Errorf("could not read write-back replacement for %s/%s: %w", c.Collection, c.DocumentID, err)
-	}
-	floor, err := s.wal.ReclaimFloor(source.ID, c.Collection)
-	if err != nil {
-		return sourceWrite{}, err
-	}
-	if floor > source.BaseLSN && (entry == nil || entry.LSN <= floor) {
-		return sourceWrite{}, fmt.Errorf("write-back replacement for %s/%s: %w; run a new preview after the sandbox history is intact", c.Collection, c.DocumentID, wal.ErrHistoryReclaimed)
-	}
-	if !verifiedReplacement(entry) {
-		return sourceWrite{}, fmt.Errorf("no verified write-back replacement for %s/%s; run a new preview after the sandbox history is intact", c.Collection, c.DocumentID)
-	}
-	var document bson.D
-	if err := bson.Unmarshal(entry.PostImage, &document); err != nil {
-		return sourceWrite{}, err
-	}
-	ordered := bson.D{{Key: "_id", Value: id}}
-	for _, field := range document {
-		if field.Key != "_id" {
-			ordered = append(ordered, field)
-		}
-	}
-	write.document = ordered
-	return write, nil
-}
-
-func verifiedReplacement(entry *wal.Entry) bool {
-	return entry != nil && len(entry.PostImage) != 0 && entry.Metadata["capture_images"] != "attached_unverified" && !ingest.HasDuplicateFields(entry.PostImage)
-}
-
-// storedImage returns the newest visible entry that holds the given document
-// at or below head. A missing image requires a successful read.
-func (s *Service) storedImage(branch *wal.Branch, head int64, collection, documentID string, want bson.M) (*wal.Entry, error) {
-	history, err := s.wal.GetDocumentHistory(branch.ID, collection, documentID, branch.BaseLSN+1, head)
-	if err != nil {
-		return nil, err
-	}
-	for i := len(history) - 1; i >= 0; i-- {
-		entry := history[i]
-		if branch.IsDiscardedForRead(entry.LSN, head) {
-			continue
-		}
-		if !entry.IsData() {
-			continue
-		}
-		if entry.Operation != wal.OpPut || len(entry.PostImage) == 0 {
-			return nil, nil
-		}
-		var stored bson.M
-		if err := bson.Unmarshal(entry.PostImage, &stored); err != nil {
-			return nil, err
-		}
-		differs, err := docsUnequal(stored, want)
-		if err != nil {
-			return nil, err
-		}
-		if differs {
-			return nil, fmt.Errorf("stored image at LSN %d differs from the plan; run preview again", entry.LSN)
-		}
-		return entry, nil
-	}
-	return nil, nil
+	return failures.err()
 }
 
 // writeChanges is the body of the source transaction: compare, then write,
 // one document at a time. It issues single-document inserts, replacements
 // and deletes into collections that exist; it never upserts, drops, renames
 // or rewrites a collection.
-func writeChanges(ctx mongo.SessionContext, database *mongo.Database, writes []sourceWrite) error {
-	for _, write := range writes {
-		c := write.change
+func writeChanges(ctx mongo.SessionContext, database *mongo.Database, changes []Change) error {
+	for _, c := range changes {
 		conflict := &ConflictError{Collection: c.Collection, DocumentID: c.DocumentID}
 		coll := database.Collection(c.Collection)
-		current, err := coll.FindOne(ctx, bson.M{"_id": write.id}).Raw()
+		current, err := coll.FindOne(ctx, bson.M{"_id": c.ID}).Raw()
 		if err == mongo.ErrNoDocuments {
 			current = nil
 		} else if err != nil {
 			return err
 		}
-		switch {
-		case c.Before == nil || current == nil:
-			if c.Before != nil || current != nil {
-				return conflict
-			}
-		case write.before != nil:
-			// MongoDB distinguishes documents whose fields are reordered.
-			if !bytes.Equal(current, write.before) {
-				return conflict
-			}
-		default:
-			// Order-insensitive comparison is reserved for states for
-			// which history never recorded exact bytes.
-			// A map would discard all but the last value of a repeated
-			// field and could authorize overwriting a production change.
-			if ingest.HasDuplicateFields(current) {
-				return conflict
-			}
-			var decoded bson.M
-			if err := bson.Unmarshal(current, &decoded); err != nil {
-				return err
-			}
-			changed, err := docsUnequal(decoded, c.Before)
-			if err != nil {
-				return err
-			}
-			if changed {
-				return conflict
-			}
+		// For an insert both are nil. Every existing row must match the entire saved document.
+		if !bytes.Equal(current, c.BeforeRaw) {
+			return conflict
 		}
 		switch {
 		case c.Delete:
-			result, err := coll.DeleteOne(ctx, bson.M{"_id": write.id})
+			result, err := coll.DeleteOne(ctx, bson.M{"_id": c.ID})
 			if err != nil {
 				return err
 			}
 			if result.DeletedCount != 1 {
 				return conflict
 			}
-		case current == nil:
-			if _, err := coll.InsertOne(ctx, write.document); err != nil {
+		case c.BeforeRaw == nil:
+			if _, err := coll.InsertOne(ctx, c.DocumentRaw); err != nil {
 				return err
 			}
 		default:
-			document := write.document
-			if legacy, ok := document.(bson.D); ok {
-				var existing bson.D
-				if err := bson.Unmarshal(current, &existing); err != nil {
-					return err
-				}
-				document = orderLike(existing, legacy)
-			}
-			result, err := coll.ReplaceOne(ctx, bson.M{"_id": write.id}, document)
+			result, err := coll.ReplaceOne(ctx, bson.M{"_id": c.ID}, c.DocumentRaw)
 			if err != nil {
 				return err
 			}
@@ -659,126 +586,6 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, writes []s
 		}
 	}
 	return nil
-}
-
-// orderLike returns want with its fields in the order have has them, at
-// every level: a field both documents have keeps its position in have, and
-// fields only want has follow in want's order. Inside arrays, only matching
-// elements borrow the source's field order, which matters to anything that
-// compares embedded documents whole.
-func orderLike(have, want bson.D) bson.D {
-	wanted := make(map[string]interface{}, len(want))
-	for _, field := range want {
-		wanted[field.Key] = field.Value
-	}
-	placed := make(map[string]bool, len(have))
-	ordered := make(bson.D, 0, len(want))
-	for _, field := range have {
-		value, ok := wanted[field.Key]
-		if !ok || placed[field.Key] {
-			continue
-		}
-		placed[field.Key] = true
-		ordered = append(ordered, bson.E{Key: field.Key, Value: orderValueLike(field.Value, value)})
-	}
-	for _, field := range want {
-		if !placed[field.Key] {
-			placed[field.Key] = true
-			ordered = append(ordered, field)
-		}
-	}
-	return ordered
-}
-
-func orderValueLike(have, want interface{}) interface{} {
-	switch wanted := want.(type) {
-	case bson.D:
-		if had, ok := have.(bson.D); ok {
-			return orderLike(had, wanted)
-		}
-	case bson.A:
-		if had, ok := have.(bson.A); ok {
-			return orderArrayLike(had, wanted)
-		}
-	}
-	return want
-}
-
-func orderArrayLike(have, want bson.A) bson.A {
-	// Reserve all exact matches before a fallback can consume an element
-	// with the same decoded values and different field order.
-	exact := make(map[string][]int)
-	for i, item := range have {
-		if key := arrayItemExactKey(item); key != "" {
-			exact[key] = append(exact[key], i)
-		}
-	}
-	used := make([]bool, len(have))
-	wantKeys := make([]string, len(want))
-	wantCounts := make(map[string]int)
-	for i, item := range want {
-		key := arrayItemExactKey(item)
-		indices := exact[key]
-		if len(indices) > 0 {
-			last := len(indices) - 1
-			used[indices[last]] = true
-			exact[key] = indices[:last]
-			continue
-		}
-		if key := arrayItemKey(item); key != "" {
-			wantKeys[i] = key
-			wantCounts[key]++
-		}
-	}
-	matches := make(map[string][]int)
-	for i, item := range have {
-		if used[i] {
-			continue
-		}
-		if key := arrayItemKey(item); wantCounts[key] == 1 {
-			matches[key] = append(matches[key], i)
-		}
-	}
-	ordered := append(bson.A{}, want...)
-	for i, key := range wantKeys {
-		// Only an unambiguous remaining pair borrows the source's order.
-		if indices := matches[key]; len(indices) == 1 {
-			ordered[i] = orderValueLike(have[indices[0]], want[i])
-		}
-	}
-	return ordered
-}
-
-func arrayItemExactKey(item interface{}) string {
-	switch item.(type) {
-	case bson.D, bson.A:
-		typ, value, err := bson.MarshalValue(item)
-		if err == nil {
-			return typ.String() + string(value)
-		}
-	}
-	return ""
-}
-
-// arrayItemKey uses a subdocument's _id if present and otherwise its value
-// with document keys sorted for comparison. Scalars have no fields to order.
-func arrayItemKey(item interface{}) string {
-	switch value := item.(type) {
-	case bson.D:
-		for _, field := range value {
-			if field.Key == "_id" {
-				return "id:" + wal.DocumentIDString(field.Value)
-			}
-		}
-	case bson.A:
-	default:
-		return ""
-	}
-	value, err := mongoexpr.CanonicalBytes(item)
-	if err != nil {
-		return ""
-	}
-	return "value:" + string(value)
 }
 
 // LookupWriteBack returns the plan whose write-back ran in a source session,

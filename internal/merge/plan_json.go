@@ -61,6 +61,24 @@ func (c Conflict) cliImages() []planImage {
 	return []planImage{{"base", c.Base, c.BaseRaw}, {"ours", c.Ours, c.OursRaw}, {"theirs", c.Theirs, c.TheirsRaw}}
 }
 
+// Loaded plans have the persisted BSON even when their format predates
+// ordered images. In-memory legacy plans can still carry only a map.
+func (image planImage) bsonForCLI(format int, key string) (bson.Raw, error) {
+	if image.raw != nil || image.doc == nil || format >= orderedPlanVersion {
+		return image.raw, nil
+	}
+	doc := image.doc
+	if _, ok := doc["_id"]; ok && format >= 2 {
+		id, err := wal.DocumentIDValue(key)
+		if err != nil {
+			return nil, err
+		}
+		doc = maps.Clone(doc)
+		doc["_id"] = id
+	}
+	return wal.MarshalDocument(doc)
+}
+
 func (p *Plan) itemJSON(collection, key string, documentKey any, fields bson.D, sortedImages []string, images []planImage) (json.RawMessage, error) {
 	var id any = key
 	if p.FormatVersion >= 2 {
@@ -88,22 +106,21 @@ func (p *Plan) itemJSON(collection, key string, documentKey any, fields bson.D, 
 	if len(sortedImages) > 0 {
 		fields = append(fields, bson.E{Key: "sorted_images", Value: sortedImages})
 	}
+	var exact bson.D
 	for _, image := range images {
-		if p.FormatVersion >= orderedPlanVersion {
-			if image.raw != nil {
-				fields = append(fields, bson.E{Key: image.name, Value: image.raw})
-			}
+		raw, err := image.bsonForCLI(p.FormatVersion, key)
+		if err != nil {
+			return nil, err
+		}
+		if raw == nil {
 			continue
 		}
-		if image.doc == nil {
-			continue
+		markers, err := imageExactBytes(raw, image.name)
+		if err != nil {
+			return nil, err
 		}
-		doc := image.doc
-		if _, ok := doc["_id"]; ok && p.FormatVersion >= 2 {
-			doc = maps.Clone(doc)
-			doc["_id"] = id
-		}
-		fields = append(fields, bson.E{Key: image.name, Value: doc})
+		exact = append(exact, markers...)
+		fields = append(fields, bson.E{Key: image.name, Value: raw})
 	}
 	raw, err := wal.MarshalDocument(fields)
 	if err != nil {
@@ -126,6 +143,9 @@ func (p *Plan) itemJSON(collection, key string, documentKey any, fields bson.D, 
 	}
 	if len(paths) > 0 {
 		item = append(item, bson.E{Key: "literal_dollar_paths", Value: paths})
+	}
+	if len(exact) > 0 {
+		item = append(item, bson.E{Key: "exact_bytes", Value: exact})
 	}
 	return bson.MarshalExtJSON(item, true, false)
 }
@@ -164,29 +184,45 @@ func extendedJSONValue(value any, path string, paths *[]string) any {
 
 // LiteralDollarPathCount counts all marked paths across the prepared images.
 func (p *Plan) LiteralDollarPathCount() (int, error) {
-	var paths []string
-	count := func(images []planImage) error {
+	return p.countImagePaths(func(raw bson.Raw, name string) (int, error) {
+		var doc bson.D
+		if err := bson.Unmarshal(raw, &doc); err != nil {
+			return 0, err
+		}
+		var paths []string
+		extendedJSONValue(doc, name, &paths)
+		return len(paths), nil
+	})
+}
+
+func (p *Plan) countImagePaths(count func(bson.Raw, string) (int, error)) (int, error) {
+	total := 0
+	visit := func(key string, images []planImage) error {
 		for _, image := range images {
-			if image.raw == nil {
-				continue
-			}
-			var doc bson.D
-			if err := bson.Unmarshal(image.raw, &doc); err != nil {
+			raw, err := image.bsonForCLI(p.FormatVersion, key)
+			if err != nil {
 				return err
 			}
-			extendedJSONValue(doc, image.name, &paths)
+			if raw == nil {
+				continue
+			}
+			n, err := count(raw, image.name)
+			if err != nil {
+				return err
+			}
+			total += n
 		}
 		return nil
 	}
 	for _, c := range p.Changes {
-		if err := count(c.cliImages()); err != nil {
+		if err := visit(c.DocumentID, c.cliImages()); err != nil {
 			return 0, err
 		}
 	}
 	for _, c := range p.Conflicts {
-		if err := count(c.cliImages()); err != nil {
+		if err := visit(c.DocumentID, c.cliImages()); err != nil {
 			return 0, err
 		}
 	}
-	return len(paths), nil
+	return total, nil
 }

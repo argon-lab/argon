@@ -13,12 +13,15 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Changed
 
-- Format-3 merge plans store ordered BSON images. CLI preview, list and both
-  apply paths use those images. JSON identifies sorted fallback images and
-  paths to literal documents with dollar-prefixed fields.
-- A write-back replacement from a format-3 plan writes the reviewed sandbox
-  image. It no longer rearranges fields to match production's layout; plans
-  saved in older formats keep that behaviour.
+- Format-3 merge plans store ordered BSON images. CLI preview and list
+  identify literal documents with dollar-prefixed fields, unverified images
+  and exact BSON bytes that canonical Extended JSON cannot represent.
+  Table output reports how many paths require exact bytes.
+- Experimental write-back requires a verified, saved before-image for every
+  replacement or delete and compares it byte for byte in the source transaction.
+  Inserts require an absent key. Inserts and replacements write the saved
+  after-image. Older formats, selected unverified or duplicate-field images,
+  and earlier previews missing required exact bytes are refused before claim.
 - Source detach refuses recent write-back claims and reports older unsettled
   plan IDs for inspection. Source transaction and commit retries share a
   two-minute writer deadline.
@@ -36,9 +39,8 @@ entry — a synchronization barrier, not in-proxy capture).
 - Ordinary merges preserve verified BSON order for current documents in a
   collection that also contains older WAL keys.
 - CLI merge JSON escapes legacy DBPointer namespaces, including quotes.
-- Value-only before-image comparisons refuse a source document with
-  duplicate fields, preventing a replacement or deletion from losing a
-  production value.
+- Source resync recaptures unverified documents even when their bytes match
+  the source, allowing a fresh preview to record verified before-images.
 
 - Saved plans use the stored BSON key for compound IDs on both apply paths.
   Preview gives target-specific apply guidance and identifies plans too

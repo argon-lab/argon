@@ -73,6 +73,7 @@ type ResyncState struct {
 
 // BranchState reads a branch's documents. The materializer implements it.
 type BranchState interface {
+	DocumentImageReclaimFloor(branchID, collection string) (int64, error)
 	CollectionsAtLSN(branch *wal.Branch, targetLSN int64) ([]string, error)
 	MaterializeDocumentsAtLSN(branch *wal.Branch, collection string, keys []string, targetLSN int64) (map[string]bson.M, error)
 	MaterializeCollectionAtLSN(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error)
@@ -115,7 +116,7 @@ type ResyncResult struct {
 	FromLSN int64            `json:"from_lsn"`
 	Point   *ConsistentPoint `json:"consistent"`
 	// Compared counts source documents read, Unchanged those the branch
-	// already held byte for byte.
+	// already held as verified BSON, byte for byte.
 	Compared  int64 `json:"compared"`
 	Unchanged int64 `json:"unchanged"`
 	Puts      int64 `json:"puts"`
@@ -451,14 +452,15 @@ func (r *resyncer) unchanged(collection string, keys []string) (map[string]bson.
 	if err != nil {
 		return nil, err
 	}
-	// The floor is read after the entries: garbage collection records it
-	// before it deletes.
-	floor, err := r.s.wal.ReclaimFloor(branch.ID, collection)
+	// Check the same floor as preview, after fetching the entries.
+	floor, err := r.opts.State.DocumentImageReclaimFloor(branch.ID, collection)
 	if err != nil {
 		return nil, err
 	}
 	for key, entry := range entries {
-		if entry.LSN > floor && entry.Operation == wal.OpPut {
+		// Even matching bytes need a fresh verified entry if the stream supplied
+		// an unverified post-image. A new preview can then use the source read.
+		if entry.LSN > floor && entry.Operation == wal.OpPut && entry.Metadata["capture_images"] != "attached_unverified" {
 			held[key] = entry.PostImage
 		}
 	}

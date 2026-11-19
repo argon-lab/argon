@@ -114,11 +114,13 @@ Add `--dry-run` to the import command to check the source and its change stream
 and see the estimated copy without writing anything.
 Following ignores changes to views. New merge plans save ordered BSON. CLI
 JSON preview and list show the order apply writes, preserve BSON types with
-canonical Extended JSON and identify literal documents with dollar-prefixed
-fields. Write-back requires a verified replacement image. An empty plan
+canonical Extended JSON, identify literal documents with dollar-prefixed
+fields and show exact bytes wherever JSON loses a BSON distinction. Write-back
+requires a verified, saved before-image for every replacement or delete and
+a verified after-image for every insert or replacement. An empty plan
 completes in metadata. For a nonempty plan, Argon checks capture health and
-claims the plan with majority acknowledgment, then compares each affected key
-with its planned state in one source transaction. A mismatch aborts every
+claims the plan with majority acknowledgment, then checks existing documents
+byte for byte and insert keys for absence in one source transaction. A mismatch aborts every
 write. Detach refuses while a recent claim is unsettled and reports older unsettled
 plans for inspection.
 Write-back and `--enable-source-images`

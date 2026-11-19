@@ -638,9 +638,9 @@ outside that catalog, including a name now used by a view, is pruned as absent. 
 garbage collection has reclaimed part of a collection's history
 the log no longer names every document, and the collection is listed from its
 snapshot instead, loaded whole as every reader of reclaimed history does.
-Step 3 treats a document as unchanged only on evidence from the log itself
-(its newest entry, above the reclaim floor); anything else is stored again,
-which costs an entry and changes nothing.
+Step 3 counts a document as unchanged when its newest visible WAL entry
+contains verified bytes that match the source and is above the collection's
+reclaim floor. Otherwise it records the bytes read from the source.
 
 The branch is visible throughout, and each batch moves its head. What keeps a
 half-compared branch from passing for a healthy one is the status written in
@@ -661,20 +661,25 @@ ordered BSON in the existing change and conflict fields. Preview selects the
 newest visible verified WAL image at each side's LSN, including inherited
 history. If a collection contains older untyped keys, lookup falls back to
 the history of each planned key. An unavailable or unverified image gets a
-deterministic encoding and its name in `sorted_images`. Both apply paths
-consume the saved replacement bytes. Write-back requires a verified
-replacement. Older plans still recover replacement order from history.
-Programmatic puts sort Go maps and retain the supplied order of BSON documents
-when creating the WAL image.
+deterministic encoding and its name in `sorted_images`. Ordinary apply uses these images and can recover
+replacement order from history for older plans. Programmatic puts sort Go
+maps and retain the supplied order of BSON documents.
+
+CLI preview and list preserve field order and annotate literal Extended JSON
+documents. Their `exact_bytes` entries supply original BSON type and value
+bytes when Extended JSON is lossy. A format-3 plan records whether its
+preview used this encoding. An older format-3 plan remains eligible for
+write-back only if its selected images needed no extra bytes.
 
 An empty write-back completes in one majority-acknowledged metadata
-transaction. For nonempty write-backs, `main` receives the changes through
-following. The source transaction requires each insert key to be absent and
-each replacement or delete to match its before-image. Exact before-images
-include field order. The value-only comparison rejects duplicate fields.
-Target-history read failures and possible reclamation of exact before-images
-stop preparation. A collection that existed at preflight can still be
-dropped before an insert.
+transaction. For a nonempty plan, admission checks the selected changes for
+verified images and duplicate field names before making a claim. The source
+transaction checks typed-key absence for an insert, or compares the live
+document with the plan's verified before-image byte for byte for a replacement
+or delete. Inserts and replacements write the plan's saved after-image.
+Reclaiming history after preview has no effect on those checks. A collection
+that existed at preflight can still be dropped before an insert. The follower
+delivers committed changes to `main`.
 
 The writer claims the plan with the ID of a dedicated source session.
 The claim checks the checkpoint, updates the follower binding and transitions
@@ -767,8 +772,8 @@ entries removed). Migration is idempotent.
 - **Live conflict checks:** physical merge/undo compare each current document
   with the previewed before-image inside the write transaction. A stale
   document aborts the entire batch even if capture has not advanced the head.
-  Write-back to a followed source makes the same comparison inside the source
-  transaction.
+  Write-back compares the entire saved BSON before-image by bytes inside the
+  source transaction.
 - **Followed branches:** a branch that follows an external database is
   written only by its follower. Its published heads are the source at one
   cluster time, except inside ranges its capture status lists as inexact.

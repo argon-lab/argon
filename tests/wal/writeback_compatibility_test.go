@@ -100,20 +100,16 @@ func TestWriteBack_PlansFromV270(t *testing.T) {
 				require.Len(t, plan.Conflicts, 1)
 				apply = append(apply, "--strategy", "theirs")
 			case "followed":
-				bindFixtureSource(t, f, plan)
-				apply = append(apply, "--write-back", "--uri", f.sourceURI)
+				// Restore this fixture onto an ordinary target at its original
+				// head and incarnation. A separate case exercises the followed target.
+				_, err := db.Collection("wal_branches").UpdateByID(ctx, plan.TargetBranchID, bson.M{"$unset": bson.M{"follows": ""}})
+				require.NoError(t, err)
 			}
 			var result struct{ Applied int }
 			require.NoError(t, json.Unmarshal(run(t, apply...), &result))
 			require.Equal(t, 1, result.Applied)
 			require.Equal(t, merge.StatusApplied, f.plan(t, plan).Status)
-			if kind == "followed" {
-				require.Equal(t, oldNested, fixtureEntryImage(t, f, plan.SourceBranchID).Lookup("nested"))
-				got, err := f.source.Collection("catalog").FindOne(ctx, bson.M{"_id": "parcel"}).Raw()
-				require.NoError(t, err)
-				require.Equal(t, oldNested, got.Lookup("nested"), "the existing WAL image keeps its field order")
-				return
-			}
+
 			history, err := f.services.WAL.GetEntries(bson.M{"txn_id": "merge:" + id.Hex(), "operation": wal.OpPut})
 			require.NoError(t, err)
 			require.Len(t, history, 1)
@@ -126,7 +122,7 @@ func TestWriteBack_PlansFromV270(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, bson.D{{Key: "zone", Value: "east"}, {Key: "bay", Value: int32(12)}}, key)
 				require.Equal(t, int64(7), image.Lookup("value").Int64())
-			case "nested":
+			case "nested", "followed":
 				require.Equal(t, oldNested, image.Lookup("nested"))
 				require.Equal(t, int32(12), image.Lookup("nested", "bay").Int32())
 				require.Equal(t, int64(17), image.Lookup("nested", "shelf").Int64())
@@ -134,6 +130,29 @@ func TestWriteBack_PlansFromV270(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWriteBack_RefusesV270FollowedPlan(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
+	ctx := t.Context()
+	f := newFollowFixture(t, reproSourceURI(t))
+	restoreV270History(t, f)
+	raw := v270Fixture(t, "followed")
+	id := raw.Lookup("_id").ObjectID()
+	_, err := f.services.Client.Database(f.metadataName).Collection("wal_merge_plans").InsertOne(ctx, raw)
+	require.NoError(t, err)
+	plan, err := f.services.Merge.GetPlan(ctx, id)
+	require.NoError(t, err)
+	bindFixtureSource(t, f, plan)
+	before := f.sourceState(t, nil)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	require.ErrorContains(t, err, "older plan format")
+	require.ErrorContains(t, err, "catalog/parcel")
+	stored := f.plan(t, plan)
+	require.Equal(t, merge.StatusPending, stored.Status)
+	require.Nil(t, stored.WriteBack)
+	require.Empty(t, stored.WriteBackLastError)
+	require.Equal(t, before, f.sourceState(t, nil))
 }
 
 func fixtureEntryImage(t *testing.T, f *followFixture, id string) bson.Raw {

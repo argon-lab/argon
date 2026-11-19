@@ -127,8 +127,8 @@ While `main` follows a source, the source is the only thing that changes it:
 programmatic writes on `main` are refused. Sandboxes forked from it work as
 usual. To bring a sandbox's changes back, `merge apply <plan-id> --write-back`
 writes the plan to the source database in one transaction. It starts after
-a majority-acknowledged metadata claim, and checks every document against
-the plan's before-image before writing that document. One mismatch aborts the
+a majority-acknowledged metadata claim, and checks replacements and deletes byte for byte
+against verified before-images in the plan. Inserts require an absent key. One mismatch aborts the
 transaction. `main` shows the result once following has read it back from
 the source. The MCP server and REST API do not offer write-back.
 
@@ -158,9 +158,9 @@ status and doctor report the same health. See the
 collection was dropped or renamed on the source, after the source database
 was dropped, when the source's oplog no longer holds the saved position,
 or when another process moved `main`'s head.
-It compares the source with `main` in batches, stores what differs,
-deletes from `main` what the source no longer has, and replays the source's
-changes made meanwhile. View creation, modification and removal are ignored,
+It compares the source with `main` in batches, records changed documents
+and recaptures unverified or unavailable images. It deletes from `main` what
+the source no longer has, then replays intervening source changes. View creation, modification and removal are ignored,
 and a view that replaced a collection counts as an absent collection during
 resync. The command prints the cluster time and LSN at which `main`
 equals the source again; `source follow` continues from there. It reads the
@@ -243,13 +243,34 @@ document. Each change or conflict lists every image document containing a
 dots and backslashes in field names are escaped with a backslash. Code scopes
 use `.$scope`. Empty lists are omitted. Table preview reports the path count.
 
-Format 3 stores images in BSON field order. JSON preview and list show that
-order, including nested documents, and apply uses the saved bytes. Each
-`sorted_images` entry names an image for which preview could only establish
-the values. Ordinary apply uses the sorted bytes. Write-back refuses a sorted
-replacement before claiming the plan. Older binaries can read these fields but apply their own
-ordering and history rules. Use the current binary to apply a format-3 plan
-with its saved order. JSON listing identifies unreadable plans by ID.
+Format 3 preserves BSON field order, including in nested documents. When two
+stored images differ, their change JSON differs. For values that canonical
+Extended JSON cannot reproduce byte for byte, `exact_bytes` maps an
+image-prefixed path to the BSON type (one byte in hex) and the original value
+bytes (hex). The same paths apply to conflicts.
+
+| Stored difference | Shared JSON value | How to distinguish the original bytes |
+| --- | --- | --- |
+| Double NaN payloads 1 and 2 | `{"$numberDouble":"NaN"}` | The driver's default NaN (payload 1) needs no entry. Payload 2 appears as `"document.value":{"type":"01","hex":"020000000000f87f"}`. |
+| Regex options `mi` and `im` for pattern `sample` | `{"$regularExpression":{"pattern":"sample","options":"im"}}` | For stored `mi`, `"before.value":{"type":"0b","hex":"73616d706c65006d6900"}` includes both terminating NUL bytes. |
+| A string containing byte `ff` and a string containing U+FFFD | `"�"` | The invalid UTF-8 string has `"before.value":{"type":"02","hex":"02000000ff00"}`. The valid replacement character needs no entry. |
+
+A repeated or invalid UTF-8 field name makes a path ambiguous. The image name
+alone then maps to type `03` and the complete BSON document in hex. Empty
+`exact_bytes` maps are omitted. Table preview and list give the count of
+paths requiring exact bytes. Use `--output json` to inspect them.
+
+A `sorted_images` entry identifies an image for which only decoded values
+were available. Ordinary apply can use these images and older formats.
+Write-back requires verified before-images for replacements and deletes and
+verified after-images for inserts and replacements. Use this version for
+write-back even when an older executable can load the plan. Older writers use
+their own comparison rules. This version refuses a selected write with a duplicate field name, an older plan format, or an earlier preview
+that omitted required exact bytes. The pending plan's error groups affected
+documents by cause. See the recovery steps in
+[Writing a plan back to the source](OPERATIONS.md#writing-a-plan-back-to-the-source).
+When listing older plans, CLI JSON shows the field order actually stored in
+each image and the typed lookup key separately. Unreadable plans appear by ID.
 Preview reports the encoded size if the plan and its outcome fields exceed
 MongoDB's 16 MiB document limit.
 
