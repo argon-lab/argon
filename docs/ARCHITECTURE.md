@@ -406,15 +406,16 @@ MongoDB write semantics — the one thing this design refuses to do.
 
 ## Following an external database
 
-Online import and the `argon source` commands are available by default.
-The experimental options `--write-back`, `--auto-resync` and
-`--enable-source-images` are off by default and each requires
+Online import, the `argon source` commands and write-back are available by
+default. The experimental options `--auto-resync` and `--enable-source-images`
+are off by default and each requires
 `ARGON_EXPERIMENTAL_SOURCE=1`. A followed branch keeps its write and
 checkout restrictions regardless of the switch. See [Limits](#limits).
 
 `argon import database --online` imports a database that is in use and leaves
-the new project's `main` following it; `argon merge apply --write-back --approve <digest>`
-writes a reviewed plan to it. Both rest on one decision.
+the new project's `main` following it. Use
+`argon merge apply <plan-id> --write-back --approve <digest>` to write a
+reviewed plan to that source. Both rest on one decision.
 
 ### The decision: copy and follow, not adopt in place
 
@@ -754,6 +755,8 @@ stays `writing_back` and cannot be reused.
 ### Limits
 
 - Replica-set sources only. Sharded clusters are refused.
+- Write-back tests have not covered Atlas, deployments with access control,
+  multi-member elections, sharded sources or MongoDB versions other than 7.0.
 - Indexes, validators and collection options are not followed. Collection
   drops and renames end following until `argon source resync` is run; a
   source that drops or renames collections as a matter of routine (`$out`,
@@ -801,7 +804,8 @@ stays `writing_back` and cannot be reused.
   can drop the branch's own physical database through the normal drop
   guard, after which resync rebuilds the source position. The follower
   also detects a head moved by another process and stops as degraded.
-- Write-back never creates a collection.
+- Write-back refuses an insert or replacement targeting a missing collection
+  at preflight. An insert can recreate a collection dropped after preflight.
 
 ## Migration from schema v1
 

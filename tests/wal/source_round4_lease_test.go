@@ -22,7 +22,6 @@ import (
 )
 
 func TestSource_ExpiredFollowerStaysUnhealthyDuringReplacementResyncPreflight(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, reproSourceURI(t))
 	argon := buildSourceCLI(t)

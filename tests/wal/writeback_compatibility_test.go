@@ -54,7 +54,6 @@ func bindFixtureSource(t *testing.T, f *followFixture, plan *merge.Plan) {
 }
 
 func TestWriteBack_PlansFromV270(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	db := f.services.Client.Database(f.metadataName)
 	cli := buildSourceCLI(t)
@@ -133,7 +132,6 @@ func TestWriteBack_PlansFromV270(t *testing.T) {
 }
 
 func TestWriteBack_RefusesV270FollowedPlan(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := t.Context()
 	f := newFollowFixture(t, reproSourceURI(t))
 	restoreV270History(t, f)

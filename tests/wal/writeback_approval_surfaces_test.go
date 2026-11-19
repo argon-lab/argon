@@ -128,7 +128,7 @@ func TestWriteBackApprovalSurfaces(t *testing.T) {
 		t.Helper()
 		cmd := exec.CommandContext(ctx, cli, append([]string{"merge", "apply", id.Hex()}, args...)...)
 		cmd.Env = append(os.Environ(), "MONGODB_URI="+metadataDeploymentURI, "ARGON_METADATA_DB="+f.metadataName,
-			"ARGON_SOURCE_URI=", "ARGON_EXPERIMENTAL_SOURCE=1")
+			"ARGON_SOURCE_URI=")
 		body, err := cmd.CombinedOutput()
 		require.Error(t, err)
 		require.Contains(t, string(body), "--approve")

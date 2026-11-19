@@ -18,7 +18,6 @@ import (
 //
 // The plan stays claimed even after resync closes the gap.
 func TestResync_DoesNotReleaseCommittedWriteBack(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

@@ -17,7 +17,7 @@ func runMergeCLI(t *testing.T, f *followFixture, cli string, args ...string) []b
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), cli, args...)
 	cmd.Env = append(os.Environ(), "MONGODB_URI="+metadataDeploymentURI, "ARGON_METADATA_DB="+f.metadataName,
-		"ARGON_SOURCE_URI="+f.sourceURI, "ARGON_EXPERIMENTAL_SOURCE=1")
+		"ARGON_SOURCE_URI="+f.sourceURI)
 	body, err := cmd.Output()
 	if failed, ok := err.(*exec.ExitError); ok {
 		t.Logf("%s", failed.Stderr)
@@ -99,7 +99,6 @@ func TestWriteBack_PlanImageJSON(t *testing.T) {
 }
 
 func TestWriteBack_ExactBytesInCLI(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := t.Context()
 	f := newFollowFixture(t, reproSourceURI(t))
 	col := f.source.Collection("catalog")

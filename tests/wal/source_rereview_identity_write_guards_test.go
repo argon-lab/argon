@@ -23,7 +23,6 @@ import (
 // is exactly the state "my source and that deployment report the same name
 // and hosts", and it holds no ID.
 func TestWriteBack_WeakBindingRefusesSourceWrites(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	deployments := sourceDeployments()
 	if len(deployments) < 2 {
 		t.Skip("set ARGON_TEST_SOURCE_MONGODB_URI to a second replica set")
@@ -88,6 +87,7 @@ func TestWriteBack_WeakBindingRefusesSourceWrites(t *testing.T) {
 
 	followCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	err = f.services.FollowSource(followCtx, f.project, walcli.FollowSourceOptions{URI: staging, EnableSourceImages: true})
 	require.ErrorContains(t, err, "--enable-source-images refused")
 	requireWeakBindingRemedy(t, err)

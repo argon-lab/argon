@@ -166,7 +166,6 @@ func TestCLIOnlineImportFollowAndWriteBack(t *testing.T) {
 		t.Fatalf("the source changed without --write-back: %v %v", doc, err)
 	}
 
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	written := call("merge", "apply", planID, "--write-back", "--approve", plan["approval_digest"].(string))
 	if written["written_to_source"] != true || written["applied"].(float64) != 1 {
 		t.Fatalf("unexpected write-back result: %v", written)
@@ -314,7 +313,6 @@ func TestCLIOnlineImportFollowAndWriteBack(t *testing.T) {
 }
 
 func TestCLIWriteBackBareApproval(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	_, stderr, err := invokeCLI(t, "invalid", "merge", "apply", "000000000000000000000001", "--write-back", "--approve")
 	if err == nil || !strings.Contains(stderr, "argon merge list -p <project> --output json") {
 		t.Fatalf("missing digest value should explain how to obtain it: %v %s", err, stderr)

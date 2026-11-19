@@ -1,6 +1,6 @@
 {
   "name": "argonctl",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "mcpName": "io.github.argon-lab/argon",
   "description": "MongoDB sandboxes for AI agents, with Git for MongoDB underneath: branch, diff, merge and undo your data - CLI",
   "keywords": [

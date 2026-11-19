@@ -92,10 +92,13 @@ Long-lived branches work the same way with `argon branches create` and
 
 Online import and the `argon source` commands, introduced in 2.6.0, are now
 available by default. You can import a replica-set database while writers
-keep running, then follow its changes on the project's `main`. The experimental
-options `--write-back`, `--auto-resync` and `--enable-source-images` are off
-by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. For known
-issues and limits, see
+keep running, then follow its changes on the project's `main`. Write-back is
+also available by default. Review the plan in CLI JSON and pass its digest
+when applying it to the source. The experimental options `--auto-resync`
+and `--enable-source-images` are off by default and each requires
+`ARGON_EXPERIMENTAL_SOURCE=1`. Write-back tests have not covered Atlas,
+deployments with access control, multi-member elections, sharded sources or
+MongoDB versions other than 7.0. For known issues and limits, see
 [the operations guide](docs/OPERATIONS.md#following-a-source-database).
 
 ```bash
@@ -106,7 +109,7 @@ argon source follow -p myapp              # main tracks the source; leave it run
 
 argon sandbox create -p myapp --ttl 1h --watch --actor agent:run-1
 argon merge preview -p myapp -b <sandbox> --output json
-ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back --approve <approval_digest>
+argon merge apply <plan-id> --write-back --approve <approval_digest>
 ```
 
 The import copies ordinary collections at one cluster time, which it prints.

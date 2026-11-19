@@ -22,7 +22,6 @@ import (
 
 func planFixture(t *testing.T) (*followFixture, string) {
 	t.Helper()
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, reproSourceURI(t))
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})

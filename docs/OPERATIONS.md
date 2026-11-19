@@ -149,11 +149,11 @@ recovery, even when the quiesced source is standalone.
 
 ## Following a source database
 
-The `argon source` commands are available by default. The experimental
-options `--write-back`, `--auto-resync` and `--enable-source-images` are
-off by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. A branch
+The `argon source` commands and write-back are available by default. A branch
 bound to a source refuses ordinary merges, undo, reset, checkout and
-programmatic writes regardless of the switch.
+programmatic writes. The experimental options `--auto-resync` and
+`--enable-source-images` are off by default and each requires
+`ARGON_EXPERIMENTAL_SOURCE=1`.
 
 A project imported with `--online` stays tied to its source: `main` follows
 that database. Argon keeps a record of which deployment and database that is
@@ -455,8 +455,11 @@ instead:
 
 ```sh
 argon merge preview -p myapp -b <sandbox> --output json
-ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back --approve <approval_digest>
+argon merge apply <plan-id> --write-back --approve <approval_digest>
 ```
+
+Write-back tests have not covered Atlas, deployments with access control,
+multi-member elections, sharded sources or MongoDB versions other than 7.0.
 
 #### Ordinary apply versus write-back
 
@@ -481,8 +484,10 @@ untouched and the plan pending.
   Production may already be ahead. The comparison inside the source transaction
   catches changes to planned documents since that checkpoint. Check
   [source status](#what-argon-source-status-reports-and-what-to-do) if admission fails.
-- Write-back checks collection options before claiming the plan. A capped
-  target is refused with its first selected key. If a collection becomes
+- Write-back targets ordinary collections. Views are read-only, and a source
+  with a time-series collection cannot be followed. Write-back checks
+  collection options before claiming the plan. A capped target is refused
+  with its first selected key. If a collection becomes
   capped after that check, its snapshot-read error aborts the transaction.
   The preflight also checks that an insert or replacement target exists.
   It never upserts. A collection dropped between this check and an insert

@@ -136,7 +136,6 @@ func TestSource_IdentifyFailsWhenReplicaSetConfigConnectionDrops(t *testing.T) {
 // deployment with the same set NAME but a different ID is refused when the
 // ID can be read, and must also be refused when it cannot.
 func TestWriteBack_RefusedWhenTheReplicaSetIDCannotBeRead(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	sourceURI := os.Getenv("ARGON_TEST_SOURCE_MONGODB_URI")
 	if sourceURI == "" {
 		t.Skip("needs ARGON_TEST_SOURCE_MONGODB_URI")

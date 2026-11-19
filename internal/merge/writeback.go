@@ -175,9 +175,6 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if err := ValidateStrategy(strategy); err != nil {
 		return nil, err
 	}
-	if err := source.RequireExperimentalWriteBack(); err != nil {
-		return nil, err
-	}
 	plan, err := s.GetPlan(ctx, planID)
 	if err != nil {
 		return nil, err

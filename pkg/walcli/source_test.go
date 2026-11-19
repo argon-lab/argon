@@ -10,6 +10,7 @@ import (
 	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
 )
 
@@ -20,7 +21,7 @@ func TestSourceOperationsWithoutOptIn(t *testing.T) {
 	t.Setenv("MONGODB_URI", "invalid")
 	ctx := context.Background()
 
-	// With no project in metadata, each opened operation reaches the project lookup.
+	// The mock serves empty results for the project and plan lookups.
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock).ShareClient(true))
 	db := mt.Client.Database("metadata")
 	mt.AddMockResponses(mtest.CreateSuccessResponse()) // project index creation
@@ -42,6 +43,14 @@ func TestSourceOperationsWithoutOptIn(t *testing.T) {
 	require.ErrorContains(t, err, "project not found", "resync")
 	err = s.DetachSource(ctx, "missing")
 	require.ErrorContains(t, err, "project not found", "detach")
+
+	s.Merge = merge.NewService(db, nil, nil, nil, mt.Client)
+	noPlan := mtest.CreateCursorResponse(0, "metadata.wal_merge_plans", mtest.FirstBatch)
+	mt.AddMockResponses(noPlan, noPlan)
+	_, err = s.WriteBackMerge(ctx, primitive.NilObjectID, "", "", "")
+	require.ErrorIs(t, err, mongo.ErrNoDocuments, "write-back plan lookup")
+	_, err = s.Merge.ApplyToSource(ctx, primitive.NilObjectID, "", merge.WriteBackTarget{}, "")
+	require.ErrorIs(t, err, mongo.ErrNoDocuments, "direct write-back plan lookup")
 }
 
 func TestSourceExperimentalOptionsRequireOptIn(t *testing.T) {
@@ -52,10 +61,9 @@ func TestSourceExperimentalOptionsRequireOptIn(t *testing.T) {
 	ctx := context.Background()
 	s := &Services{} // any metadata or source lookup would fail
 
-	images, autoResync, writeBack := RequireExperimentalSourceImages(), RequireExperimentalAutoResync(), RequireExperimentalWriteBack()
+	images, autoResync := RequireExperimentalSourceImages(), RequireExperimentalAutoResync()
 	require.Error(t, images)
 	require.Error(t, autoResync)
-	require.Error(t, writeBack)
 
 	_, err := s.ImportDatabaseOnline(ctx, OnlineImport{EnableSourceImages: true})
 	require.ErrorIs(t, err, images)
@@ -65,9 +73,4 @@ func TestSourceExperimentalOptionsRequireOptIn(t *testing.T) {
 	require.ErrorIs(t, err, images)
 	require.ErrorIs(t, s.FollowSource(ctx, "project", FollowSourceOptions{EnableSourceImages: true}), images)
 	require.ErrorIs(t, s.FollowSource(ctx, "project", FollowSourceOptions{AutoResync: true}), autoResync)
-
-	_, err = s.WriteBackMerge(ctx, primitive.NilObjectID, "", "", "")
-	require.ErrorIs(t, err, writeBack)
-	_, err = s.Merge.ApplyToSource(ctx, primitive.NilObjectID, "", merge.WriteBackTarget{}, "")
-	require.ErrorIs(t, err, writeBack)
 }

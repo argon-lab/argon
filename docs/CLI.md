@@ -87,9 +87,9 @@ retrying the same name. Completed projects cannot be removed by cleanup. See
 
 ## Follow a live database
 
-The `argon source` commands are available by default. The experimental
-options `--write-back`, `--auto-resync` and `--enable-source-images` are
-off by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. For known
+The `argon source` commands and `merge apply --write-back` are available by
+default. The experimental options `--auto-resync` and `--enable-source-images`
+are off by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. For known
 issues and limits, see the [operations guide](OPERATIONS.md#following-a-source-database).
 
 ```
@@ -314,8 +314,7 @@ and checks that each deletion left the key absent. A mismatch rolls back
 the batch and leaves the plan pending for retry or a fresh preview.
 Approval is explicit on each invocation, including plans with zero writes.
 An absent, malformed or mismatched digest leaves the plan pending. Ordinary
-apply rejects `--approve`. Write-back is experimental, off by default, and has known
-open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See
+apply rejects `--approve`. For source binding and capture requirements, see
 [Follow a live database](#follow-a-live-database).
 A write-back plan in `writing_back` is claimed and cannot be used again.
 Check the affected documents on the source, let following catch up, then

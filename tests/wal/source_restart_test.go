@@ -97,7 +97,6 @@ func TestFollow_StoredCaptureErrorWhileOpening(t *testing.T) {
 }
 
 func TestWriteBack_WaitsForRestartingFollower(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, reproSourceURI(t))
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})

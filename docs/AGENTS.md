@@ -113,8 +113,8 @@ argon merge apply <plan-id>          # after you have read the plan
 offers only the three read-only tools. A withheld tool is neither listed nor
 callable.
 
-Online import and the `argon source` commands are available by default.
-The experimental options `--write-back`, `--auto-resync` and
+Online import, the `argon source` commands and CLI write-back are available
+by default. The experimental options `--auto-resync` and
 `--enable-source-images` are off by default and each requires
 `ARGON_EXPERIMENTAL_SOURCE=1`. For known issues and limits, see
 [following a source](OPERATIONS.md#following-a-source-database).
@@ -123,9 +123,11 @@ When a project follows an external database (`argon import database
 --online`, releases after 2.5.0), an agent cannot change that database
 through the server at all. `argon_merge_apply` is refused for a plan whose
 target follows a source, and no tool takes a write-back option or a source
-connection string. A person applies the reviewed plan from the CLI with
-`argon merge apply <plan-id> --write-back`. The REST endpoint
-`POST /merge-plans/:id/apply` behaves the same way.
+connection string. A person reviews the plan and its `approval_digest` in
+CLI JSON preview or list output, then runs
+`argon merge apply <plan-id> --write-back --approve <digest>`. The REST
+endpoint `POST /merge-plans/:id/apply` also refuses a followed target.
+REST, MCP and the web console omit the approval digest.
 
 The server speaks the handshake-based MCP revisions 2024-11-05, 2025-03-26
 and 2025-06-18 and answers with the client's revision when it is one of
