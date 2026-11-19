@@ -38,6 +38,11 @@ entry — a synchronization barrier, not in-proxy capture).
   sandbox's capture cannot run. That sandbox is listed with `capture_error`
   and no connection string, and the console marks it so it can be discarded
   there.
+- A sandbox create, or a sandbox from a pin, that fails at checkout no longer
+  leaves its branch and a partly filled `argon_br_*` database behind. Checkout
+  drops a database it had started to fill when it fails, also when the
+  caller's context was cancelled, and the sandbox's branch is removed. If that
+  cleanup fails, the error names what is left.
 - Checkout, re-checkout (including after restore) and snapshots preserve stored
   BSON field order, including inside arrays, when a trusted, canonical image
   matches the decoded document. A follower's last inexact read can supply that

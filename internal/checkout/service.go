@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/materializer"
@@ -148,13 +149,44 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	}
 
 	dbName := PhysicalDBName(branch.ID)
-	physical := s.client.Database(dbName)
 
 	// Idempotent refresh: rebuild from the WAL state. The old change-stream
 	// position points into the dropped database and must not be resumed.
 	if err := s.dropPhysical(ctx, branch, dbName); err != nil {
 		return nil, fmt.Errorf("failed to reset physical database: %w", err)
 	}
+	info, err := s.fill(ctx, branch, dbName, collections)
+	if err != nil {
+		return nil, s.removeUnfinished(branch, dbName, err)
+	}
+	return info, nil
+}
+
+// removeUnfinished drops the database a failed checkout had started to fill,
+// so that no database is left that no branch record points at. It runs on a
+// context of its own, because the usual reason for the failure is that the
+// caller's context was cancelled. A branch that is live after all (another
+// process checked it out first) keeps its database.
+func (s *Service) removeUnfinished(branch *wal.Branch, dbName string, cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if current, err := s.branches.GetBranchByID(branch.ID); err == nil && current.IsLive() {
+		return cause
+	}
+	err := s.dropPhysical(ctx, branch, dbName)
+	if err == nil {
+		_, err = s.ingestState.DeleteOne(ctx, bson.M{"_id": branch.ID})
+	}
+	if err != nil {
+		return fmt.Errorf("%w; the partly filled database %s could not be removed (%v): drop it by hand while branch %s is not checked out", cause, dbName, err, branch.Name)
+	}
+	return cause
+}
+
+// fill loads a branch's state into its emptied physical database, persists
+// the capture boundary and marks the branch live.
+func (s *Service) fill(ctx context.Context, branch *wal.Branch, dbName string, collections []string) (*Info, error) {
+	physical := s.client.Database(dbName)
 	if _, err := s.ingestState.DeleteOne(ctx, bson.M{"_id": branch.ID}); err != nil {
 		return nil, fmt.Errorf("failed to clear ingest state: %w", err)
 	}

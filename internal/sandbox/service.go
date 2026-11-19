@@ -67,12 +67,12 @@ func (s *Service) Create(ctx context.Context, projectID, parentBranchID, name st
 
 	expires := time.Now().Add(ttl)
 	if err := s.branches.SetExpiry(branch.ID, &expires); err != nil {
-		return nil, fmt.Errorf("failed to stamp sandbox TTL: %w", err)
+		return nil, s.removeFailed(branch, fmt.Errorf("failed to stamp sandbox TTL: %w", err))
 	}
 
 	info, err := s.checkout.Checkout(ctx, branch.ID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check the sandbox out: %w", err)
+		return nil, s.removeFailed(branch, fmt.Errorf("failed to check the sandbox out: %w", err))
 	}
 
 	return &Info{
@@ -88,7 +88,9 @@ func (s *Service) Create(ctx context.Context, projectID, parentBranchID, name st
 // Adopt turns an existing, not-yet-live branch into a sandbox: stamps the
 // TTL and checks it out. This is how sandboxes are created from a
 // historical point (a pin) — the branch is forked at the pinned LSN by the
-// restore service first, then adopted here.
+// restore service first, then adopted here. Adopt owns that branch from
+// then on: if it fails, the branch is removed, as a failed Create removes
+// its fork.
 func (s *Service) Adopt(ctx context.Context, branchID string, ttl time.Duration) (*Info, error) {
 	if ttl <= 0 {
 		ttl = DefaultTTL
@@ -106,11 +108,11 @@ func (s *Service) Adopt(ctx context.Context, branchID string, ttl time.Duration)
 
 	expires := time.Now().Add(ttl)
 	if err := s.branches.SetExpiry(branch.ID, &expires); err != nil {
-		return nil, fmt.Errorf("failed to stamp sandbox TTL: %w", err)
+		return nil, s.removeFailed(branch, fmt.Errorf("failed to stamp sandbox TTL: %w", err))
 	}
 	info, err := s.checkout.Checkout(ctx, branch.ID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check the sandbox out: %w", err)
+		return nil, s.removeFailed(branch, fmt.Errorf("failed to check the sandbox out: %w", err))
 	}
 	return &Info{
 		BranchID:   branch.ID,
@@ -120,6 +122,16 @@ func (s *Service) Adopt(ctx context.Context, branchID string, ttl time.Duration)
 		ForkedFrom: forkedFrom,
 		ForkLSN:    branch.BaseLSN,
 	}, nil
+}
+
+// removeFailed deletes the branch of a sandbox that could not be created, so
+// that a failed create leaves nothing behind and its name can be used again.
+// A failed checkout has already dropped the database it had started to fill.
+func (s *Service) removeFailed(branch *wal.Branch, cause error) error {
+	if err := s.branches.DeleteBranch(branch.ProjectID, branch.Name); err != nil {
+		return fmt.Errorf("%w; the sandbox branch %q was left behind and could not be removed (%v): remove it with argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
+	}
+	return cause
 }
 
 // Extend pushes a sandbox's expiry further out from now.
