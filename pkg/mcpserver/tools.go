@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -420,7 +421,9 @@ func toolMergePreview(ctx context.Context, s *Server, args map[string]interface{
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Merge plan %s (%s into %s): ", plan.ID.Hex(), plan.SourceBranch, plan.TargetBranch)
 	formatPlanSummary(&sb, len(plan.Changes), len(plan.Conflicts))
-	if len(plan.Conflicts) > 0 {
+	if plan.FollowedDatabase != "" {
+		sb.WriteString(walcli.WriteBackReviewAdvice(argString(args, "project")))
+	} else if len(plan.Conflicts) > 0 {
 		sb.WriteString("Apply with argon_merge_apply and strategy theirs or ours.")
 	} else {
 		sb.WriteString("Apply with argon_merge_apply.")

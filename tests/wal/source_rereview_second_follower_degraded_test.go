@@ -51,7 +51,7 @@ func TestFollow_RefusesASecondFollower(t *testing.T) {
 	require.Equal(t, before.State, after.State)
 	require.Empty(t, after.Error)
 
-	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.EqualValues(t, 1, result.Applied)
 	caught := f.waitCaughtUp(t)

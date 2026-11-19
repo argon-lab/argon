@@ -105,8 +105,8 @@ argon import database --database myapp --project myapp --online
 argon source follow -p myapp              # main tracks the source; leave it running
 
 argon sandbox create -p myapp --ttl 1h --watch --actor agent:run-1
-argon merge preview -p myapp -b <sandbox>
-ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
+argon merge preview -p myapp -b <sandbox> --output json
+ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back --approve <approval_digest>
 ```
 
 The import copies ordinary collections at one cluster time, which it prints.
@@ -115,7 +115,11 @@ and see the estimated copy without writing anything.
 Following ignores changes to views. New merge plans save ordered BSON. CLI
 JSON preview and list show the order apply writes, preserve BSON types with
 canonical Extended JSON, identify literal documents with dollar-prefixed
-fields and show exact bytes wherever JSON loses a BSON distinction. Write-back
+fields and show exact bytes wherever JSON loses a BSON distinction. For a
+pending plan targeting a followed database, inspect this output and pass its
+`approval_digest` to `--approve`. To inspect a saved plan, run
+`argon merge list -p myapp --output json`. Plans saved by older versions
+require a fresh preview. Write-back
 requires a verified, saved before-image for every replacement or delete and
 a verified after-image for every insert or replacement. An empty plan
 completes in metadata. For a nonempty plan, Argon checks capture health and

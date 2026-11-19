@@ -69,7 +69,7 @@ func TestSource_ExpiredFollowerStaysUnhealthyDuringReplacementResyncPreflight(t 
 	}
 	_, expiredExit, _ := cliStatus(ctx)
 	require.Equal(t, 1, expiredExit)
-	_, expiredWriteBack := f.services.WriteBackMerge(ctx, plan.ID, "", "invalid-source-uri")
+	_, expiredWriteBack := f.services.WriteBackMerge(ctx, plan.ID, "", "invalid-source-uri", approvalFor(t, plan))
 	require.ErrorContains(t, expiredWriteBack, "last renewed its lease")
 
 	resyncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -112,7 +112,7 @@ func TestSource_ExpiredFollowerStaysUnhealthyDuringReplacementResyncPreflight(t 
 	require.ErrorContains(t, during.HealthError(), "last renewed its lease")
 	require.ErrorContains(t, during.HealthError(), "replacement is catching up")
 	cliDuring, preflightExit, preflightStderr := cliStatus(resyncCtx)
-	_, preflightWriteBack := f.services.WriteBackMerge(resyncCtx, plan.ID, "", "invalid-source-uri")
+	_, preflightWriteBack := f.services.WriteBackMerge(resyncCtx, plan.ID, "", "invalid-source-uri", approvalFor(t, plan))
 	for _, args := range [][]string{{"source", "status", "-p", f.project}, {"status"}, {"doctor"}} {
 		cmd := exec.CommandContext(resyncCtx, argon, args...)
 		cmd.Env = append(os.Environ(), "ARGON_METADATA_DB="+f.metadataName, "MONGODB_URI="+metadataDeploymentURI)

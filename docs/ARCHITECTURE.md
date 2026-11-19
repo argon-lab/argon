@@ -413,7 +413,7 @@ The experimental options `--write-back`, `--auto-resync` and
 checkout restrictions regardless of the switch. See [Limits](#limits).
 
 `argon import database --online` imports a database that is in use and leaves
-the new project's `main` following it; `argon merge apply --write-back`
+the new project's `main` following it; `argon merge apply --write-back --approve <digest>`
 writes a reviewed plan to it. Both rest on one decision.
 
 ### The decision: copy and follow, not adopt in place
@@ -661,15 +661,46 @@ ordered BSON in the existing change and conflict fields. Preview selects the
 newest visible verified WAL image at each side's LSN, including inherited
 history. If a collection contains older untyped keys, lookup falls back to
 the history of each planned key. An unavailable or unverified image gets a
-deterministic encoding and its name in `sorted_images`. Ordinary apply uses these images and can recover
+deterministic encoding and its name in `sorted_images`. Ordinary merges also
+use this encoding for documents with repeated field names. Plans for followed
+targets retain the full verified BSON so every occurrence can be inspected.
+Ordinary apply can recover
 replacement order from history for older plans. Programmatic puts sort Go
 maps and retain the supplied order of BSON documents.
 
 CLI preview and list preserve field order and annotate literal Extended JSON
 documents. Their `exact_bytes` entries supply original BSON type and value
-bytes when Extended JSON is lossy. A format-3 plan records whether its
-preview used this encoding. An older format-3 plan remains eligible for
-write-back only if its selected images needed no extra bytes.
+bytes when Extended JSON is lossy. Current saves record a provenance version and the followed
+database and replica-set identity. Earlier plans, including format 3, require
+a fresh preview before write-back. Only CLI JSON preview and list render
+`approval_digest` alongside all images of an eligible pending plan.
+
+Digest scheme 1 hashes the following fields with SHA-256, in order.
+
+1. The domain string `argon.merge.write-back`, scheme version, plan format and
+   provenance version, 12-byte plan ID and project ID.
+2. Target branch ID and name, source branch ID and name, source head, target
+   head, fork LSN, source and target mutation versions, followed database and
+   bound replica-set ID.
+3. Changes in stored order. Each carries the collection, type-preserving WAL
+   key, optional BSON `document_key` (type byte and value bytes), operation
+   (`insert`, `replace` or `delete`), optional before- and after-images, and
+   `sorted_images` in stored order.
+4. Conflicts in stored order. Each carries the collection, type-preserving WAL
+   key, optional base, ours and theirs images, and `sorted_images` in stored order.
+
+Numbers, byte lengths and list counts occupy eight bytes, big-endian. Byte
+fields carry their length, lists carry their count, and an optional field
+begins with a zero or one byte indicating absence or presence. Present images
+contribute their complete stored BSON. CLI JSON represents the resulting
+32 bytes as 64 lowercase hex digits.
+
+The claim transaction
+reads the pending plan in its snapshot and compares its digest in constant
+time with the explicit approval. The writer uses changes from a plan with
+that same digest. The metadata claim retains `write_back.approved_digest`
+for audit. Status, the apply-time conflict strategy, claim and outcome fields,
+errors, and timestamps are outside the digest.
 
 An empty write-back completes in one majority-acknowledged metadata
 transaction. For a nonempty plan, admission checks the selected changes for

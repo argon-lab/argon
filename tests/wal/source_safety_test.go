@@ -639,7 +639,7 @@ func TestSource_CredentialsAreNotStoredOrReported(t *testing.T) {
 	info, sandboxDB := f.agentSandbox(t, "agent-run")
 	agentEdits(t, sandboxDB)
 	plan := f.preview(t, info.BranchID)
-	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", withCredentials)
+	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", withCredentials, approvalFor(t, plan))
 	require.NoError(t, err)
 	f.waitCaughtUp(t)
 
@@ -650,7 +650,7 @@ func TestSource_CredentialsAreNotStoredOrReported(t *testing.T) {
 	refused := f.preview(t, second.BranchID)
 	_, err = f.source.Collection("catalog").UpdateOne(ctx, bson.M{"_id": "item-09"}, bson.M{"$set": bson.M{"stock": int32(2)}})
 	require.NoError(t, err)
-	_, err = f.services.WriteBackMerge(ctx, refused.ID, "", withCredentials)
+	_, err = f.services.WriteBackMerge(ctx, refused.ID, "", withCredentials, approvalFor(t, refused))
 	require.Error(t, err)
 	clean("a refused write-back", err.Error())
 	require.NotEmpty(t, f.plan(t, refused).WriteBackLastError)

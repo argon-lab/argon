@@ -102,7 +102,7 @@ func TestSource_AnotherDeploymentWithTheSameSetNameIsRefused(t *testing.T) {
 		"$set": bson.M{"set_name": otherIdentity.SetName}, "$unset": bson.M{"replica_set_id": ""}})
 	require.NoError(t, err)
 
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", other)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", other, approvalFor(t, plan))
 	require.ErrorContains(t, err, "write-back refused")
 	requireWeakBindingRemedy(t, err)
 	untouched("write-back")

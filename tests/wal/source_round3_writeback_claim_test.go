@@ -65,7 +65,7 @@ func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
 	writer := merge.NewService(client.Database(f.metadataName), f.services.WAL, f.services.Branches, f.services.Materializer, client)
 	target := merge.WriteBackTarget{Database: f.source}
 
-	result, err := writer.ApplyToSource(ctx, plan.ID, "", target)
+	result, err := writer.ApplyToSource(ctx, plan.ID, "", target, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Applied)
 	require.Equal(t, merge.StatusApplied, f.plan(t, plan).Status)
@@ -73,7 +73,7 @@ func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
 	// Main still has the preview's before-image. A fresh plan claims the
 	// change, then returns to pending when the comparison disagrees.
 	stale := f.preview(t, sandbox.BranchID)
-	_, err = writer.ApplyToSource(ctx, stale.ID, "", target)
+	_, err = writer.ApplyToSource(ctx, stale.ID, "", target, approvalFor(t, stale))
 	require.ErrorAs(t, err, new(*merge.ConflictError))
 	require.Equal(t, merge.StatusPending, f.plan(t, stale).Status)
 	lock.Lock()
@@ -106,7 +106,7 @@ func TestWriteBack_ClaimWithoutAcknowledgmentLeavesSourceUntouched(t *testing.T)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Disconnect(ctx)) })
 	writer := merge.NewService(client.Database(f.metadataName), f.services.WAL, f.services.Branches, f.services.Materializer, client)
-	result, err := writer.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: f.source})
+	result, err := writer.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: f.source}, approvalFor(t, plan))
 	require.ErrorContains(t, err, "could not claim plan")
 	require.ErrorContains(t, err, "waiting for replication")
 	require.Nil(t, result)

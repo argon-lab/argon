@@ -55,7 +55,7 @@ func TestWriteBack_CancelBeforeCommitReturnsThePlanToPending(t *testing.T) {
 
 	_, err = f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{
 		Database: client.Database(f.source.Name()),
-	})
+	}, approvalFor(t, plan))
 	t.Logf("ApplyToSource error: %v", err)
 	t.Logf("write commands: %d, commitTransaction sent: %d, abortTransaction sent: %d", writes.Load(), commits.Load(), aborts.Load())
 	require.Error(t, err)
@@ -77,7 +77,7 @@ func TestWriteBack_CancelBeforeCommitReturnsThePlanToPending(t *testing.T) {
 	after := f.plan(t, plan)
 	t.Logf("plan status after following caught up: %s (write_back record present: %v)", after.Status, after.WriteBack != nil)
 
-	_, retryErr := f.services.WriteBackMerge(context.Background(), plan.ID, "", f.sourceURI)
+	_, retryErr := f.services.WriteBackMerge(context.Background(), plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	t.Logf("retry: %v", retryErr)
 
 	// Expected by the finding: a transaction that was never committed puts

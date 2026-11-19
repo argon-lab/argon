@@ -22,9 +22,11 @@
 package merge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -73,6 +75,9 @@ type Change struct {
 	DocumentRaw  bson.Raw `bson:"document,omitempty" json:"-"`
 	BeforeRaw    bson.Raw `bson:"before,omitempty" json:"-"`
 	SortedImages []string `bson:"sorted_images,omitempty" json:"sorted_images,omitempty"`
+	// The driver's decoded ID can normalize an unusual BSON encoding.
+	// Retain the stored auxiliary key for exact approval validation.
+	storedKey bson.RawValue
 }
 
 // Conflict is a document both sides changed differently since the fork.
@@ -115,8 +120,10 @@ type Plan struct {
 	// WriteBackLastError is why the latest write-back attempt wrote nothing.
 	WriteBackLastError string `bson:"write_back_last_error,omitempty" json:"write_back_last_error,omitempty"`
 
-	// ExactBytesVersion identifies previews that expose lossy Extended JSON values as BSON hex.
-	ExactBytesVersion int `bson:"exact_bytes_version,omitempty" json:"-"`
+	// ProvenanceVersion identifies the writer that verified or marked every image.
+	ProvenanceVersion    int    `bson:"provenance_version,omitempty" json:"provenance_version,omitempty"`
+	FollowedDatabase     string `bson:"followed_database,omitempty" json:"followed_database,omitempty"`
+	FollowedReplicaSetID string `bson:"followed_replica_set_id,omitempty" json:"followed_replica_set_id,omitempty"`
 }
 
 // Service computes, persists and applies merge plans.
@@ -433,7 +440,7 @@ func (s *Service) computeChanged(source, target *wal.Branch) (*Plan, error) {
 
 // Preview computes a plan and persists it pending review — the data PR.
 func (s *Service) Preview(ctx context.Context, sourceBranchID string) (*Plan, error) {
-	plan, err := s.PreparePlan(sourceBranchID)
+	plan, err := s.PreparePlan(ctx, sourceBranchID)
 	if err != nil {
 		return nil, err
 	}
@@ -445,16 +452,44 @@ func (s *Service) Preview(ctx context.Context, sourceBranchID string) (*Plan, er
 
 // SavePlan persists a computed plan. Callers can assign its ID to prepare a
 // printable response before persistence.
-func (s *Service) SavePlan(ctx context.Context, plan *Plan) error {
-	if plan.FormatVersion == 2 {
-		if err := s.preparePlanImages(plan); err != nil {
+func (s *Service) SavePlan(ctx context.Context, proposal *Plan) error {
+	plan := *proposal
+	checkProvenance := plan.FormatVersion == orderedPlanVersion && plan.ProvenanceVersion == 0
+	if checkProvenance {
+		// A programmatic format-3 proposal can carry raw images with no map
+		// views, or maps with no evidence. Establish its provenance from the
+		// branches before certifying it under a new ID.
+		for i := range plan.Changes {
+			if err := plan.Changes[i].decodeStoredImages(); err != nil {
+				return err
+			}
+		}
+		for i := range plan.Conflicts {
+			if err := plan.Conflicts[i].decodeStoredImages(); err != nil {
+				return err
+			}
+		}
+	}
+	if plan.FormatVersion == 2 || checkProvenance {
+		if err := s.preparePlanImages(ctx, &plan); err != nil {
+			return err
+		}
+	}
+	ordinary := plan.approvalEligible() && plan.FollowedDatabase == ""
+	for i := range plan.Changes {
+		if err := plan.Changes[i].encodeImages(ordinary); err != nil {
+			return err
+		}
+	}
+	for i := range plan.Conflicts {
+		if err := plan.Conflicts[i].encodeImages(ordinary); err != nil {
 			return err
 		}
 	}
 	if plan.ID.IsZero() {
 		plan.ID = primitive.NewObjectID()
 	}
-	raw, err := encodePendingPlan(plan)
+	raw, err := encodePendingPlan(&plan)
 	if err != nil {
 		return err
 	}
@@ -462,6 +497,7 @@ func (s *Service) SavePlan(ctx context.Context, plan *Plan) error {
 	if err != nil {
 		return fmt.Errorf("failed to persist merge plan: %w", err)
 	}
+	*proposal = plan
 	return nil
 }
 
@@ -623,16 +659,23 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 		if err := s.prepareApplyImages(source, changes); err != nil {
 			return nil, err
 		}
-	} else {
-		for i := range changes {
-			c := &changes[i]
-			c.ID, err = documentIDValue(*c)
-			if err != nil {
-				return nil, err
-			}
-			if !c.Delete && c.DocumentRaw == nil {
-				return nil, fmt.Errorf("merge plan has no replacement for %s/%s; run preview again", c.Collection, c.DocumentID)
-			}
+	}
+	for i := range changes {
+		c := &changes[i]
+		c.ID, err = documentIDValue(*c)
+		if err != nil {
+			return nil, err
+		}
+		if !c.Delete && c.DocumentRaw == nil {
+			return nil, fmt.Errorf("merge plan has no replacement for %s/%s; run preview again", c.Collection, c.DocumentID)
+		}
+		c.DocumentRaw, err = ordinaryImage(c.DocumentRaw, c.Document, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		c.BeforeRaw, err = ordinaryImage(c.BeforeRaw, c.Before, c.ID)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -717,17 +760,28 @@ func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes
 	physical := s.client.Database(own)
 	for _, c := range changes {
 		coll := physical.Collection(c.Collection)
-		var current bson.M
-		err = coll.FindOne(ctx, bson.M{"_id": c.ID}).Decode(&current)
+		currentRaw, err := coll.FindOne(ctx, bson.M{"_id": c.ID}).Raw()
 		if err != nil && err != mongo.ErrNoDocuments {
 			return err
 		}
-		if err == mongo.ErrNoDocuments {
-			current = nil
+		var current bson.M
+		if err := decodeImage(currentRaw, &current); err != nil {
+			return err
 		}
 		changed, err := docsUnequal(current, c.Before)
 		if err != nil {
 			return err
+		}
+		if changed && current != nil && slices.Contains(c.SortedImages, "before") {
+			// In particular, a stored code scope can still contain duplicate
+			// fields. Compare it under the same encoding used at preview.
+			// MongoDB can match numerically equal keys with different BSON
+			// types. Preserve the live key's type and compound field order.
+			sorted, err := sortedImage(current, currentRaw.Lookup("_id"), false)
+			if err != nil {
+				return err
+			}
+			changed = !bytes.Equal(sorted, c.BeforeRaw)
 		}
 		if changed {
 			return fmt.Errorf("stale merge plan: physical document %s/%s changed since preview; wait for capture and preview again", c.Collection, c.DocumentID)

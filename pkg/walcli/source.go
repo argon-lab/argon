@@ -501,10 +501,13 @@ func (s *Services) DetachSourceWithResult(ctx context.Context, projectName strin
 // ValidateMergeStrategy checks the resolution choice before opening either deployment.
 func ValidateMergeStrategy(strategy string) error { return merge.ValidateStrategy(strategy) }
 
+// ValidateApprovalDigest checks the approval before opening either deployment.
+func ValidateApprovalDigest(approved string) error { return merge.ValidateApprovalDigest(approved) }
+
 // WriteBackMerge writes a pending plan to the external database its target
 // branch follows, in one transaction that compares every document with the
 // plan's before-image first. Nothing calls this implicitly.
-func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID, strategy, uri string) (*merge.ApplyResult, error) {
+func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID, strategy, uri, approved string) (*merge.ApplyResult, error) {
 	if err := merge.ValidateStrategy(strategy); err != nil {
 		return nil, err
 	}
@@ -518,6 +521,9 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	if err := plan.RequirePending(); err != nil {
 		return nil, err
 	}
+	if err := plan.CheckApproval(approved); err != nil {
+		return nil, err
+	}
 	binding, err := s.Sources.Get(ctx, plan.TargetBranchID)
 	if err != nil {
 		return nil, err
@@ -527,6 +533,9 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	}
 	if err := binding.RequireReplicaSetID(); err != nil {
 		return nil, fmt.Errorf("write-back refused: %w", err)
+	}
+	if binding.ProjectID != plan.ProjectID || binding.Database != plan.FollowedDatabase || binding.ReplicaSetID != plan.FollowedReplicaSetID {
+		return nil, errors.New("the source binding has changed since preview; preview again with this version")
 	}
 	branch, status, err := s.Ingest.CaptureStatusFor(ctx, plan.TargetBranchID)
 	if err != nil {
@@ -546,7 +555,7 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	result, err := s.Merge.ApplyToSource(ctx, planID, strategy, merge.WriteBackTarget{
 		Database: db, Display: binding.Display,
 		Redact: func(text string) string { return source.Redact(text, uri) },
-	})
+	}, approved)
 	return result, source.RedactError(err, uri)
 }
 

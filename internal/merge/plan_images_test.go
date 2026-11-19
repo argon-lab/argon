@@ -22,7 +22,7 @@ func TestSortedImageWithCodeScope(t *testing.T) {
 	var raw bson.Raw
 	var sorted []string
 	image := imageRequest{key: wal.DocumentIDString(id), name: "theirs", doc: doc, raw: &raw, sorted: &sorted}
-	require.NoError(t, image.store(nil, false))
+	require.NoError(t, image.store(nil, false, false))
 	expectedID, err := bson.Marshal(id)
 	require.NoError(t, err)
 	require.Equal(t, bson.Raw(expectedID), raw.Lookup("_id").Document())

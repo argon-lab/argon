@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -450,7 +451,16 @@ func (r *Router) listMergePlans(c *gin.Context) {
 		abortErr(c, http.StatusInternalServerError, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"plans": plans})
+	followed, err := r.services.FollowedMergeTargets(c.Request.Context(), project.ID)
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, err)
+		return
+	}
+	var views []walcli.MergePlanView
+	for _, plan := range plans {
+		views = append(views, walcli.ViewMergePlan(plan, name, followed[plan.TargetBranchID] != ""))
+	}
+	c.JSON(http.StatusOK, gin.H{"plans": views})
 }
 
 func (r *Router) getMergePlan(c *gin.Context) {
@@ -464,7 +474,19 @@ func (r *Router) getMergePlan(c *gin.Context) {
 		abortErr(c, http.StatusNotFound, err)
 		return
 	}
-	c.JSON(http.StatusOK, plan)
+	followed, err := r.services.FollowedMergeTargets(c.Request.Context(), plan.ProjectID)
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, err)
+		return
+	}
+	project := ""
+	if followed[plan.TargetBranchID] != "" {
+		p, err := r.services.Projects.GetProject(plan.ProjectID)
+		if err == nil {
+			project = p.Name
+		}
+	}
+	c.JSON(http.StatusOK, walcli.ViewMergePlan(plan, project, followed[plan.TargetBranchID] != ""))
 }
 
 // --- sandbox lifecycle (beyond create) ---

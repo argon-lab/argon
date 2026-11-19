@@ -1,10 +1,12 @@
 package merge
 
 import (
+	"context"
 	"fmt"
 	"slices"
 
 	"github.com/argon-lab/argon/v2/internal/ingest"
+	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -12,7 +14,7 @@ import (
 
 const (
 	orderedPlanVersion = 3
-	exactBytesVersion  = 1
+	provenanceVersion  = 1
 )
 
 // The BSON fields contain the images themselves. The maps serve callers that
@@ -21,19 +23,32 @@ type changeBSON Change
 type conflictBSON Conflict
 
 func (c Change) MarshalBSON() ([]byte, error) {
-	if err := encodeMissingImage(&c.DocumentRaw, c.Document, "document", &c.SortedImages); err != nil {
+	if err := c.encodeImages(false); err != nil {
 		return nil, err
 	}
-	if err := encodeMissingImage(&c.BeforeRaw, c.Before, "before", &c.SortedImages); err != nil {
-		return nil, err
+	// A programmatic compound document_key can be a map.
+	return wal.MarshalDocument(changeBSON(c))
+}
+
+func (c *Change) encodeImages(ordinary bool) error {
+	images := planImageEncoder{c.DocumentID, &c.SortedImages, ordinary}
+	if err := images.encode("document", &c.DocumentRaw, &c.Document); err != nil {
+		return err
 	}
-	return bson.Marshal(changeBSON(c))
+	return images.encode("before", &c.BeforeRaw, &c.Before)
 }
 
 func (c *Change) UnmarshalBSON(data []byte) error {
+	*c = Change{}
 	if err := bson.Unmarshal(data, (*changeBSON)(c)); err != nil {
 		return err
 	}
+	c.storedKey = bson.Raw(data).Lookup("document_key")
+	c.storedKey.Value = slices.Clone(c.storedKey.Value)
+	return c.decodeStoredImages()
+}
+
+func (c *Change) decodeStoredImages() error {
 	if err := decodeImage(c.DocumentRaw, &c.Document); err != nil {
 		return err
 	}
@@ -41,22 +56,32 @@ func (c *Change) UnmarshalBSON(data []byte) error {
 }
 
 func (c Conflict) MarshalBSON() ([]byte, error) {
-	if err := encodeMissingImage(&c.BaseRaw, c.Base, "base", &c.SortedImages); err != nil {
-		return nil, err
-	}
-	if err := encodeMissingImage(&c.OursRaw, c.Ours, "ours", &c.SortedImages); err != nil {
-		return nil, err
-	}
-	if err := encodeMissingImage(&c.TheirsRaw, c.Theirs, "theirs", &c.SortedImages); err != nil {
+	if err := c.encodeImages(false); err != nil {
 		return nil, err
 	}
 	return bson.Marshal(conflictBSON(c))
 }
 
+func (c *Conflict) encodeImages(ordinary bool) error {
+	images := planImageEncoder{c.DocumentID, &c.SortedImages, ordinary}
+	if err := images.encode("base", &c.BaseRaw, &c.Base); err != nil {
+		return err
+	}
+	if err := images.encode("ours", &c.OursRaw, &c.Ours); err != nil {
+		return err
+	}
+	return images.encode("theirs", &c.TheirsRaw, &c.Theirs)
+}
+
 func (c *Conflict) UnmarshalBSON(data []byte) error {
+	*c = Conflict{}
 	if err := bson.Unmarshal(data, (*conflictBSON)(c)); err != nil {
 		return err
 	}
+	return c.decodeStoredImages()
+}
+
+func (c *Conflict) decodeStoredImages() error {
 	if err := decodeImage(c.BaseRaw, &c.Base); err != nil {
 		return err
 	}
@@ -66,36 +91,75 @@ func (c *Conflict) UnmarshalBSON(data []byte) error {
 	return decodeImage(c.TheirsRaw, &c.Theirs)
 }
 
-func encodeMissingImage(raw *bson.Raw, doc bson.M, name string, sorted *[]string) error {
-	if *raw == nil && doc != nil {
-		image, err := wal.MarshalDocument(doc)
+type planImageEncoder struct {
+	key      string
+	sorted   *[]string
+	ordinary bool
+}
+
+func (e planImageEncoder) encode(name string, raw *bson.Raw, doc *bson.M) error {
+	fromMap := *raw == nil && *doc != nil
+	if fromMap {
+		image, err := wal.MarshalDocument(*doc)
 		if err != nil {
 			return err
 		}
 		*raw = image
-		if !slices.Contains(*sorted, name) {
-			*sorted = append(slices.Clone(*sorted), name)
+	}
+	if e.ordinary && *raw != nil && ingest.HasDuplicateKeys(*raw) {
+		// A programmatic save can supply new bytes alongside a stale map.
+		// Decode from the authoritative image before selecting its last values.
+		if err := decodeImage(*raw, doc); err != nil {
+			return err
 		}
+		id, err := wal.DocumentIDValue(e.key)
+		if err != nil {
+			return err
+		}
+		image, err := sortedImage(*doc, id, false)
+		if err != nil {
+			return err
+		}
+		if (*raw).Index(0).Key() == "_id" {
+			image, err = withIDFirst(image)
+			if err != nil {
+				return err
+			}
+		}
+		*raw = image
+		if err := decodeImage(image, doc); err != nil {
+			return err
+		}
+		fromMap = true
+	}
+	if fromMap {
+		markSorted(e.sorted, name)
 	}
 	return nil
 }
 
+func markSorted(sorted *[]string, name string) {
+	if sorted != nil && !slices.Contains(*sorted, name) {
+		*sorted = append(slices.Clone(*sorted), name)
+	}
+}
+
 func decodeImage(raw bson.Raw, doc *bson.M) error {
 	if raw == nil {
-		*doc = nil
 		return nil
 	}
+	*doc = nil
 	return bson.Unmarshal(raw, doc)
 }
 
 // PreparePlan computes a proposal with the ordered BSON images that SavePlan
 // will persist. CLI callers can encode their output before saving the plan.
-func (s *Service) PreparePlan(sourceBranchID string) (*Plan, error) {
+func (s *Service) PreparePlan(ctx context.Context, sourceBranchID string) (*Plan, error) {
 	plan, err := s.Compute(sourceBranchID)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.preparePlanImages(plan); err != nil {
+	if err := s.preparePlanImages(ctx, plan); err != nil {
 		return nil, err
 	}
 	return plan, nil
@@ -120,10 +184,13 @@ func (r imageRequests) add(collection, key, name string, doc bson.M, raw *bson.R
 	}
 }
 
-func (s *Service) preparePlanImages(plan *Plan) error {
-	source, target, err := s.endpoints(plan.SourceBranchID)
+func (s *Service) preparePlanImages(ctx context.Context, plan *Plan) error {
+	branch, target, err := s.endpoints(plan.SourceBranchID)
 	if err != nil {
 		return err
+	}
+	if target.ID != plan.TargetBranchID || branch.ProjectID != plan.ProjectID {
+		return fmt.Errorf("merge endpoints changed; run preview again")
 	}
 
 	theirs, ours, base := imageRequests{}, imageRequests{}, imageRequests{}
@@ -138,21 +205,33 @@ func (s *Service) preparePlanImages(plan *Plan) error {
 		ours.add(c.Collection, c.DocumentID, "ours", c.Ours, &c.OursRaw, &c.SortedImages)
 		base.add(c.Collection, c.DocumentID, "base", c.Base, &c.BaseRaw, &c.SortedImages)
 	}
-	if err := s.readPlanImages(source, plan.BaseLSN+1, plan.SourceHead, theirs, target.IsLive() || target.IsFollower()); err != nil {
+	if err := s.readPlanImages(branch, plan.BaseLSN+1, plan.SourceHead, theirs, target.IsLive() || target.IsFollower(), target.IsFollower()); err != nil {
 		return err
 	}
-	if err := s.readPlanImages(target, 0, plan.TargetHead, ours, false); err != nil {
+	if err := s.readPlanImages(target, 0, plan.TargetHead, ours, false, target.IsFollower()); err != nil {
 		return err
 	}
-	if err := s.readPlanImages(source, 0, plan.BaseLSN, base, false); err != nil {
+	if err := s.readPlanImages(branch, 0, plan.BaseLSN, base, false, target.IsFollower()); err != nil {
 		return err
+	}
+	plan.FollowedDatabase, plan.FollowedReplicaSetID = "", ""
+	if target.IsFollower() {
+		binding, err := source.ReadBinding(ctx, s.plans.Database(), target.ID)
+		if err != nil {
+			return err
+		}
+		if binding == nil || binding.Database != target.Follows || binding.ProjectID != plan.ProjectID {
+			return fmt.Errorf("source binding for branch %s changed during preview; run preview again", target.Name)
+		}
+		plan.FollowedDatabase = binding.Database
+		plan.FollowedReplicaSetID = binding.ReplicaSetID
 	}
 	plan.FormatVersion = orderedPlanVersion
-	plan.ExactBytesVersion = exactBytesVersion
+	plan.ProvenanceVersion = provenanceVersion
 	return nil
 }
 
-func (s *Service) readPlanImages(branch *wal.Branch, fromLSN, toLSN int64, requests imageRequests, idFirst bool) error {
+func (s *Service) readPlanImages(branch *wal.Branch, fromLSN, toLSN int64, requests imageRequests, idFirst, preserveDuplicates bool) error {
 	for collection, images := range requests {
 		keys := make([]string, len(images))
 		for i := range images {
@@ -163,7 +242,7 @@ func (s *Service) readPlanImages(branch *wal.Branch, fromLSN, toLSN int64, reque
 			return err
 		}
 		for _, image := range images {
-			if err := image.store(entries[image.key], idFirst); err != nil {
+			if err := image.store(entries[image.key], idFirst, preserveDuplicates); err != nil {
 				return fmt.Errorf("merge image %s for %s/%s: %w", image.name, collection, image.key, err)
 			}
 		}
@@ -171,7 +250,7 @@ func (s *Service) readPlanImages(branch *wal.Branch, fromLSN, toLSN int64, reque
 	return nil
 }
 
-func (image imageRequest) store(entry *wal.Entry, idFirst bool) error {
+func (image imageRequest) store(entry *wal.Entry, idFirst, preserveDuplicates bool) error {
 	id, err := wal.DocumentIDValue(image.key)
 	if err != nil {
 		return err
@@ -179,11 +258,11 @@ func (image imageRequest) store(entry *wal.Entry, idFirst bool) error {
 	// The typed key preserves the order of a compound ID in the map view.
 	image.doc["_id"] = id
 	var raw bson.Raw
-	// Save verified duplicates in ordered plans so the full document can be displayed.
-	// Ordinary apply of older plans retains its historical single-value fallback.
+	// Followed targets retain all fields so write-back can identify duplicates.
+	// Ordinary merges publish the single value selected by the materializer.
 	if entry != nil && entry.Operation == wal.OpPut && len(entry.PostImage) > 0 &&
 		entry.Metadata["capture_images"] != "attached_unverified" &&
-		(image.sorted != nil || !ingest.HasDuplicateFields(entry.PostImage)) {
+		(preserveDuplicates || !ingest.HasDuplicateKeys(entry.PostImage)) {
 		var doc bson.M
 		if err := bson.Unmarshal(entry.PostImage, &doc); err != nil {
 			return err
@@ -198,20 +277,15 @@ func (image imageRequest) store(entry *wal.Entry, idFirst bool) error {
 		}
 	}
 	if raw == nil {
-		doc := image.doc
 		if image.sorted != nil {
-			// BSON code scopes retain ordered documents even after decoding
-			// the enclosing image into a map. Sort those fields as well.
-			doc = mapImageValue(doc).(bson.M)
-			doc["_id"] = id
+			raw, err = sortedImage(image.doc, id, preserveDuplicates)
+		} else {
+			raw, err = wal.MarshalDocument(image.doc)
 		}
-		raw, err = wal.MarshalDocument(doc)
 		if err != nil {
 			return err
 		}
-		if image.sorted != nil {
-			*image.sorted = append(*image.sorted, image.name)
-		}
+		markSorted(image.sorted, image.name)
 	}
 	if idFirst {
 		raw, err = withIDFirst(raw)
@@ -221,6 +295,27 @@ func (image imageRequest) store(entry *wal.Entry, idFirst bool) error {
 	}
 	*image.raw = raw
 	return nil
+}
+
+// Code scopes retain ordered documents even when the enclosing image is
+// decoded into a map. Collapse their duplicates too, preserving the typed ID.
+func sortedImage(doc bson.M, id any, allowDuplicateID bool) (bson.Raw, error) {
+	sorted := mapImageValue(doc).(bson.M)
+	sorted["_id"] = id
+	raw, err := wal.MarshalDocument(sorted)
+	if err == nil && !allowDuplicateID && ingest.HasDuplicateKeys(raw) {
+		return nil, fmt.Errorf("duplicate fields in compound _id cannot be merged without changing the document key")
+	}
+	return raw, err
+}
+
+// Pending plans from an earlier writer can already contain duplicate fields.
+// Ordinary apply publishes the same single values as a fresh ordinary plan.
+func ordinaryImage(raw bson.Raw, doc bson.M, id any) (bson.Raw, error) {
+	if raw != nil && ingest.HasDuplicateKeys(raw) {
+		return sortedImage(doc, id, false)
+	}
+	return raw, nil
 }
 
 // Convert every document in a fallback image to the value representation:
@@ -286,7 +381,6 @@ func (s *Service) prepareApplyImages(source *wal.Branch, changes []Change) error
 		if err != nil {
 			return err
 		}
-		c.ID = id
 		if c.Before != nil {
 			c.Before["_id"] = id
 			c.BeforeRaw, err = wal.MarshalDocument(c.Before)
@@ -301,5 +395,5 @@ func (s *Service) prepareApplyImages(source *wal.Branch, changes []Change) error
 			requests.add(c.Collection, c.DocumentID, "document", c.Document, &c.DocumentRaw, nil)
 		}
 	}
-	return s.readPlanImages(source, source.BaseLSN+1, source.HeadLSN, requests, false)
+	return s.readPlanImages(source, source.BaseLSN+1, source.HeadLSN, requests, false, false)
 }

@@ -39,7 +39,24 @@ func savedCompoundConflictOnSource(t *testing.T) {
 	require.Len(t, plan.Conflicts, 1)
 
 	writer := f.restart(t)
-	result, err := writer.WriteBackMerge(ctx, plan.ID, merge.StrategyTheirs, f.sourceURI)
+	require.Empty(t, plan.Changes)
+	keep := f.preview(t, info.BranchID)
+	before, err := catalog.FindOne(ctx, bson.M{"_id": id}).Raw()
+	require.NoError(t, err)
+	for _, approval := range []string{"", wrongApproval} {
+		_, err := writer.WriteBackMerge(ctx, keep.ID, merge.StrategyOurs, f.sourceURI, approval)
+		require.ErrorContains(t, err, "--output json")
+		require.Equal(t, merge.StatusPending, f.plan(t, keep).Status)
+	}
+	kept, err := writer.WriteBackMerge(ctx, keep.ID, merge.StrategyOurs, f.sourceURI, approvalFor(t, keep))
+	require.NoError(t, err)
+	require.Zero(t, kept.Applied)
+	require.Equal(t, 1, kept.ConflictsResolved)
+	require.Equal(t, approvalFor(t, keep), f.plan(t, keep).WriteBack.ApprovedDigest)
+	after, err := catalog.FindOne(ctx, bson.M{"_id": id}).Raw()
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	result, err := writer.WriteBackMerge(ctx, plan.ID, merge.StrategyTheirs, f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Applied)
 	checkCompoundReplacement(t, catalog, id)
@@ -70,7 +87,7 @@ func savedCompoundConflictOnLiveTarget(t *testing.T) {
 	plan, err := preview.Preview(ctx, child.ID)
 	require.NoError(t, err)
 	require.Len(t, plan.Conflicts, 1)
-	data, err := plan.CLIJSON()
+	data, err := plan.CLIJSON(false)
 	require.NoError(t, err)
 	var out struct {
 		Conflicts []struct{ Theirs json.RawMessage }
@@ -159,7 +176,7 @@ func TestWriteBack_ProgrammaticNestedMapOrder(t *testing.T) {
 	_, err = writer.PutMany(t.Context(), "catalog", docs)
 	require.NoError(t, err)
 	plan := f.preview(t, branch.ID)
-	result, err := f.services.WriteBackMerge(t.Context(), plan.ID, "", f.sourceURI)
+	result, err := f.services.WriteBackMerge(t.Context(), plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.Equal(t, len(docs), result.Applied)
 	for _, doc := range docs {
@@ -219,14 +236,14 @@ func TestWriteBack_RequiresVerifiedSandboxImage(t *testing.T) {
 				removed, err := f.services.WAL.DeleteDataEntriesUpTo(branch.ID, "catalog", lsn)
 				require.NoError(t, err)
 				require.EqualValues(t, 1, removed)
-				_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+				_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 				require.NoError(t, err)
 				got, err := f.source.Collection("catalog").FindOne(ctx, bson.M{"_id": "new-item"}).Raw()
 				require.NoError(t, err)
 				require.Equal(t, bson.Raw(image), got)
 				return
 			}
-			_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+			_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 			require.ErrorContains(t, err, "catalog/new-item")
 			require.ErrorContains(t, err, "preview")
 			if mode == "duplicate" {
@@ -267,7 +284,7 @@ func TestWriteBack_RecaptureSandboxAfterImage(t *testing.T) {
 	first := f.preview(t, child.ID)
 	require.Len(t, first.Changes, 1)
 	require.Equal(t, []string{"document"}, first.Changes[0].SortedImages)
-	result, err := f.services.WriteBackMerge(ctx, first.ID, "", f.sourceURI)
+	result, err := f.services.WriteBackMerge(ctx, first.ID, "", f.sourceURI, approvalFor(t, first))
 	require.ErrorContains(t, err, "unverified after-image")
 	require.Nil(t, result)
 	require.Equal(t, bson.Raw(original), readSourceCase(t, samples, id))
@@ -285,7 +302,7 @@ func TestWriteBack_RecaptureSandboxAfterImage(t *testing.T) {
 	want, err := bson.Marshal(bson.D{{Key: "_id", Value: id}, {Key: "dimensions", Value: dimensions}})
 	require.NoError(t, err)
 	require.Equal(t, bson.Raw(want), second.Changes[0].DocumentRaw)
-	result, err = f.services.WriteBackMerge(ctx, second.ID, "", f.sourceURI)
+	result, err = f.services.WriteBackMerge(ctx, second.ID, "", f.sourceURI, approvalFor(t, second))
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Applied)
 	require.Equal(t, bson.Raw(want), readSourceCase(t, samples, id))

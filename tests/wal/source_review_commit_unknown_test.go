@@ -139,7 +139,7 @@ func TestWriteBack_UnknownCommitOutcomeKeepsThePlanClaimed(t *testing.T) {
 
 	_, err = f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{
 		Database: faulty.Database(f.source.Name()), Display: binding.Display,
-	})
+	}, approvalFor(t, plan))
 	t.Logf("ApplyToSource returned: %v", err)
 	require.EqualValues(t, 1, dialer.acknowledgments.Load(), "the server acknowledged exactly one commitTransaction with ok:1")
 
@@ -158,7 +158,7 @@ func TestWriteBack_UnknownCommitOutcomeKeepsThePlanClaimed(t *testing.T) {
 	require.NotNil(t, claimed.WriteBack, "the session record is what lets the follower attribute the events")
 	require.NotEmpty(t, claimed.WriteBack.Session.Data)
 
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "will not be written again")
 	require.Equal(t, written, f.sourceState(t, nil))
 
@@ -201,7 +201,7 @@ func TestWriteBack_ConcurrentCallsClaimOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+			_, errs[i] = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 		}(i)
 	}
 	close(start)

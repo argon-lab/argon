@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "source": "web/",
-  "source_sha256": "3ffb32e6f90516db8ff63b6dddcd738e01a182e21a57ac5e4a4d5d6982e6debb",
+  "source_sha256": "6f57d93f231ddcd6d0d28cc127aef1fd91a9f10037f235c59107959e6da3076f",
   "source_file_count": 23,
   "source_hash_algorithm": "sha256 of sorted UTF-8 relative path + NUL + file bytes + NUL; excludes node_modules, dist, .git, .env*, .DS_Store",
   "package_lock_sha256": "e07fefa2e27bd0e0c7ccee03d7193b9e1cce1f72aaa3b4fddf3c304c4fbbd54e",
   "assets_sha256": {
-    "assets/index-B91p-N5M.js": "9faa182ca61c657b0f42ab0370bcd6a824d56f0837691d9ceda6c2a4db5e0c33",
-    "assets/index-eEBoXYst.css": "5f75bd3e56d7584b3d3ceebc98bc2ea3c465f1bd0f636bb78fcdc812b3f0fd28",
-    "index.html": "18f4e5196b8daf3d579fa2a5080fa4d63dd20e61d81f35fa89de4eaa0c30e04b"
+    "assets/index--RkNPr7r.css": "270db70235b3405816c0fb84ba566587c086f378be42cefc89194e4ffd6ee8a8",
+    "assets/index-CMbSEqJ2.js": "ba349da1fdd86c23e41f4fe4e70ae3d84ba78da89a2b531397d53ed72858393f",
+    "index.html": "073684e491ce5c2e4a049121008233cc7fda0cf2d014d8b16a71bb7d5ae37684"
   }
 }

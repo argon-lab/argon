@@ -35,7 +35,7 @@ export default function MergePlan() {
   });
 
   const conflicts = q.data?.conflicts ?? [];
-  const canApply = q.data?.status === "pending";
+  const canApply = q.data?.status === "pending" && !q.data.write_back_guidance;
 
   return (
     <div className="space-y-6">
@@ -124,19 +124,27 @@ export default function MergePlan() {
                 <ErrorNote error={apply.error} />
               </div>
             )}
-            {(readOnly || !canApply) && !apply.isSuccess && (
-              <p className="mt-3 font-mono text-xs text-brand-muted">
-                {q.data.status === "writing_back" ? (
-                  <>
-                    This plan cannot be reused. Check the affected documents on
-                    the source, let following catch up, then run{" "}
-                    <code>argon merge preview</code> again for the sandbox.
-                  </>
-                ) : (
-                  <>CLI equivalent: argon merge apply {q.data.id}</>
-                )}
+            {q.data.write_back_guidance && (
+              <p className="mt-3 break-words font-mono text-xs text-brand-muted">
+                {q.data.write_back_guidance}
               </p>
             )}
+            {(readOnly || !canApply) &&
+              !apply.isSuccess &&
+              (q.data.status === "writing_back" ||
+                !q.data.write_back_guidance) && (
+                <p className="mt-3 font-mono text-xs text-brand-muted">
+                  {q.data.status === "writing_back" ? (
+                    <>
+                      This plan cannot be reused. Check the affected documents
+                      on the source, let following catch up, then run{" "}
+                      <code>argon merge preview</code> again for the sandbox.
+                    </>
+                  ) : (
+                    <>CLI equivalent: argon merge apply {q.data.id}</>
+                  )}
+                </p>
+              )}
           </Panel>
 
           <Panel title={`Changes · ${(q.data.changes ?? []).length}`}>

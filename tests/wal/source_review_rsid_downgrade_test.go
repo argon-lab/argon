@@ -148,8 +148,6 @@ func TestWriteBack_RefusedWhenTheReplicaSetIDCannotBeRead(t *testing.T) {
 	stop := f.follow(t, f.services, walcli.FollowSourceOptions{})
 	info, sandboxDB := f.agentSandbox(t, "agent-run")
 	agentEdits(t, sandboxDB)
-	plan := f.preview(t, info.BranchID)
-	require.Len(t, plan.Changes, 4)
 	f.waitCaughtUp(t)
 	require.NoError(t, stop())
 
@@ -168,6 +166,11 @@ func TestWriteBack_RefusedWhenTheReplicaSetIDCannotBeRead(t *testing.T) {
 		UpdateOne(ctx, bson.M{"_id": main.ID}, bson.M{"$set": bson.M{"replica_set_id": otherID}})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, res.ModifiedCount)
+	// Approve the simulated import binding so both calls exercise verification
+	// of the connected deployment.
+	plan := f.preview(t, info.BranchID)
+	require.Len(t, plan.Changes, 4)
+	require.Equal(t, otherID, plan.FollowedReplicaSetID)
 
 	catalog := f.source.Collection("catalog")
 	countNew := func() int64 {
@@ -177,7 +180,7 @@ func TestWriteBack_RefusedWhenTheReplicaSetIDCannotBeRead(t *testing.T) {
 	}
 
 	// Control: with a connection that can read the ID, the mismatch is seen.
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "different deployment")
 	t.Logf("privileged connection: refused: %v", err)
 	require.EqualValues(t, 0, countNew())
@@ -186,7 +189,7 @@ func TestWriteBack_RefusedWhenTheReplicaSetIDCannotBeRead(t *testing.T) {
 	// Same deployment, same mismatch, but replSetGetConfig is denied.
 	addr, blocked := startUnprivilegedProxy(t, "localhost:27018")
 	blindURI := fmt.Sprintf("mongodb://%s/?directConnection=true", addr)
-	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", blindURI)
+	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", blindURI, approvalFor(t, plan))
 	t.Logf("unprivileged connection: replSetGetConfig denied %d time(s); result=%+v err=%v", blocked.Load(), result, err)
 	require.Positive(t, blocked.Load(), "the proxy denied replSetGetConfig")
 

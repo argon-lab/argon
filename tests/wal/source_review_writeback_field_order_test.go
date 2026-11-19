@@ -52,7 +52,7 @@ func TestWriteBack_ReorderedFieldsAreAConflict(t *testing.T) {
 				require.NoError(t, coll.FindOne(ctx, bson.M{"_id": "ord"}).Decode(&prod))
 				t.Logf("source before write-back: %v", prod)
 
-				_, wbErr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+				_, wbErr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 				var after bson.D
 				require.NoError(t, coll.FindOne(ctx, bson.M{"_id": "ord"}).Decode(&after))
 				t.Logf("write-back error: %v", wbErr)

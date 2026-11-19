@@ -37,7 +37,7 @@ func jsonImage(t *testing.T, value any) bson.Raw {
 func renderExactChange(t *testing.T, image bson.Raw) jsonExactChange {
 	t.Helper()
 	p := Plan{FormatVersion: orderedPlanVersion, Changes: []Change{{DocumentID: "x", DocumentRaw: image}}}
-	data, err := p.CLIJSON()
+	data, err := p.CLIJSON(false)
 	require.NoError(t, err)
 	var result struct{ Changes []jsonExactChange }
 	require.NoError(t, json.Unmarshal(data, &result))
@@ -159,7 +159,7 @@ func TestPlanJSONExactBytesPaths(t *testing.T) {
 		Changes:       []Change{{DocumentID: "x", DocumentRaw: image, BeforeRaw: image}},
 		Conflicts:     []Conflict{{DocumentID: "x", BaseRaw: image, OursRaw: image, TheirsRaw: image}},
 	}
-	data, err := p.CLIJSON()
+	data, err := p.CLIJSON(false)
 	require.NoError(t, err)
 	var result struct{ Changes, Conflicts []jsonExactChange }
 	require.NoError(t, json.Unmarshal(data, &result))
@@ -224,7 +224,7 @@ func TestPlanJSONStoredLegacyImages(t *testing.T) {
 	plan := Plan{FormatVersion: 2, Changes: []Change{{
 		DocumentID: wal.DocumentIDString(key), DocumentRaw: stored,
 	}}}
-	data, err := plan.CLIJSON()
+	data, err := plan.CLIJSON(false)
 	require.NoError(t, err)
 	var result struct {
 		Changes []struct {

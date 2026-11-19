@@ -32,7 +32,7 @@ func TestWriteBack_ClaimSurvivesResyncAndFollowing(t *testing.T) {
 	// Nothing is following. The application drops one of its collections;
 	// the stopped follower has not seen that, so write-back is allowed.
 	require.NoError(t, f.source.Collection("scratch").Drop(ctx))
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	written := f.sourceState(t, nil)
 	require.NotEqual(t, reviewed["catalog"], written["catalog"], "the write-back must have changed production")
@@ -69,7 +69,7 @@ func TestWriteBack_ClaimSurvivesResyncAndFollowing(t *testing.T) {
 	require.NotEqual(t, plan.ID, fresh.ID)
 	require.Empty(t, fresh.Changes)
 	require.Empty(t, fresh.Conflicts)
-	result, err := f.services.WriteBackMerge(ctx, fresh.ID, "", f.sourceURI)
+	result, err := f.services.WriteBackMerge(ctx, fresh.ID, "", f.sourceURI, approvalFor(t, fresh))
 	require.NoError(t, err)
 	require.Zero(t, result.Applied)
 	require.Equal(t, written, f.sourceState(t, nil))
@@ -104,7 +104,7 @@ func TestWriteBack_FollowingKeepsPausedWritersClaim(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+		result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 		done <- outcome{result, err}
 	}()
 
@@ -212,5 +212,5 @@ func writeBackAfterSourceCommit(t *testing.T, f *followFixture, plan *merge.Plan
 	defer func() { _ = client.Disconnect(ctx) }()
 	return f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{
 		Database: client.Database(f.source.Name()),
-	})
+	}, approvalFor(t, plan))
 }

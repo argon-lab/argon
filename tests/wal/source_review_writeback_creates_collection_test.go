@@ -28,7 +28,7 @@ func TestWriteBack_DoesNotCreateACollection(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, before, "brand_new")
 
-	result, werr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	result, werr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	after, err := f.source.ListCollectionNames(ctx, bson.D{})
 	require.NoError(t, err)
 	t.Logf("write-back result=%+v err=%v; source collections before=%v after=%v", result, werr, before, after)
@@ -65,7 +65,7 @@ func TestWriteBack_RefusedWhileFollowingIsDegraded(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, before, "orders")
 
-	_, werr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, werr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, werr, "degraded")
 	after, err := f.source.ListCollectionNames(ctx, bson.D{})
 	require.NoError(t, err)

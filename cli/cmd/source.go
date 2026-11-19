@@ -33,7 +33,7 @@ the database it was imported from: its main branch follows that database.
 
 The source connection string is given to commands that contact the source
 (--uri, or the ARGON_SOURCE_URI environment variable) and is never stored.
-"argon merge apply --write-back" writes the documents in a plan.
+"argon merge apply <plan> --write-back --approve <digest>" writes the documents in a plan.
 The --enable-source-images option changes how the source stores writes.
 Both options are experimental and require ARGON_EXPERIMENTAL_SOURCE=1
 and a replica-set ID recorded at import. Operators can also enable

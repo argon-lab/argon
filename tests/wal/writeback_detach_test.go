@@ -54,7 +54,7 @@ func TestWriteBack_DetachRacesClaim(t *testing.T) {
 					},
 				})
 				writer := merge.NewService(meta.Database(f.metadataName), f.services.WAL, f.services.Branches, f.services.Materializer, meta)
-				result, err := writer.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: f.source})
+				result, err := writer.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: f.source}, approvalFor(t, plan))
 				require.True(t, detached)
 				binding, readErr := f.services.Sources.Get(ctx, plan.TargetBranchID)
 				require.NoError(t, readErr)
@@ -121,7 +121,7 @@ func TestSource_DetachReportsUnsettledPlans(t *testing.T) {
 			for _, p := range []*merge.Plan{plan, other} {
 				require.Contains(t, string(out), p.ID.Hex())
 				require.Equal(t, merge.StatusWritingBack, f.plan(t, p).Status)
-				_, err := f.services.WriteBackMerge(ctx, p.ID, "", f.sourceURI)
+				_, err := f.services.WriteBackMerge(ctx, p.ID, "", f.sourceURI, approvalFor(t, p))
 				require.ErrorContains(t, err, "will not be written again")
 			}
 		})
@@ -145,7 +145,7 @@ func TestWriteBack_DeadlineCoversCommit(t *testing.T) {
 		// Let the deadline pass with the complete transaction still uncommitted.
 		<-ctx.Done()
 	}})
-	result, err := f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: src.Database(f.source.Name())})
+	result, err := f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: src.Database(f.source.Name())}, approvalFor(t, plan))
 	require.True(t, reachedCommit)
 	require.True(t, hasDeadline)
 	require.Positive(t, maxTime)
@@ -167,7 +167,7 @@ func TestWriteBack_DetachBeforeClaim(t *testing.T) {
 			detachErr = f.services.DetachSource(ctx, f.project)
 		}
 	}})
-	result, err := f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: src.Database(f.source.Name())})
+	result, err := f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: src.Database(f.source.Name())}, approvalFor(t, plan))
 	require.True(t, detached)
 	require.NoError(t, detachErr)
 	require.ErrorContains(t, err, "following was detached")
@@ -192,7 +192,7 @@ func TestWriteBack_DeadlineStartsBeforeClaim(t *testing.T) {
 	}})
 	writer := merge.NewService(meta.Database(f.metadataName), f.services.WAL, f.services.Branches, f.services.Materializer, meta)
 	start := time.Now()
-	_, err := writer.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: src.Database(f.source.Name())})
+	_, err := writer.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: src.Database(f.source.Name())}, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.False(t, claimDeadline.IsZero())
 	require.Equal(t, claimDeadline, commitDeadline)

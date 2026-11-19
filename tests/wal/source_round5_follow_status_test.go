@@ -57,9 +57,9 @@ func (f *followFixture) pendingSourceEdit(t *testing.T, ctx context.Context) *me
 // or claiming the pending plan.
 func (f *followFixture) requireWriteBackRefused(t *testing.T, ctx context.Context, plan *merge.Plan, detail string) {
 	t.Helper()
-	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", "invalid-source-uri")
+	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", "invalid-source-uri", approvalFor(t, plan))
 	require.ErrorContains(t, err, detail)
-	_, err = f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{})
+	_, err = f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{}, approvalFor(t, plan))
 	require.ErrorContains(t, err, detail)
 	saved := f.plan(t, plan)
 	require.Equal(t, merge.StatusPending, saved.Status)
