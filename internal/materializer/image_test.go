@@ -13,7 +13,7 @@ import (
 func TestEditImageRequiresMatchingIdentityAndValue(t *testing.T) {
 	id := bson.D{{Key: "z", Value: 1}, {Key: "a", Value: 2}}
 	doc := bson.M{"_id": id, "!": 1, "x": 2}
-	sorted := bson.D{{Key: "_id", Value: id}, {Key: "!", Value: 1}, {Key: "x", Value: 2}}
+	sorted := bson.D{{Key: "!", Value: 1}, {Key: "_id", Value: id}, {Key: "x", Value: 2}}
 	want, err := wal.MarshalDocument(sorted)
 	require.NoError(t, err)
 	marshal := func(id any, x int) bson.Raw {
@@ -119,14 +119,14 @@ func TestEditImageSourceEquality(t *testing.T) {
 	require.NoError(t, err)
 	source, err = wal.DecodeImage(repeated)
 	require.NoError(t, err)
-	clean, rebuilt := source.TrustedImage(wal.SnapshotImage, nil)
-	require.NotNil(t, rebuilt)
-	require.NotSame(t, source, rebuilt)
+	image, decoded = source.TrustedImage(wal.SnapshotImage, nil)
+	require.Nil(t, image)
+	require.Nil(t, decoded)
 	source, err = wal.DecodeImage(repeated)
 	require.NoError(t, err)
 	got, err = editImage(source, source, wal.SnapshotImage, nil)
 	require.NoError(t, err)
-	require.Equal(t, clean, got)
+	require.Equal(t, want, got)
 
 	absent := wal.DecodedValue(nil)
 	got, err = editImage(absent, absent, wal.SnapshotImage, nil)

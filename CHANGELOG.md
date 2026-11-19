@@ -35,10 +35,17 @@ entry — a synchronization barrier, not in-proxy capture).
 ### Fixed
 
 - Checkout, re-checkout (including after restore) and snapshots preserve stored
-  BSON field order, including inside arrays, when a trusted image matches the
-  decoded document. A follower's last inexact read can supply that order.
-  Repeated data fields keep their last value at their first position. When no
-  image qualifies, map fields use name order with `_id` first.
+  BSON field order, including inside arrays, when a trusted, canonical image
+  matches the decoded document. A follower's last inexact read can supply that
+  order. Repeated names (including in code scopes), nonsequential array indexes,
+  short subtype-2 binaries and unsorted regex options cause the whole document
+  to be encoded from its decoded value. Map fields use name order, and MongoDB
+  places `_id` first on checkout.
+- Snapshot creation writes chunks for every collection before publishing
+  manifests, so a materialization failure cannot give GC new coverage.
+  Reads can use another copy at the same LSN or an earlier usable snapshot
+  when a chunk fails to load. Once a snapshot loads, older manifest contents
+  cannot block the read.
 - The startup check of snapshots written by earlier versions scans each
   WAL prefix once for all snapshots that share it, reads index keys only,
   and runs under one five-second deadline that covers every query it makes.

@@ -172,7 +172,10 @@ without one, fall back to full replay unchanged.
   interface, so no backend leaks storage.
 - **Lookup**: materialization searches the leaf-most ancestry hop first — a
   leaf snapshot covers the entire inherited chain beneath it. Within a hop,
-  the newest usable snapshot inside the segment's LSN window wins.
+  the newest usable snapshot inside the segment's LSN window wins. At the
+  same LSN, reads prefer ordered frames. If their chunks fail to load, reads
+  try another copy at that LSN, then earlier usable snapshots within the
+  window. The usual WAL coverage checks still apply.
 - **Reset interaction**: reset never touches snapshots. A snapshot at LSN
   `S` is itself a read with upper bound `S`, so it left out a discarded
   range only if the range was already recorded when it was built (the
@@ -185,6 +188,10 @@ without one, fall back to full replay unchanged.
   pre-reset view. Post-reset snapshots are valid for everyone again.
 - **Incremental**: `CreateSnapshot` materializes through the snapshot-aware
   path itself, so each snapshot builds from the previous one plus the delta.
+  It materializes one collection at a time and keeps the compressed chunks
+  until the branch is ready. Under the publication lock it writes the chunks
+  and then publishes the manifests. A failed materialization gives GC no
+  new coverage.
 - **Automatic**: both programmatic writes and committed native capture batches notify the snapshot service;
   once a branch head advances a threshold past its newest snapshot (default
   1000 LSNs, checked at most every 64 writes per branch), a snapshot is
@@ -199,13 +206,20 @@ Checkout (including re-checkout after restore) and snapshot creation use the
 same collection replay. Decoded values determine which documents exist and
 what they contain at the requested position. A stored WAL post-image or
 snapshot frame supplies its bytes only if it identifies the same document,
-decodes cleanly, is trusted for that role and matches the decoded value under
-the merge comparison, including `_id`. Repeated data fields keep their last
-value at their first position. The first top-level `_id` and JavaScript code
-scopes retain their BSON identity and order.
+is trusted for that role and matches the decoded value under the merge
+comparison, including `_id`. Its BSON must also encode identically after
+decoding in stored field order, with unique names in every document,
+including JavaScript code scopes and documents nested inside them. Array
+indexes must start at `"0"` and be consecutive, subtype-2 binary values
+must carry their inner length, and regex options must be sorted.
 A post-image marked `attached_unverified` cannot supply order. A follower's
-`current` image can. Without a matching image, replay encodes the decoded
-value with `_id` first and map fields in name order at each depth.
+`current` image can. When an image fails these checks, replay encodes the
+decoded document. Map fields use name order at each depth, and the first
+top-level `_id` supplies identity, preserving compound key order. The
+decoder keeps a JavaScript scope's own fields as an ordered document,
+including repetitions, while embedded maps keep one value per name.
+Snapshot frames include `_id` in name order. MongoDB stores it first on
+checkout.
 
 Programmatic writes look up prior document values with the single-key decoded
 read. Undo uses decoded documents for restoration. Both paths can write fields
