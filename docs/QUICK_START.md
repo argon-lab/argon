@@ -24,7 +24,8 @@ Wait for primary election if doctor reports that the replica set is not ready.
 The `mongo:7` tag follows current 7.x patches; production deployments should
 use a current supported patch release and keep it updated.
 `doctor` verifies MongoDB 6+, a writable replica-set primary, metadata writes,
-cross-database transactions and exact change-stream images. It creates and
+cross-database transactions, exact change-stream images and the
+`operationTime` that checkout needs to start capture. It creates and
 removes uniquely named temporary probe collections. `argon status` provides
 read-only readiness checks. Both return nonzero on failure.
 

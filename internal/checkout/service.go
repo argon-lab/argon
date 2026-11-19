@@ -10,6 +10,7 @@ package checkout
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -186,13 +187,9 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	// The boundary is read from hello, not ping: Atlas free clusters answer
 	// ping with {ok: 1} alone, while hello carries operationTime on every
 	// replica set.
-	var reply bson.Raw
-	if err := physical.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&reply); err != nil {
-		return nil, fmt.Errorf("failed to establish capture boundary: %w", err)
-	}
-	startAt, ok := captureBoundary(reply)
-	if !ok {
-		return nil, fmt.Errorf("MongoDB replica set with change streams is required (hello returned no operationTime)")
+	startAt, err := ReadCaptureBoundary(ctx, physical)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := s.ingestState.UpdateOne(ctx, bson.M{"_id": branch.ID},
 		bson.M{"$set": bson.M{"start_at": startAt}}, options.Update().SetUpsert(true)); err != nil {
@@ -203,6 +200,30 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 		return nil, fmt.Errorf("failed to mark branch live: %w", err)
 	}
 	return info, nil
+}
+
+// ErrNoCaptureBoundary means a hello reply carried no operationTime, so no
+// change-stream start position can be taken from it.
+var ErrNoCaptureBoundary = errors.New("hello returned no operationTime")
+
+// ReadCaptureBoundary runs hello against db and returns the point from which
+// writes to db are captured. Checkout stores it before handing out a URI, and
+// doctor runs the same call so that both agree on what a deployment must
+// provide.
+func ReadCaptureBoundary(ctx context.Context, db *mongo.Database) (primitive.Timestamp, error) {
+	var reply bson.Raw
+	if err := db.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&reply); err != nil {
+		return primitive.Timestamp{}, fmt.Errorf("failed to establish capture boundary: %w", err)
+	}
+	return boundaryFromReply(reply)
+}
+
+func boundaryFromReply(reply bson.Raw) (primitive.Timestamp, error) {
+	startAt, ok := captureBoundary(reply)
+	if !ok {
+		return primitive.Timestamp{}, fmt.Errorf("MongoDB replica set with change streams is required (%w)", ErrNoCaptureBoundary)
+	}
+	return startAt, nil
 }
 
 // captureBoundary returns the first cluster time after a command reply's
