@@ -377,9 +377,9 @@ stream, `main` stays untouched and no new unfinished resync is recorded.
 
 What it does to `main`:
 
-- Every source document `main` does not hold byte for byte is stored. A
-  document `main` already holds is not stored again, so the cost in history
-  is the size of the difference, not of the database.
+- Resync stores the source BSON for each document whose bytes differ from
+  `main`, whose capture was unverified, or whose WAL image is unavailable.
+  Documents already held as verified, byte-identical images need no new entry.
 - Every document `main` holds that the source no longer has is deleted.
   A collection dropped or replaced by a view loses all its documents on
   `main`. A renamed collection ends up under its new name. A dropped
@@ -406,8 +406,9 @@ What it guarantees, and what it cannot:
   Time travel into it shows a mixture.
 - **What happened on the source in the gap is not in `main`'s history.**
   Between the last change the follower applied and the resync, only the
-  outcome is recorded: one put or delete per document that differs, not the
-  individual changes, their order or their times. A write-back whose
+  outcome is recorded. Resync writes a put or delete for each difference
+  and recaptures documents whose earlier images were unverified. The gap's
+  individual changes, order and times are unavailable. A write-back whose
   transaction fell into that gap is not attributed to its merge. If the
   writer had not marked the plan applied, it stays `writing_back`.
 - The resync records its marker before the first write to `main` and keeps
@@ -452,14 +453,19 @@ argon merge preview -p myapp -b <sandbox>
 ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
 ```
 
-- One source transaction checks every planned insert, replacement and delete
-  using snapshot reads and majority writes. An insert requires an absent key.
-  A replacement or delete requires the source document to match the plan's
-  before-image byte for byte where exact bytes were recorded. Otherwise Argon
-  compares decoded BSON values, ignoring field order, and refuses a source
-  document with duplicate fields because decoding would lose data. A mismatch
-  aborts the entire transaction with nothing written. Documents outside the
-  plan are outside this check.
+#### Ordinary apply versus write-back
+
+| Apply target | What Argon checks | Accepted plans |
+| --- | --- | --- |
+| An Argon branch | Preview compares decoded BSON values with document keys sorted recursively. Apply checks the saved branch heads and, for formats that record them, branch versions. On a checked-out target, the transaction also compares each live document's decoded values with the plan. | Current plans, including sorted images, and older formats with recoverable IDs and images. Older formats can use branch history. |
+| A followed source | After conflict resolution, one source transaction requires an absent typed key for every insert and byte-for-byte equality with the saved target BSON for every replacement or delete. One mismatch rolls back all writes. | Format 3 with verified, unambiguous images for every selected write. If JSON loses a distinction, the original preview must have identified the exact bytes. |
+
+#### Applying to the source
+
+Inspect a saved plan with `argon merge list -p myapp --output json`, including
+plans first opened through REST or MCP. CLI JSON shows the ordered images and
+their exact-byte annotations.
+
 - In the metadata snapshot that claims the plan, `main` has a verified exact
   checkpoint as of its reported
   source cluster time, and its follower binding and resume position are in
@@ -471,20 +477,24 @@ ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
   It never upserts. A collection dropped between this check and an insert
   can be recreated by the insert. Collection identity and intervening changes
   that restore the same document state are outside the comparison.
-- Format 3 stores ordered BSON for each plan image. Preview and list show the
-  order that apply uses. Inserts and replacements use the saved sandbox image,
-  with `_id` first on MongoDB. Reclaiming sandbox history after preview leaves
-  those bytes available. If preview cannot verify an image, it saves its
-  deterministically sorted encoding and names the image in `sorted_images`.
-  Ordinary apply uses those bytes. Write-back refuses a sorted replacement
-  before claiming the plan. A failed target-history read or a before-image
-  possibly reclaimed by garbage collection still stops write-back. A target
-  history image with duplicate fields and no usable exact before-image also
-  requires a fresh, unambiguous capture.
-- Programmatic puts through `WriterFor` sort Go maps at every depth.
-  Ordered documents, raw BSON and structs retain their supplied order,
-  including compound IDs. Older plans recover replacement images from
-  sandbox history and borrow production's layout on write-back replacements.
+- Inserts and replacements write the saved sandbox BSON, with `_id` first.
+  Reclaiming either branch's history after preview leaves verified plan images
+  usable. The comparison reads its before-image from the saved plan.
+- Before claiming, Argon reports all evidence problems by reason, with the
+  total and up to five collection/ID pairs per reason. The plan stays pending.
+  Preview a pre-format-3 plan again with this version. For an earlier format-3
+  preview that omitted exact bytes for a lossy value, preview again and inspect
+  `exact_bytes` with `--output json`.
+- An image in `sorted_images` means capture supplied unverified values or the
+  original history was unavailable at preview. For a target before-image,
+  stop the follower and run `argon source resync -p myapp --force`. Resync
+  reads the source BSON and records it even if an unverified entry has identical
+  bytes. For a sandbox after-image, record the intended document again with
+  verified capture, for example with a programmatic `WriterFor` put on an
+  editable branch. Preview again. A document containing duplicate field names
+  must be corrected and captured again before write-back.
+- Programmatic puts sort Go maps at every depth. Ordered documents, raw BSON
+  values and structs retain their supplied order, including compound IDs.
 - The encoded plan and room for its claim, outcome and failure text must fit
   in one 16 MiB BSON document. Split larger changes into smaller plans.
 - If the plan has no writes, including when `ours` keeps every conflict,

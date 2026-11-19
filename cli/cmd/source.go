@@ -237,8 +237,9 @@ dropped source database, a saved position the source's oplog no longer
 holds, or another process moving main's head.
 
 It takes a stream position on the source, then compares the source with main
-in batches: every source document that main does not already hold is stored,
-and every document main holds that the source no longer has is deleted.
+in batches. Resync records the source BSON for changed documents and for
+documents whose existing images are unverified or unavailable. It deletes
+documents that main still holds after their removal from the source.
 That includes all documents of a collection replaced by a view. A renamed
 collection ends up under its new name. Resync replays the source's changes
 until main equals the source at one cluster time, and prints that point.

@@ -114,6 +114,9 @@ type Plan struct {
 	WriteBack *WriteBackRecord `bson:"write_back,omitempty" json:"write_back,omitempty"`
 	// WriteBackLastError is why the latest write-back attempt wrote nothing.
 	WriteBackLastError string `bson:"write_back_last_error,omitempty" json:"write_back_last_error,omitempty"`
+
+	// ExactBytesVersion identifies previews that expose lossy Extended JSON values as BSON hex.
+	ExactBytesVersion int `bson:"exact_bytes_version,omitempty" json:"-"`
 }
 
 // Service computes, persists and applies merge plans.

@@ -229,7 +229,11 @@ func TestWriteBack_RequiresVerifiedSandboxImage(t *testing.T) {
 			_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
 			require.ErrorContains(t, err, "catalog/new-item")
 			require.ErrorContains(t, err, "preview")
-			require.ErrorContains(t, err, "sandbox history")
+			if mode == "duplicate" {
+				require.ErrorContains(t, err, "duplicate fields")
+			} else {
+				require.ErrorContains(t, err, "unverified after-image")
+			}
 			require.ErrorIs(t, f.source.Collection("catalog").FindOne(ctx, bson.M{"_id": "new-item"}).Err(), mongo.ErrNoDocuments)
 			stored := f.plan(t, plan)
 			require.Equal(t, merge.StatusPending, stored.Status)
@@ -237,4 +241,54 @@ func TestWriteBack_RequiresVerifiedSandboxImage(t *testing.T) {
 			require.Empty(t, stored.WriteBackLastError)
 		})
 	}
+}
+
+func TestWriteBack_RecaptureSandboxAfterImage(t *testing.T) {
+	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
+	ctx := t.Context()
+	f := newFollowFixture(t, reproSourceURI(t))
+	const id = "parcel"
+	original, err := bson.Marshal(bson.D{{Key: "_id", Value: id}, {Key: "state", Value: "received"}})
+	require.NoError(t, err)
+	samples := f.source.Collection("samples")
+	_, err = samples.InsertOne(ctx, bson.Raw(original))
+	require.NoError(t, err)
+	f.importOnline(t, walcli.OnlineImport{})
+	main := f.main(t)
+	child, err := f.services.Branches.CreateBranch(main.ProjectID, "correct-shipment", main.ID)
+	require.NoError(t, err)
+	writer, err := f.services.WriterFor(f.project, child.Name)
+	require.NoError(t, err)
+	dimensions := bson.D{{Key: "width", Value: int32(9)}, {Key: "height", Value: int32(12)}}
+	intended := bson.M{"_id": id, "dimensions": dimensions}
+	firstLSN, err := writer.Put(ctx, "samples", intended)
+	require.NoError(t, err)
+	markEvidenceCapture(t, f, child.ID, true)
+	first := f.preview(t, child.ID)
+	require.Len(t, first.Changes, 1)
+	require.Equal(t, []string{"document"}, first.Changes[0].SortedImages)
+	result, err := f.services.WriteBackMerge(ctx, first.ID, "", f.sourceURI)
+	require.ErrorContains(t, err, "unverified after-image")
+	require.Nil(t, result)
+	require.Equal(t, bson.Raw(original), readSourceCase(t, samples, id))
+	require.Equal(t, merge.StatusPending, f.plan(t, first).Status)
+
+	// An explicit put of the same intended document records a new exact
+	// post-image even when the sandbox's decoded values already match.
+	nextLSN, err := writer.Put(ctx, "samples", intended)
+	require.NoError(t, err)
+	require.Greater(t, nextLSN, firstLSN)
+	second := f.preview(t, child.ID)
+	require.Len(t, second.Changes, 1)
+	require.Empty(t, second.Changes[0].SortedImages)
+	require.Equal(t, bson.Raw(original), second.Changes[0].BeforeRaw)
+	want, err := bson.Marshal(bson.D{{Key: "_id", Value: id}, {Key: "dimensions", Value: dimensions}})
+	require.NoError(t, err)
+	require.Equal(t, bson.Raw(want), second.Changes[0].DocumentRaw)
+	result, err = f.services.WriteBackMerge(ctx, second.ID, "", f.sourceURI)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Applied)
+	require.Equal(t, bson.Raw(want), readSourceCase(t, samples, id))
+	require.Equal(t, merge.StatusApplied, f.plan(t, second).Status)
+	require.Equal(t, merge.StatusPending, f.plan(t, first).Status)
 }

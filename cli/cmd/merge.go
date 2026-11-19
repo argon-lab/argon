@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -76,7 +77,8 @@ var mergePreviewCmd = &cobra.Command{
 for document IDs and images, preserving the saved BSON field order.
 literal_dollar_paths identifies literal documents with $-prefixed keys.
 sorted_images names images stored in sorted order when exact BSON was unavailable.
-Write-back requires verified replacement images. Table output shows the apply
+exact_bytes gives the BSON type and hex bytes at paths where JSON loses information.
+Write-back requires verified before- and after-images. Table output shows the apply
 command for the target. A followed target requires --write-back,
 ARGON_EXPERIMENTAL_SOURCE=1 and its source connection string (--uri or ARGON_SOURCE_URI).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -137,6 +139,11 @@ ARGON_EXPERIMENTAL_SOURCE=1 and its source connection string (--uri or ARGON_SOU
 			if paths > 0 {
 				fmt.Fprintf(&response, "Warning: %d image path(s) contain literal documents with $-prefixed keys. See literal_dollar_paths in JSON output.\n", paths)
 			}
+			exact, err := plan.ExactBytePathCount()
+			if err != nil {
+				return err
+			}
+			printExactBytesWarning(&response, exact)
 			fmt.Fprintf(&response, "\nPlan %s saved (pending).\n", plan.ID.Hex())
 			apply := "argon merge apply " + plan.ID.Hex()
 			if target.IsFollower() {
@@ -172,8 +179,12 @@ var mergeApplyCmd = &cobra.Command{
 	Long: `Apply a pending merge plan. The --write-back option is experimental
 and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it and read
 docs/OPERATIONS.md for known issues. A plan with zero writes completes
-in metadata. Format-3 inserts and replacements use the saved BSON order.
-Write-back refuses a replacement listed in sorted_images before claiming the plan.
+in metadata. Write-back requires ordered plan images. Every replacement and delete
+checks the saved before-image byte for byte in the source transaction. Every insert
+checks for an absent key. Inserts and replacements write the saved after-image.
+Older formats, unverified images, duplicate fields and older previews missing
+required exact_bytes are refused before the claim. Run preview again with this
+version after resolving the reported cause.
 Argon checks capture health in the claim transaction and waits for majority
 acknowledgment. The writer has two minutes from before claim acquisition
 through all source transaction and commit attempts. If a plan stays writing_back,
@@ -273,6 +284,8 @@ var mergeListCmd = &cobra.Command{
 use canonical Extended JSON v2. New plans show stored BSON field order,
 literal_dollar_paths identifies literal documents with $-prefixed keys, and
 sorted_images names images stored in sorted order when exact BSON was unavailable.
+exact_bytes gives original type and value bytes where JSON loses information.
+Table output reports how many paths need exact_bytes for each plan.
 An unreadable plan is listed with its ID and error.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
@@ -331,15 +344,27 @@ An unreadable plan is listed with its ID and error.`,
 				continue
 			}
 			p := entry.Plan
+			count, err := p.ExactBytePathCount()
+			if err != nil {
+				fmt.Printf("%-26s error: %s\n", entry.ID, err)
+				continue
+			}
 			fmt.Printf("%-26s %-10s %-16s %8d %10d %s\n",
 				p.ID.Hex(), p.Status, p.SourceBranch+"→"+p.TargetBranch,
 				len(p.Changes), len(p.Conflicts), p.CreatedAt.Format("2006-01-02 15:04:05"))
+			printExactBytesWarning(cmd.OutOrStdout(), count)
 		}
 		if advice != "" {
 			fmt.Printf("\nFor a plan in writing_back: %s\n", advice)
 		}
 		return nil
 	},
+}
+
+func printExactBytesWarning(out io.Writer, paths int) {
+	if paths > 0 {
+		fmt.Fprintf(out, "Warning: %d image path(s) need exact BSON bytes. Use --output json to inspect exact_bytes.\n", paths)
+	}
 }
 
 func init() {

@@ -2,13 +2,18 @@ package merge
 
 import (
 	"fmt"
+	"slices"
 
+	"github.com/argon-lab/argon/v2/internal/ingest"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-const orderedPlanVersion = 3
+const (
+	orderedPlanVersion = 3
+	exactBytesVersion  = 1
+)
 
 // The BSON fields contain the images themselves. The maps serve callers that
 // compare document values or use the ordinary JSON representation of a plan.
@@ -16,10 +21,10 @@ type changeBSON Change
 type conflictBSON Conflict
 
 func (c Change) MarshalBSON() ([]byte, error) {
-	if err := encodeMissingImage(&c.DocumentRaw, c.Document); err != nil {
+	if err := encodeMissingImage(&c.DocumentRaw, c.Document, "document", &c.SortedImages); err != nil {
 		return nil, err
 	}
-	if err := encodeMissingImage(&c.BeforeRaw, c.Before); err != nil {
+	if err := encodeMissingImage(&c.BeforeRaw, c.Before, "before", &c.SortedImages); err != nil {
 		return nil, err
 	}
 	return bson.Marshal(changeBSON(c))
@@ -36,13 +41,13 @@ func (c *Change) UnmarshalBSON(data []byte) error {
 }
 
 func (c Conflict) MarshalBSON() ([]byte, error) {
-	if err := encodeMissingImage(&c.BaseRaw, c.Base); err != nil {
+	if err := encodeMissingImage(&c.BaseRaw, c.Base, "base", &c.SortedImages); err != nil {
 		return nil, err
 	}
-	if err := encodeMissingImage(&c.OursRaw, c.Ours); err != nil {
+	if err := encodeMissingImage(&c.OursRaw, c.Ours, "ours", &c.SortedImages); err != nil {
 		return nil, err
 	}
-	if err := encodeMissingImage(&c.TheirsRaw, c.Theirs); err != nil {
+	if err := encodeMissingImage(&c.TheirsRaw, c.Theirs, "theirs", &c.SortedImages); err != nil {
 		return nil, err
 	}
 	return bson.Marshal(conflictBSON(c))
@@ -61,11 +66,16 @@ func (c *Conflict) UnmarshalBSON(data []byte) error {
 	return decodeImage(c.TheirsRaw, &c.Theirs)
 }
 
-func encodeMissingImage(raw *bson.Raw, doc bson.M) error {
+func encodeMissingImage(raw *bson.Raw, doc bson.M, name string, sorted *[]string) error {
 	if *raw == nil && doc != nil {
 		image, err := wal.MarshalDocument(doc)
+		if err != nil {
+			return err
+		}
 		*raw = image
-		return err
+		if !slices.Contains(*sorted, name) {
+			*sorted = append(slices.Clone(*sorted), name)
+		}
 	}
 	return nil
 }
@@ -138,6 +148,7 @@ func (s *Service) preparePlanImages(plan *Plan) error {
 		return err
 	}
 	plan.FormatVersion = orderedPlanVersion
+	plan.ExactBytesVersion = exactBytesVersion
 	return nil
 }
 
@@ -168,7 +179,11 @@ func (image imageRequest) store(entry *wal.Entry, idFirst bool) error {
 	// The typed key preserves the order of a compound ID in the map view.
 	image.doc["_id"] = id
 	var raw bson.Raw
-	if verifiedReplacement(entry) && entry.Operation == wal.OpPut {
+	// Save verified duplicates in ordered plans so the full document can be displayed.
+	// Ordinary apply of older plans retains its historical single-value fallback.
+	if entry != nil && entry.Operation == wal.OpPut && len(entry.PostImage) > 0 &&
+		entry.Metadata["capture_images"] != "attached_unverified" &&
+		(image.sorted != nil || !ingest.HasDuplicateFields(entry.PostImage)) {
 		var doc bson.M
 		if err := bson.Unmarshal(entry.PostImage, &doc); err != nil {
 			return err
