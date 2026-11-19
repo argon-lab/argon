@@ -220,17 +220,19 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"cli/cmd/doctor.go:probeCapture WithTransaction",
 		// Argon metadata indexes and checkout of a branch's own physical database.
 		"internal/branch/wal/service.go:NewBranchService CreateMany",
-		"internal/checkout/service.go:Checkout DeleteOne",
-		"internal/checkout/service.go:Checkout ReadCaptureBoundary",
-		"internal/checkout/service.go:Checkout UpdateOne",
-		"internal/checkout/service.go:Checkout loadCollection",
 		"internal/checkout/service.go:EnablePrePostImages RunCommand",
 		"internal/checkout/service.go:EnablePrePostImages RunCommand",
 		"internal/checkout/service.go:ReadCaptureBoundary RunCommand",
 		"internal/checkout/service.go:dropPhysical Drop",
+		"internal/checkout/service.go:fill DeleteOne",
+		"internal/checkout/service.go:fill ReadCaptureBoundary",
+		"internal/checkout/service.go:fill UpdateOne",
+		"internal/checkout/service.go:fill loadCollection",
 		"internal/checkout/service.go:loadCollection EnablePrePostImages",
 		"internal/checkout/service.go:loadCollection InsertMany",
 		"internal/checkout/service.go:loadCollection InsertMany",
+		// Clears the stream position of a checkout that failed.
+		"internal/checkout/service.go:removeUnfinished DeleteOne",
 		// Reads the source and enables its images when requested.
 		"internal/importer/online.go:DryRunOnline prepareOnline",
 		"internal/importer/online.go:appendCopyBatch WithTransaction",
