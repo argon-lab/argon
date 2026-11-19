@@ -273,7 +273,21 @@ func TestCLIOnlineImportFollowAndWriteBack(t *testing.T) {
 	if _, _, err := run("source", "detach", "-p", project); err == nil {
 		t.Fatal("detach must require --yes")
 	}
-	call("source", "detach", "-p", project, "--yes")
+	if _, stderr, err := run("source", "detach", "-p", project, "--yes"); err == nil || !strings.Contains(stderr, planID) {
+		t.Fatalf("detach should name the recent claim: %v %s", err, stderr)
+	}
+	plans := client.Database(metadataDatabase()).Collection("wal_merge_plans")
+	_, err = plans.UpdateByID(ctx, planObjectID, mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		"write_back.started_at": bson.M{"$subtract": bson.A{"$$NOW", (6 * time.Minute).Milliseconds()}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detached := call("source", "detach", "-p", project, "--yes")
+	ids, ok := detached["unsettled_plans"].([]any)
+	if !ok || len(ids) != 1 || ids[0] != planID {
+		t.Fatalf("detach did not report the unsettled claim: %v", detached)
+	}
 	if _, stderr, err := run("source", "status", "-p", project); err == nil || !strings.Contains(stderr, "does not follow") {
 		t.Fatalf("a detached project still reports a source: %v %s", err, stderr)
 	}

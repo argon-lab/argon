@@ -179,8 +179,11 @@ If a replacement stopped before verifying a checkpoint, resync checks whether
 MongoDB can still open the stream from the saved position. If it can, run
 `source follow` to catch up. `--force` starts the full comparison immediately.
 
-`source detach` ends the tie for good
-and turns `main` back into an ordinary branch. See
+`source detach` ends following and turns `main` back into an ordinary branch.
+A write-back claim less than five minutes old blocks detach. The error names
+the plans to wait for. After that window, detach reports unsettled plan IDs
+in the table output or in JSON with `unsettled_plans` and `warning`. Inspect
+the source for each ID. Those claims stay `writing_back`. See
 [following a source](OPERATIONS.md#following-a-source-database) for what is
 guaranteed, what it costs the source and what stops it.
 
@@ -230,9 +233,26 @@ In `merge preview --output json` and `merge list --output json`, document IDs,
 keys and document images use canonical MongoDB Extended JSON v2. For example,
 a BSON int64 count appears as `"count":{"$numberLong":"1"}`. Plan IDs, branch
 names, counts of changes, timestamps and statuses keep their ordinary JSON
-types. JSON listing identifies individual unreadable plans alongside readable
-ones. Preview reports the encoded size if a plan and its outcome fields cannot
-fit in the 16 MiB MongoDB document limit.
+types. A BSON int32 and a literal embedded document can print identically.
+For example, both a numeric `quantity` and a literal document `annotation`
+can appear as `{"$numberInt":"1"}`. The change's
+`"literal_dollar_paths":["document.annotation"]` identifies the literal
+document. Each change or conflict lists every image document containing a
+`$`-prefixed field. Paths start with `document`, `before`, `base`, `ours` or
+`theirs` and use dotted array indices such as `document.items.0`. Literal
+dots and backslashes in field names are escaped with a backslash. Code scopes
+use `.$scope`. Empty lists are omitted. Table preview reports the path count.
+
+Format 3 stores images in BSON field order. JSON preview and list show that
+order, including nested documents, and apply uses the saved bytes. Each
+`sorted_images` entry names an image for which preview could only establish
+the values. Ordinary apply uses the sorted bytes. Write-back refuses a sorted
+replacement before claiming the plan. Older binaries can read these fields but apply their own
+ordering and history rules. Use the current binary to apply a format-3 plan
+with its saved order. JSON listing identifies unreadable plans by ID.
+Preview reports the encoded size if the plan and its outcome fields exceed
+MongoDB's 16 MiB document limit.
+
 When the parent follows an external database, a plan is applied with
 `--write-back`. Write-back is experimental, off by default, and has known
 open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See

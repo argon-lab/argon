@@ -1,0 +1,59 @@
+{
+  "_id": {
+    "$oid": "6afe3b4ae4547538c0294f28"
+  },
+  "format_version": {
+    "$numberInt": "2"
+  },
+  "source_version": {
+    "$numberLong": "2"
+  },
+  "project_id": "6afe26a8b1bfdc5d39b8a48d",
+  "source_branch_id": "6afe26a8b1bfdc5d39b8a491",
+  "source_branch": "feature",
+  "target_branch_id": "6afe26a8b1bfdc5d39b8a48f",
+  "target_branch": "main",
+  "source_head": {
+    "$numberLong": "4"
+  },
+  "target_head": {
+    "$numberLong": "2"
+  },
+  "base_lsn": {
+    "$numberLong": "2"
+  },
+  "changes": [
+    {
+      "collection": "catalog",
+      "document_id": "parcel",
+      "document": {
+        "_id": "parcel",
+        "nested": {
+          "bay": {
+            "$numberInt": "12"
+          },
+          "shelf": {
+            "$numberLong": "17"
+          },
+          "boxes": [
+            {
+              "color": "green",
+              "units": {
+                "$numberLong": "2"
+              }
+            }
+          ],
+          "zone": "east"
+        }
+      },
+      "document_key": "parcel"
+    }
+  ],
+  "conflicts": null,
+  "status": "pending",
+  "created_at": {
+    "$date": {
+      "$numberLong": "1795046218612"
+    }
+  }
+}

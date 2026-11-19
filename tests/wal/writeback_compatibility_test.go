@@ -72,15 +72,7 @@ func TestWriteBack_PlansFromV270(t *testing.T) {
 
 	// The four pending plans were saved by the v2.7.0 CLI. Its WriterFor
 	// supplied the editable branches. Restore the compressed WAL as stored.
-	var state map[string][]bson.Raw
-	require.NoError(t, bson.Unmarshal(v270Fixture(t, "state"), &state))
-	for name, rows := range state {
-		require.NotEmpty(t, rows)
-		for _, row := range rows {
-			_, err := db.Collection(name).InsertOne(t.Context(), row)
-			require.NoError(t, err)
-		}
-	}
+	restoreV270History(t, f)
 	for _, kind := range []string{"conflict", "compound", "nested", "followed"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := t.Context()
@@ -150,4 +142,53 @@ func fixtureEntryImage(t *testing.T, f *followFixture, id string) bson.Raw {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	return entries[0].PostImage
+}
+
+func restoreV270History(t *testing.T, f *followFixture) {
+	t.Helper()
+	db := f.services.Client.Database(f.metadataName)
+	var state map[string][]bson.Raw
+	require.NoError(t, bson.Unmarshal(v270Fixture(t, "state"), &state))
+	for name, rows := range state {
+		require.NotEmpty(t, rows)
+		for _, row := range rows {
+			_, err := db.Collection(name).InsertOne(t.Context(), row)
+			require.NoError(t, err)
+		}
+	}
+}
+
+func TestWriteBack_PlanFrom42efadc(t *testing.T) {
+	// The format-2 writer at 42efadc saved this plan from the nested
+	// fixture's WAL. Its maps did not guarantee a BSON field order.
+	ctx := t.Context()
+	f := newFollowFixture(t, metadataDeploymentURI)
+	restoreV270History(t, f)
+	data, err := os.ReadFile(filepath.Join("testdata", "42efadc", "nested.json"))
+	require.NoError(t, err)
+	var raw bson.Raw
+	require.NoError(t, bson.UnmarshalExtJSON(data, true, &raw))
+	id := raw.Lookup("_id").ObjectID()
+	db := f.services.Client.Database(f.metadataName)
+	_, err = db.Collection("wal_merge_plans").InsertOne(ctx, raw)
+	require.NoError(t, err)
+	p, err := f.services.Merge.GetPlan(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, 2, p.FormatVersion)
+	out, err := p.CLIJSON()
+	require.NoError(t, err)
+	var listed struct {
+		Changes []struct{ Document json.RawMessage }
+	}
+	require.NoError(t, json.Unmarshal(out, &listed))
+	require.Len(t, listed.Changes, 1)
+	listedFields, err := imageFromJSON(t, listed.Changes[0].Document).Lookup("nested").Document().Elements()
+	require.NoError(t, err)
+	require.Equal(t, "bay", listedFields[0].Key())
+	_, err = f.services.Merge.Apply(ctx, id, "")
+	require.NoError(t, err)
+	entries, err := f.services.WAL.GetEntries(bson.M{"txn_id": "merge:" + id.Hex(), "operation": wal.OpPut})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, fixtureEntryImage(t, f, p.SourceBranchID), entries[0].PostImage)
 }

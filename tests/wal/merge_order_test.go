@@ -1,6 +1,7 @@
 package wal_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/argon-lab/argon/v2/internal/merge"
@@ -69,6 +70,16 @@ func savedCompoundConflictOnLiveTarget(t *testing.T) {
 	plan, err := preview.Preview(ctx, child.ID)
 	require.NoError(t, err)
 	require.Len(t, plan.Conflicts, 1)
+	data, err := plan.CLIJSON()
+	require.NoError(t, err)
+	var out struct {
+		Conflicts []struct{ Theirs json.RawMessage }
+	}
+	require.NoError(t, json.Unmarshal(data, &out))
+	require.Len(t, out.Conflicts, 1)
+	want := imageFromJSON(t, out.Conflicts[0].Theirs)
+	_, err = f.wal.DeleteDataEntriesUpTo(child.ID, "catalog", plan.SourceHead)
+	require.NoError(t, err)
 	fresh := merge.NewService(f.metaDB, f.wal, f.branches, f.mat, f.client)
 	result, err := fresh.Apply(ctx, plan.ID, merge.StrategyTheirs)
 	require.NoError(t, err)
@@ -76,6 +87,7 @@ func savedCompoundConflictOnLiveTarget(t *testing.T) {
 	checkCompoundReplacement(t, catalog, id)
 	doc, err := catalog.FindOne(ctx, bson.M{"_id": id}).Raw()
 	require.NoError(t, err)
+	require.Equal(t, want, doc)
 	expected, err := bson.Marshal(ordered)
 	require.NoError(t, err)
 	require.Equal(t, bson.Raw(expected), doc.Lookup("nested").Document())
@@ -170,7 +182,7 @@ func TestWriteBack_RequiresVerifiedSandboxImage(t *testing.T) {
 	f.importOnline(t, walcli.OnlineImport{})
 	main := f.main(t)
 	ctx := t.Context()
-	for _, mode := range []string{"attached_unverified", "duplicate", "reclaimed"} {
+	for _, mode := range []string{"attached_unverified", "duplicate", "reclaimed before preview", "reclaimed after preview"} {
 		t.Run(mode, func(t *testing.T) {
 			branch, err := f.services.Branches.CreateBranch(main.ProjectID, mode, main.ID)
 			require.NoError(t, err)
@@ -194,11 +206,25 @@ func TestWriteBack_RequiresVerifiedSandboxImage(t *testing.T) {
 			lsn, err := f.services.WAL.Append(entry)
 			require.NoError(t, err)
 			require.NoError(t, f.services.Branches.UpdateBranchHead(branch.ID, lsn))
-			plan := f.preview(t, branch.ID)
-			if mode == "reclaimed" {
-				require.NoError(t, f.services.WAL.RecordReclaimFloor(ctx, branch.ID, "catalog", lsn))
-				_, err = f.services.WAL.DeleteDataEntriesUpTo(branch.ID, "catalog", lsn)
+			if mode == "reclaimed before preview" {
+				_, err := f.services.Snapshots.CreateSnapshot(ctx, branch.ID, lsn)
 				require.NoError(t, err)
+				// The floor is published before deletion. The row still supplies
+				// values for the diff but cannot establish the original order.
+				require.NoError(t, f.services.WAL.RecordReclaimFloor(ctx, branch.ID, "catalog", lsn))
+			}
+			plan := f.preview(t, branch.ID)
+			if mode == "reclaimed after preview" {
+				require.NoError(t, f.services.WAL.RecordReclaimFloor(ctx, branch.ID, "catalog", lsn))
+				removed, err := f.services.WAL.DeleteDataEntriesUpTo(branch.ID, "catalog", lsn)
+				require.NoError(t, err)
+				require.EqualValues(t, 1, removed)
+				_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+				require.NoError(t, err)
+				got, err := f.source.Collection("catalog").FindOne(ctx, bson.M{"_id": "new-item"}).Raw()
+				require.NoError(t, err)
+				require.Equal(t, bson.Raw(image), got)
+				return
 			}
 			_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
 			require.ErrorContains(t, err, "catalog/new-item")

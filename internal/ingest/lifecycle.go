@@ -473,10 +473,20 @@ func (s *Service) Stop(ctx context.Context, branchID string) error {
 // transaction stays behind the resume boundary. Use for command exit or explicit
 // discard; use Stop before releasing a database whose history must be drained.
 func (s *Service) Cancel(ctx context.Context, branchID string) error {
+	return s.cancelRun(ctx, branchID, false)
+}
+
+// CancelSource waits for a local source watcher after detach. A checkout can
+// already have started a new watcher for the same branch.
+func (s *Service) CancelSource(ctx context.Context, branchID string) error {
+	return s.cancelRun(ctx, branchID, true)
+}
+
+func (s *Service) cancelRun(ctx context.Context, branchID string, sourceOnly bool) error {
 	s.mu.Lock()
 	run := s.runs[branchID]
 	s.mu.Unlock()
-	if run == nil {
+	if run == nil || (sourceOnly && run.lease == nil) {
 		return nil
 	}
 	run.cancel()

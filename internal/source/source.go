@@ -119,9 +119,23 @@ func (r *Registry) Get(ctx context.Context, branchID string) (*Binding, error) {
 	return &binding, nil
 }
 
+// FenceWriteBackClaim updates the binding in the metadata claim transaction.
+// A real modification conflicts with a concurrent detach even on a retried plan.
+func FenceWriteBackClaim(ctx context.Context, metadata *mongo.Database, branchID, database string) error {
+	result, err := metadata.Collection(collectionName).UpdateOne(ctx, bson.M{"_id": branchID, "database": database},
+		bson.M{"$inc": bson.M{"write_back_claims": int64(1)}})
+	if err == nil && result.MatchedCount != 1 {
+		return errors.New("following was detached")
+	}
+	return err
+}
+
 // Unbind removes a branch's binding.
 func (r *Registry) Unbind(ctx context.Context, branchID string) error {
-	_, err := r.bindings.DeleteOne(ctx, bson.M{"_id": branchID})
+	result, err := r.bindings.DeleteOne(ctx, bson.M{"_id": branchID})
+	if err == nil && result.DeletedCount != 1 {
+		return errors.New("following was detached")
+	}
 	return err
 }
 

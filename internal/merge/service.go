@@ -66,20 +66,27 @@ type Change struct {
 	DocumentID string `bson:"document_id" json:"document_id"`
 	// Delete marks a removal; otherwise Document is the adopted state.
 	Delete   bool        `bson:"delete,omitempty" json:"delete,omitempty"`
-	Document bson.M      `bson:"document,omitempty" json:"document,omitempty"`
+	Document bson.M      `bson:"-" json:"document,omitempty"`
 	ID       interface{} `bson:"document_key,omitempty" json:"document_key,omitempty"`
-	Before   bson.M      `bson:"before,omitempty" json:"before,omitempty"`
+	Before   bson.M      `bson:"-" json:"before,omitempty"`
 
-	replacement bson.Raw // Prepared for ordinary apply after loading the plan.
+	DocumentRaw  bson.Raw `bson:"document,omitempty" json:"-"`
+	BeforeRaw    bson.Raw `bson:"before,omitempty" json:"-"`
+	SortedImages []string `bson:"sorted_images,omitempty" json:"sorted_images,omitempty"`
 }
 
 // Conflict is a document both sides changed differently since the fork.
 type Conflict struct {
 	Collection string `bson:"collection" json:"collection"`
 	DocumentID string `bson:"document_id" json:"document_id"`
-	Base       bson.M `bson:"base,omitempty" json:"base,omitempty"`
-	Ours       bson.M `bson:"ours,omitempty" json:"ours,omitempty"`
-	Theirs     bson.M `bson:"theirs,omitempty" json:"theirs,omitempty"`
+	Base       bson.M `bson:"-" json:"base,omitempty"`
+	Ours       bson.M `bson:"-" json:"ours,omitempty"`
+	Theirs     bson.M `bson:"-" json:"theirs,omitempty"`
+
+	BaseRaw      bson.Raw `bson:"base,omitempty" json:"-"`
+	OursRaw      bson.Raw `bson:"ours,omitempty" json:"-"`
+	TheirsRaw    bson.Raw `bson:"theirs,omitempty" json:"-"`
+	SortedImages []string `bson:"sorted_images,omitempty" json:"sorted_images,omitempty"`
 }
 
 // Plan is a persisted, reviewable merge proposal.
@@ -423,7 +430,7 @@ func (s *Service) computeChanged(source, target *wal.Branch) (*Plan, error) {
 
 // Preview computes a plan and persists it pending review — the data PR.
 func (s *Service) Preview(ctx context.Context, sourceBranchID string) (*Plan, error) {
-	plan, err := s.Compute(sourceBranchID)
+	plan, err := s.PreparePlan(sourceBranchID)
 	if err != nil {
 		return nil, err
 	}
@@ -436,6 +443,11 @@ func (s *Service) Preview(ctx context.Context, sourceBranchID string) (*Plan, er
 // SavePlan persists a computed plan. Callers can assign its ID to prepare a
 // printable response before persistence.
 func (s *Service) SavePlan(ctx context.Context, plan *Plan) error {
+	if plan.FormatVersion == 2 {
+		if err := s.preparePlanImages(plan); err != nil {
+			return err
+		}
+	}
 	if plan.ID.IsZero() {
 		plan.ID = primitive.NewObjectID()
 	}
@@ -604,8 +616,21 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 			c.DocumentID = key
 		}
 	}
-	if err := s.prepareApplyImages(source, changes); err != nil {
-		return nil, err
+	if plan.FormatVersion < orderedPlanVersion {
+		if err := s.prepareApplyImages(source, changes); err != nil {
+			return nil, err
+		}
+	} else {
+		for i := range changes {
+			c := &changes[i]
+			c.ID, err = documentIDValue(*c)
+			if err != nil {
+				return nil, err
+			}
+			if !c.Delete && c.DocumentRaw == nil {
+				return nil, fmt.Errorf("merge plan has no replacement for %s/%s; run preview again", c.Collection, c.DocumentID)
+			}
+		}
 	}
 
 	_, err = s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
@@ -663,96 +688,17 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 	return &ApplyResult{Applied: len(changes), ConflictsResolved: resolved}, nil
 }
 
-// prepareApplyImages recovers the source's field order in batches. When
-// history no longer supplies a verified image, the saved plan still suffices
-// for an ordinary merge. Its maps get a deterministic encoding.
-func (s *Service) prepareApplyImages(source *wal.Branch, changes []Change) error {
-	keys := make(map[string][]string)
-	for i := range changes {
-		c := &changes[i]
-		id, err := documentIDValue(*c)
-		if err != nil {
-			return err
-		}
-		c.ID = id
-		if c.Before != nil {
-			c.Before["_id"] = id
-		}
-		if !c.Delete {
-			if c.Document == nil {
-				return fmt.Errorf("merge plan has no replacement for %s/%s; run preview again", c.Collection, c.DocumentID)
-			}
-			c.Document["_id"] = id
-			keys[c.Collection] = append(keys[c.Collection], c.DocumentID)
-		}
-	}
-	replacements := make(map[string]map[string]*wal.Entry)
-	for collection, ids := range keys {
-		entries, err := s.wal.LatestDocumentEntries(source.ID, collection, ids, source.BaseLSN+1, source.HeadLSN,
-			func(lsn int64) bool { return !source.IsDiscardedForRead(lsn, source.HeadLSN) })
-		if errors.Is(err, wal.ErrLegacyDocumentKeys) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		floor, err := s.wal.ReclaimFloor(source.ID, collection)
-		if err != nil {
-			return err
-		}
-		for id, entry := range entries {
-			if entry.LSN <= floor || !verifiedReplacement(entry) {
-				delete(entries, id)
-			}
-		}
-		replacements[collection] = entries
-	}
-	for i := range changes {
-		c := &changes[i]
-		if c.Delete {
-			continue
-		}
-		if entry := replacements[c.Collection][c.DocumentID]; entry != nil {
-			var doc bson.M
-			if err := bson.Unmarshal(entry.PostImage, &doc); err != nil {
-				return err
-			}
-			same, err := mongoexpr.CanonicalEqual(c.Document, doc)
-			if err != nil {
-				return err
-			}
-			id, err := wal.DocumentIDFromImage(entry.PostImage)
-			if same && err == nil && wal.DocumentIDString(id) == c.DocumentID {
-				c.replacement = entry.PostImage
-				continue
-			}
-		}
-		raw, err := wal.MarshalDocument(c.Document)
-		if err != nil {
-			return err
-		}
-		c.replacement = raw
-	}
-	return nil
-}
-
 func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, changes []Change, txnID string) error {
 	entries := make([]*wal.Entry, 0, len(changes))
 	for _, c := range changes {
 		e := &wal.Entry{ProjectID: target.ProjectID, BranchID: target.ID,
 			Collection: c.Collection, DocumentID: c.DocumentID, Actor: "merge:" + source.Name,
 			Operation: wal.OpPut, TxnID: txnID}
-		if c.Before != nil {
-			raw, err := wal.MarshalDocument(c.Before)
-			if err != nil {
-				return err
-			}
-			e.PreImage = raw
-		}
+		e.PreImage = c.BeforeRaw
 		if c.Delete {
 			e.Operation = wal.OpDelete
 		} else {
-			e.PostImage = c.replacement
+			e.PostImage = c.DocumentRaw
 		}
 		entries = append(entries, e)
 	}
@@ -787,7 +733,7 @@ func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes
 			if _, err := coll.DeleteOne(ctx, bson.M{"_id": c.ID}); err != nil {
 				return err
 			}
-		} else if _, err := coll.ReplaceOne(ctx, bson.M{"_id": c.ID}, c.replacement, options.Replace().SetUpsert(true)); err != nil {
+		} else if _, err := coll.ReplaceOne(ctx, bson.M{"_id": c.ID}, c.DocumentRaw, options.Replace().SetUpsert(true)); err != nil {
 			return err
 		}
 	}
