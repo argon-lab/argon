@@ -294,7 +294,7 @@ func (image imageRequest) store(entry *wal.Entry, idFirst, preserveDuplicates bo
 	// Followed targets retain all fields so write-back can identify duplicates.
 	// Ordinary merges publish the single value selected by the materializer.
 	if entry != nil && entry.Operation == wal.OpPut && len(entry.PostImage) > 0 &&
-		entry.Metadata["capture_images"] != "attached_unverified" {
+		!entry.UnverifiedPostImage() {
 		var doc bson.M
 		if err := wal.UnmarshalDocument(entry.PostImage, &doc); err != nil {
 			return err

@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"strconv"
@@ -15,25 +16,108 @@ func HasDuplicateImageFields(document bson.Raw, includeArrayKeys bool) bool {
 	return scan.hasDuplicateFields(document)
 }
 
+// ImageRole identifies the stored bytes being considered for editing.
+type ImageRole uint8
+
+const (
+	PostImage ImageRole = iota
+	PreImage
+	SnapshotImage
+)
+
+// DecodedImage carries the read's value and the BSON that supplied it.
+// The decoder borrows the input bytes read-only. The caller keeps them
+// unchanged until the read finishes. Use a DecodedImage through its pointer.
+type DecodedImage struct {
+	raw   bson.Raw
+	value bson.M
+	key   string
+	idErr error
+}
+
+// DecodeImage uses the first top-level _id, including its compound BSON order.
+// Key is available even on a value decoding error, so a reader can report an
+// ambiguous legacy envelope before a malformed post-image.
+func DecodeImage(raw bson.Raw) (*DecodedImage, error) {
+	id, idErr := DocumentIDFromImage(raw)
+	d := &DecodedImage{raw: raw, idErr: idErr}
+	if idErr == nil {
+		d.key = DocumentIDString(id)
+	}
+	if err := UnmarshalDocument(raw, &d.value); err != nil {
+		d.raw = nil
+		return d, err
+	}
+	if idErr == nil {
+		d.value["_id"] = id
+	}
+	return d, nil
+}
+
+// DecodedValue wraps a value that has no original BSON.
+func DecodedValue(value bson.M) *DecodedImage {
+	return &DecodedImage{value: value}
+}
+
+func (d *DecodedImage) Key() (string, error) { return d.key, d.idErr }
+
+// TakeValue releases the mutable map. Subsequent edits must compare any proposed
+// source independently, since this map can now have different contents.
+func (d *DecodedImage) TakeValue() bson.M {
+	d.raw = nil
+	return d.value
+}
+
+// KeepSource lets a point lookup retain its frame after the chunk visitor returns.
+func (d *DecodedImage) KeepSource() { d.raw = bytes.Clone(d.raw) }
+
+// TrustedImage checks this stored image and its role. An unchanged image
+// returns the same decoder result. A normalized image gets its own result.
+// Release the bytes once so a later mutation cannot reuse this proof.
+func (d *DecodedImage) TrustedImage(role ImageRole, entry *Entry) (bson.Raw, *DecodedImage) {
+	if d == nil || d.raw == nil || d.idErr != nil || (role == PostImage && (entry == nil || entry.UnverifiedPostImage())) {
+		return nil, nil
+	}
+	image, rebuilt, err := normalizeEditImage(d.raw, true)
+	if err != nil {
+		return nil, nil
+	}
+	d.raw = nil
+	if !rebuilt {
+		return image, d
+	}
+	normalized, err := DecodeImage(image)
+	if err != nil || normalized.idErr != nil {
+		return nil, nil
+	}
+	normalized.raw = nil
+	return image, normalized
+}
+
 // NormalizeEditImage keeps the values used by decoded replay in their original
 // field positions. A JavaScript code scope is a scalar and keeps its bytes.
 // Replay uses the first _id verbatim, including the order of a compound key.
 func NormalizeEditImage(raw bson.Raw) (bson.Raw, bool, error) {
+	return normalizeEditImage(raw, false)
+}
+
+func normalizeEditImage(raw bson.Raw, decoded bool) (bson.Raw, bool, error) {
 	if raw == nil {
-		return raw, false, nil
+		return nil, false, nil
 	}
-	scan := imageFieldScan{arrayKeys: true, edit: true}
-	repeated := scan.hasDuplicateFields(raw)
-	if scan.needsDecode || repeated {
-		// The duplicate scan stops at the first repeated field. Decode these
-		// images in full so invalid values, even overwritten ones, produce
-		// the same error as replay. Clean, ordinary documents stay raw.
+	// A BSON decoder can stop after one document and ignore trailing bytes.
+	if len(raw) < 5 || uint64(binary.LittleEndian.Uint32(raw)) != uint64(len(raw)) || raw[len(raw)-1] != 0 {
+		return nil, false, fmt.Errorf("invalid edit image length or terminator")
+	}
+	if !decoded {
+		// Reject invalid values even when a subsequent field would overwrite them.
 		var doc bson.M
 		if err := UnmarshalDocument(raw, &doc); err != nil {
 			return nil, false, err
 		}
 	}
-	if !repeated {
+	scan := imageFieldScan{arrayKeys: true, edit: true}
+	if !scan.hasDuplicateFields(raw) {
 		return raw, false, nil
 	}
 	return collapseFields(raw, false, true, false)
@@ -99,17 +183,12 @@ func collapseFields(raw bson.Raw, array, root, rejectDuplicateID bool) (bson.Raw
 // Capture and write-back inspect code scopes too. Edit reads leave their
 // fields alone, but check that the full image can be decoded.
 type imageFieldScan struct {
-	arrayKeys, edit, needsDecode bool
+	arrayKeys, edit bool
 }
 
 func (s *imageFieldScan) hasDuplicateFields(document bson.Raw) bool {
-	if s.edit && (len(document) < 5 || uint64(binary.LittleEndian.Uint32(document)) != uint64(len(document)) || document[len(document)-1] != 0) {
-		s.needsDecode = true
-		return false
-	}
 	elements, err := document.Elements()
 	if err != nil {
-		s.needsDecode = true
 		return false
 	}
 	var seen map[string]struct{}
@@ -162,25 +241,6 @@ func (s *imageFieldScan) valueHasDuplicateFields(value bson.RawValue) bool {
 			_, scope, ok := value.CodeWithScopeOK()
 			return ok && s.hasDuplicateFields(scope)
 		}
-	}
-	if s.edit && !s.needsDecode {
-		s.needsDecode = needsValueDecode(value)
-	}
-	return false
-}
-
-// Raw.Elements checks type widths. A few scalar decoders also check their
-// contents, such as the second length in an old binary or the scope of code.
-func needsValueDecode(value bson.RawValue) bool {
-	switch value.Type {
-	case bson.TypeBinary:
-		return len(value.Value) < 5 || value.Value[4] == bson.TypeBinaryBinaryOld
-	case bson.TypeBoolean:
-		return len(value.Value) != 1 || value.Value[0] > 1
-	case bson.TypeString, bson.TypeSymbol, bson.TypeJavaScript:
-		return len(value.Value) <= 4 || value.Value[len(value.Value)-1] != 0
-	case bson.TypeCodeWithScope, bson.TypeDBPointer:
-		return true
 	}
 	return false
 }

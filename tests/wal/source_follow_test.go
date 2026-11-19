@@ -14,6 +14,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"github.com/argon-lab/argon/v2/pkg/walcli"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -718,13 +719,23 @@ func TestFollow_UpdateOlderThanSnapshotHistory(t *testing.T) {
 	t.Cleanup(func() { setWindow(300) })
 
 	f.seedSmall(t)
-	result := f.importOnline(t, walcli.OnlineImport{})
 	catalog := f.source.Collection("catalog")
+	const id = "q"
+	_, err := catalog.InsertOne(ctx, bson.D{
+		{Key: "_id", Value: id}, {Key: "z", Value: int32(1)},
+		{Key: "b", Value: bson.D{{Key: "y", Value: int32(2)}, {Key: "a", Value: int32(3)}}},
+		{Key: "items", Value: bson.A{bson.D{{Key: "v", Value: "L"}, {Key: "c", Value: "R"}}}},
+		{Key: "a", Value: int32(0)},
+	})
+	require.NoError(t, err)
+	result := f.importOnline(t, walcli.OnlineImport{})
 	for round := 1; round <= 3; round++ {
 		_, err := catalog.UpdateOne(ctx, bson.M{"_id": "item-05"}, bson.M{"$set": bson.M{"stock": int32(round)}})
 		require.NoError(t, err)
 	}
-	_, err := catalog.DeleteOne(ctx, bson.M{"_id": "item-06"})
+	_, err = catalog.DeleteOne(ctx, bson.M{"_id": "item-06"})
+	require.NoError(t, err)
+	_, err = catalog.UpdateByID(ctx, id, bson.M{"$set": bson.M{"z": int32(2)}})
 	require.NoError(t, err)
 	// Let those updates fall out of the snapshot history. MongoDB advances
 	// its oldest timestamp with its checkpoints, so keep it writing. The
@@ -764,5 +775,31 @@ func TestFollow_UpdateOlderThanSnapshotHistory(t *testing.T) {
 	entries := f.followedEntries(t, result.ConsistentLSN)
 	require.NotEmpty(t, entries)
 	require.Equal(t, "current", entries[0].Metadata["capture_images"], "the entry says its document is a later state")
-	require.LessOrEqual(t, entries[len(entries)-1].LSN, catchUp.ToLSN)
+	last := entries[len(entries)-1]
+	require.Equal(t, catchUp.ToLSN, last.LSN)
+	require.Equal(t, id, last.DocumentID)
+	require.Equal(t, "current", last.Metadata["capture_images"])
+	original := readSourceCase(t, catalog, id)
+	require.Equal(t, original, last.PostImage)
+
+	t.Run("checkout and approved write-back preserve source order", func(t *testing.T) {
+		sandbox, db := f.agentSandbox(t, "catch-up-order")
+		checkedOut := db.Collection("catalog")
+		assert.Equal(t, original, readSourceCase(t, checkedOut, id), "checkout of the last inexact row")
+		direct := f.services.Client.Database(f.metadataName).Collection("direct_updates")
+		_, err := direct.InsertOne(ctx, original)
+		require.NoError(t, err)
+		for _, coll := range []*mongo.Collection{direct, checkedOut} {
+			update, err := coll.UpdateByID(ctx, id, bson.M{"$set": bson.M{"z": int32(9)}})
+			require.NoError(t, err)
+			require.EqualValues(t, 1, update.ModifiedCount)
+		}
+		plan := f.preview(t, sandbox.BranchID)
+		require.Empty(t, plan.Conflicts)
+		require.Len(t, plan.Changes, 1)
+		applied, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
+		require.NoError(t, err)
+		require.Equal(t, 1, applied.Applied)
+		require.Equal(t, readSourceCase(t, direct, id), readSourceCase(t, catalog, id))
+	})
 }

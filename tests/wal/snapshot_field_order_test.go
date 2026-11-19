@@ -67,7 +67,7 @@ func TestWriteBack_SnapshotFieldOrder(t *testing.T) {
 				branch, err = h.branches.GetBranchByID(branch.ID)
 				require.NoError(t, err)
 			}
-			expected := want
+			expected := version
 			if mode == "two snapshots after reclaim" {
 				_, err := h.snapshots.CreateSnapshot(ctx, branch.ID, at)
 				require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestWriteBack_SnapshotFieldOrder(t *testing.T) {
 				var sortedFields bson.D
 				require.NoError(t, wal.UnmarshalDocument(sorted, &sortedFields))
 				insertReleasedSnapshot(t, h.db, branch, collection, at, key, sortedFields)
-				if mode == "older snapshot after reclaim" || mode == "opaque legacy envelope" {
+				if mode == "older snapshot after reclaim" {
 					expected = sorted
 				}
 				if mode == "older and ordered snapshots at same LSN after reclaim" {

@@ -233,46 +233,19 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 // state. Recover its order only if the prior image accounts for every value
 // in that recorded pre-image. A native capture supplies its own pre-image.
 func (s *Service) restorationImage(branch *wal.Branch, entry *wal.Entry, c Compensation) (bson.Raw, error) {
-	if !entry.HasOrderedEditImage() {
-		return wal.MarshalDocument(c.Restore)
-	}
-	image, rebuilt, err := wal.NormalizeEditImage(entry.PreImage)
-	if err != nil || rebuilt {
+	image, err := materializer.EditImage(c.Restore, entry.PreImage, wal.PreImage, entry)
+	if err != nil || !bytes.Equal(image, entry.PreImage) || len(entry.Metadata) != 0 || entry.TxnID != "" {
 		return image, err
 	}
-	if len(entry.Metadata) != 0 || entry.TxnID != "" {
-		return entry.PreImage, nil
-	}
 	sorted, err := wal.MarshalDocument(c.Restore)
-	if err != nil {
-		return nil, err
-	}
-	if !bytes.Equal(entry.PreImage, sorted) {
-		return entry.PreImage, nil
+	if err != nil || !bytes.Equal(image, sorted) {
+		return image, err
 	}
 	prior, err := s.priorImage(branch, entry, c.DocumentID)
-	// The stored pre-image alone is sufficient when its preceding history
-	// is unavailable. Only substitute history that proves the same values.
-	if err != nil || prior == nil || bytes.Equal(prior, entry.PreImage) {
-		return entry.PreImage, nil
+	if err != nil || prior == nil {
+		return image, nil
 	}
-	id, err := wal.DocumentIDFromImage(prior)
-	if err != nil || wal.DocumentIDString(id) != c.DocumentID {
-		return entry.PreImage, nil
-	}
-	var doc bson.M
-	if err := wal.UnmarshalDocument(prior, &doc); err != nil {
-		return nil, err
-	}
-	doc["_id"] = id
-	sorted, err = wal.MarshalDocument(doc)
-	if err != nil {
-		return nil, err
-	}
-	if bytes.Equal(sorted, entry.PreImage) {
-		return prior, nil
-	}
-	return entry.PreImage, nil
+	return materializer.EditImage(c.Restore, prior, wal.PreImage, entry)
 }
 
 func (s *Service) priorImage(branch *wal.Branch, entry *wal.Entry, key string) (bson.Raw, error) {
@@ -315,18 +288,17 @@ func (s *Service) Apply(ctx context.Context, branch *wal.Branch, plan *Plan) (re
 	if branch.HeadLSN != plan.HeadLSN {
 		return 0, 0, fmt.Errorf("undo plan is stale; branch head changed")
 	}
-	// Plans constructed from decoded values have no stored field order.
+	// The decoded compensation is authoritative even for a plan reconstructed
+	// or edited by a caller. These candidates were vetted at capture or replay.
 	for i := range plan.Compensations {
 		c := &plan.Compensations[i]
-		if c.Restore != nil && c.restoreRaw == nil {
-			if c.restoreRaw, err = wal.MarshalDocument(c.Restore); err != nil {
-				return 0, 0, err
-			}
+		c.restoreRaw, err = materializer.EditImage(c.Restore, c.restoreRaw, wal.PreImage, nil)
+		if err != nil {
+			return 0, 0, err
 		}
-		if c.Before != nil && c.beforeRaw == nil {
-			if c.beforeRaw, err = wal.MarshalDocument(c.Before); err != nil {
-				return 0, 0, err
-			}
+		c.beforeRaw, err = materializer.EditImage(c.Before, c.beforeRaw, wal.PreImage, nil)
+		if err != nil {
+			return 0, 0, err
 		}
 	}
 	if branch.IsLive() {

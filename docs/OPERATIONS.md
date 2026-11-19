@@ -488,26 +488,22 @@ approved write-back will write.
 If a 2.8.0 sandbox already captured an edit in a different order,
 re-checkout reproduces that captured order.
 
-Checkout uses a verified, typed WAL post-image or a snapshot frame when it
-establishes the document's state at the requested position. If an older
-capture repeats a data field, checkout keeps its last value at the field's
-first position, including in documents inside arrays. As in decoded replay,
-the first top-level `_id` supplies the BSON identity. Compound IDs and
-JavaScript code scopes retain their original fields.
+Checkout and restore use the document that time travel reads at the requested
+position. A stored WAL image or snapshot frame can supply the order when its
+identity and decoded values match. A follower's `current` row can supply
+order even though it records the source document as it stood at catch-up
+time. A capture marked `attached_unverified` cannot supply post-image order.
+Its clean pre-image can still supply order for undo.
 
-An untyped WAL entry, an image without a usable `_id`, or a capture marked
-`attached_unverified` or `current` supplies decoded values with map fields
-sorted by name at each depth. The same fallback applies when a historical
-read succeeds but a later write to the key could have been reclaimed.
-A snapshot from before 2.1.6 bounds possible deletions on its own branch.
-An intact write at the exact fork position can still supply its field order.
+Without a usable image, or when the candidate differs in identity or value,
+map fields are sorted by name at each depth, with the top-level `_id` first.
+A repeated data field keeps its last value at its first position, including
+in documents inside arrays. The first top-level `_id` supplies identity.
+Compound IDs and JavaScript code scopes retain their original fields.
 
-New snapshots keep the BSON used for editing. Earlier snapshots sorted
-ordinary fields by name. Checkout recovers their order from a retained WAL image or an earlier
-ordered snapshot when the values match and the intervening history is intact. A
-candidate with repeated data fields leaves the older frame's order in place.
-MongoDB puts the top-level `_id` first. A subsequent exact capture can thus
-record and write back a document whose fields are in name order.
+New snapshots keep the BSON used for editing. Earlier snapshots sorted map
+fields by name. A clean retained WAL image or earlier ordered frame can
+restore their order when its decoded value matches the snapshot.
 
 - In the metadata snapshot that claims the plan, `main` has a verified exact
   checkpoint as of its reported
