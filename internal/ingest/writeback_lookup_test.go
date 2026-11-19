@@ -15,13 +15,13 @@ type claimLedger struct {
 	claim *WriteBack
 }
 
-func (l *claimLedger) Lookup(context.Context, string, primitive.Binary) (*WriteBack, error) {
+func (l *claimLedger) Lookup(context.Context, string, primitive.Binary, int64) (*WriteBack, error) {
 	return l.claim, nil
 }
 
 func TestFollowerSeesClaimAfterMiss(t *testing.T) {
 	ledger := &claimLedger{}
-	f := follower{branch: &wal.Branch{ID: "main"}, opts: FollowOptions{WriteBacks: ledger}, writeBacks: map[string]*WriteBack{}}
+	f := follower{branch: &wal.Branch{ID: "main"}, opts: FollowOptions{WriteBacks: ledger}}
 	id, err := bson.Marshal(bson.M{"id": primitive.Binary{Subtype: 4, Data: make([]byte, 16)}})
 	require.NoError(t, err)
 	event := changeEvent{LSID: id}

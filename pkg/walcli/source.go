@@ -562,8 +562,8 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 // writeBackLedger lets the follower attribute and settle write-backs.
 type writeBackLedger struct{ merge *merge.Service }
 
-func (l writeBackLedger) Lookup(ctx context.Context, branchID string, session primitive.Binary) (*ingest.WriteBack, error) {
-	plan, err := l.merge.LookupWriteBack(ctx, branchID, session)
+func (l writeBackLedger) Lookup(ctx context.Context, branchID string, session primitive.Binary, txnNumber int64) (*ingest.WriteBack, error) {
+	plan, err := l.merge.LookupWriteBack(ctx, branchID, session, txnNumber)
 	if err != nil || plan == nil {
 		return nil, err
 	}

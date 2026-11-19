@@ -49,6 +49,24 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Fixed
 
+- Reads that depend on a historical image-less delete under the shared
+  empty/four-zero subtype-2 key now fail with the branch, collection and
+  key. A forced source resync restores the collection at its consistent LSN.
+  Re-import the collection on an ordinary branch. Snapshots that may have
+  collapsed those IDs are skipped.
+- Write-back refuses a capped target or a byte-identical replacement before
+  claim. A replacement that modifies zero rows aborts the transaction. A
+  capped-collection snapshot error ends retries and reports the server error.
+- Following attributes and settles separate write-backs on one source client
+  by session ID and transaction number.
+- Stored BSON subtype-2 values with conflicting inner and outer lengths
+  now fail document decoding, ordinary merge and quiesced import. Version
+  2.7.0 could reject them or truncate the binary and interpret trailing
+  bytes as another field. Raw WAL reads, online import and capture preserve
+  the original bytes of non-key fields. Short historical lengthless values
+  remain readable. The wire proxy reports a malformed command when it
+  encounters conflicting full subtype-2 lengths.
+
 - Ordinary merges into WAL-backed and checked-out branches collapse repeated
   names in documents and embedded documents, including array elements. The
   last value occupies the data field's first position in the raw image.

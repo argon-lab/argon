@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // stubLookups resolve one live branch, "shop~main", without a database.
@@ -24,6 +25,22 @@ func (s *stubLookups) GetProjectIDByName(name string) (string, error) {
 		return "", errors.New("project not found")
 	}
 	return "project-1", nil
+}
+
+func TestRewriteRejectsOldBinaryLengthMismatch(t *testing.T) {
+	proxy, stub := newTestProxy()
+	frame := opMsgFrame(t, 0, bson.D{
+		{Key: "ping", Value: 1},
+		{Key: "comment", Value: primitive.Binary{Subtype: 2, Data: []byte{'a', 'b'}}},
+		{Key: "$db", Value: "shop~main"},
+	}, nil)
+	bson.Raw(frame[opMsgMinimum+1:]).Lookup("comment").Value[5]--
+	forward, reply, err := proxy.rewrite(frame)
+	require.ErrorIs(t, err, errMalformed)
+	require.ErrorIs(t, err, wal.ErrOldBinaryLength)
+	require.Nil(t, forward)
+	require.Nil(t, reply)
+	require.Zero(t, stub.lookups)
 }
 
 func (s *stubLookups) GetBranch(projectID, name string) (*wal.Branch, error) {

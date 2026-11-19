@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/materializer"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -24,6 +26,9 @@ type Service struct {
 	materializer     *materializer.Service
 	compressor       *wal.Compressor
 
+	oldKeyMu     sync.Mutex
+	oldKeyChecks *[256]oldKeyCheck
+
 	// Auto-snapshot state (see auto.go).
 	autoMu       sync.Mutex
 	autoCfg      *AutoConfig
@@ -33,6 +38,33 @@ type Service struct {
 	autoIdle     chan struct{}
 	autoContext  context.Context
 	autoCancel   context.CancelFunc
+}
+
+// A manifest and its covered WAL prefix are immutable. Remember a bounded
+// number of old manifests so repeated coverage checks do not reread chunks.
+// The low byte of the ObjectID counter distributes adjacent manifests.
+type oldKeyCheck struct {
+	id      primitive.ObjectID
+	trusted bool
+}
+
+func (s *Service) oldKeysTrusted(id primitive.ObjectID) (bool, bool) {
+	s.oldKeyMu.Lock()
+	defer s.oldKeyMu.Unlock()
+	if s.oldKeyChecks == nil {
+		return false, false
+	}
+	check := s.oldKeyChecks[id[len(id)-1]]
+	return check.trusted, !id.IsZero() && check.id == id
+}
+
+func (s *Service) rememberOldKeys(id primitive.ObjectID, trusted bool) {
+	s.oldKeyMu.Lock()
+	defer s.oldKeyMu.Unlock()
+	if s.oldKeyChecks == nil {
+		s.oldKeyChecks = new([256]oldKeyCheck)
+	}
+	s.oldKeyChecks[id[len(id)-1]] = oldKeyCheck{id: id, trusted: trusted}
 }
 
 // NewService creates a snapshot service with the default (MongoDB) chunk
@@ -63,6 +95,9 @@ func NewServiceWithStore(db *mongo.Database, branches *branchwal.BranchService, 
 	}
 
 	ctx := context.Background()
+	// Equality to null matches an absent field. Current and certified
+	// manifests have no entries in this index.
+	unchecked := bson.D{{Key: "exact_old_binary_keys", Value: nil}, {Key: "old_keys_trusted", Value: nil}}
 	_, err = s.manifests.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
 			Keys: bson.D{
@@ -74,13 +109,53 @@ func NewServiceWithStore(db *mongo.Database, branches *branchwal.BranchService, 
 		{
 			Keys: bson.M{"project_id": 1},
 		},
+		{
+			Keys:    bson.D{{Key: "old_keys_trusted", Value: 1}},
+			Options: options.Index().SetPartialFilterExpression(unchecked),
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create snapshot indexes: %w", err)
 	}
 
+	// Certification is optional. Limit startup work when a historical
+	// chunk store is offline or a large upgrade needs more than one pass.
+	certifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	s.certifyOldSnapshots(certifyCtx, unchecked)
+	cancel()
 	mat.SetSnapshotSource(s)
 	return s, nil
+}
+
+// certifyOldSnapshots inspects only the unclassified portion of the catalog.
+// Failures leave a manifest pending, so ordinary selection can still check
+// it on demand or a later startup can finish the upgrade.
+func (s *Service) certifyOldSnapshots(ctx context.Context, unchecked bson.D) {
+	cursor, err := s.manifests.Find(ctx, unchecked, options.Find().SetHint(bson.D{{Key: "old_keys_trusted", Value: 1}}))
+	if err != nil {
+		return
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+	for ctx.Err() == nil && cursor.Next(ctx) {
+		var snap Snapshot
+		if cursor.Decode(&snap) != nil {
+			continue
+		}
+		branch, err := s.branches.GetBranchByIDAny(snap.BranchID)
+		if err != nil {
+			continue
+		}
+		_, trusted, err := s.readCandidate(ctx, branch, &snap, false)
+		if err != nil {
+			continue
+		}
+		// Concurrent initializers can certify the same immutable manifest.
+		// Leave any result that another initializer has already persisted.
+		_, err = s.manifests.UpdateOne(ctx, bson.M{"_id": snap.ID, "old_keys_trusted": nil}, bson.M{"$set": bson.M{"old_keys_trusted": trusted}})
+		if err != nil {
+			return
+		}
+	}
 }
 
 // CreateSnapshot materializes every collection of the branch at the given
@@ -146,16 +221,17 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 	}
 
 	snap := &Snapshot{
-		ProjectID:       branch.ProjectID,
-		BranchID:        branch.ID,
-		Collection:      collection,
-		LSN:             lsn,
-		RangesApplied:   len(branch.DiscardedRanges),
-		VisibilityRules: CurrentVisibilityRules,
-		ChunkIDs:        chunkIDs,
-		DocCount:        docCount,
-		SizeBytes:       sizeBytes,
-		CreatedAt:       time.Now(),
+		ProjectID:          branch.ProjectID,
+		BranchID:           branch.ID,
+		Collection:         collection,
+		LSN:                lsn,
+		RangesApplied:      len(branch.DiscardedRanges),
+		VisibilityRules:    CurrentVisibilityRules,
+		ExactOldBinaryKeys: true,
+		ChunkIDs:           chunkIDs,
+		DocCount:           docCount,
+		SizeBytes:          sizeBytes,
+		CreatedAt:          time.Now(),
 	}
 
 	if _, err := s.manifests.InsertOne(ctx, snap); err != nil {
@@ -172,26 +248,21 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 // Usability honors discarded ranges with the same visibility rule replay
 // applies to individual entries; see usable.
 func (s *Service) FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (map[string]bson.M, int64, bool, error) {
-	ctx := context.Background()
-	snap, err := s.newestUsable(ctx, branch, collection, minLSN, maxLSN, readUpperBound)
-	if err != nil || snap == nil {
-		return nil, 0, false, err
-	}
-	state, err := s.load(ctx, snap)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	return state, snap.LSN, true, nil
+	return s.newestUsable(branch, collection, minLSN, maxLSN, readUpperBound, true, true)
 }
 
 // UsableLSN implements materializer.SnapshotSource: the LSN FindUsable
-// would start from, decided from manifests alone without loading chunks.
+// would start from. Current manifests need no chunk reads.
 func (s *Service) UsableLSN(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (int64, bool, error) {
-	snap, err := s.newestUsable(context.Background(), branch, collection, minLSN, maxLSN, readUpperBound)
-	if err != nil || snap == nil {
-		return 0, false, err
-	}
-	return snap.LSN, true, nil
+	_, lsn, ok, err := s.newestUsable(branch, collection, minLSN, maxLSN, readUpperBound, false, false)
+	return lsn, ok, err
+}
+
+// CheckReplayCoverage checks whether an old-key snapshot can be bypassed
+// during resync. Certified manifests need no document or chunk reads.
+func (s *Service) CheckReplayCoverage(branch *wal.Branch, collection string, from, to int64) error {
+	_, _, _, err := s.newestUsable(branch, collection, from, to, to, false, true)
+	return err
 }
 
 // UnrecordedReclaimBound implements materializer.SnapshotSource. Garbage
@@ -225,10 +296,9 @@ func (s *Service) UnrecordedReclaimBound(branchID, collection string) (int64, er
 	return snap.LSN, nil
 }
 
-// newestUsable returns the manifest of the newest snapshot of (branch,
-// collection) with an LSN in [minLSN, maxLSN] that is usable for a read at
-// readUpperBound, or nil.
-func (s *Service) newestUsable(ctx context.Context, branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (*Snapshot, error) {
+// newestUsable checks both reads and GC coverage against the same rules.
+func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64, wantState, checkReplay bool) (map[string]bson.M, int64, bool, error) {
+	ctx := context.Background()
 	cursor, err := s.manifests.Find(ctx,
 		bson.M{
 			"branch_id":  branch.ID,
@@ -238,20 +308,89 @@ func (s *Service) newestUsable(ctx context.Context, branch *wal.Branch, collecti
 		options.Find().SetSort(bson.M{"lsn": -1}),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query snapshots: %w", err)
+		return nil, 0, false, fmt.Errorf("failed to query snapshots: %w", err)
 	}
 	defer func() { _ = cursor.Close(ctx) }()
 
+	var selected map[string]bson.M
+	var selectedLSN, rejectedLSN, unrecordedLSN int64
+	var found bool
 	for cursor.Next(ctx) {
 		var snap Snapshot
 		if err := cursor.Decode(&snap); err != nil {
-			return nil, fmt.Errorf("failed to decode snapshot manifest: %w", err)
+			return nil, 0, false, fmt.Errorf("failed to decode snapshot manifest: %w", err)
 		}
-		if s.usable(&snap, branch, readUpperBound) {
-			return &snap, nil
+		if !s.usable(&snap, branch, readUpperBound) {
+			continue
+		}
+		state, usable, err := s.readCandidate(ctx, branch, &snap, wantState)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if usable {
+			selected, selectedLSN, found = state, snap.LSN, true
+			break
+		}
+		if checkReplay {
+			rejectedLSN = max(rejectedLSN, snap.LSN)
+			if snap.VisibilityRules < CurrentVisibilityRules {
+				unrecordedLSN = max(unrecordedLSN, snap.LSN)
+			}
 		}
 	}
-	return nil, cursor.Err()
+	if err := cursor.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	if rejectedLSN != 0 {
+		from := minLSN
+		if found {
+			from = selectedLSN + 1
+		}
+		if err := s.materializer.CheckRejectedSnapshotCoverage(branch, collection, from, readUpperBound, rejectedLSN, unrecordedLSN); err != nil {
+			return nil, 0, false, err
+		}
+	}
+	return selected, selectedLSN, found, nil
+}
+
+func (s *Service) readCandidate(ctx context.Context, branch *wal.Branch, snap *Snapshot, wantState bool) (map[string]bson.M, bool, error) {
+	trusted, checked := snap.ExactOldBinaryKeys, snap.ExactOldBinaryKeys
+	if !checked {
+		if snap.OldKeysTrusted != nil {
+			trusted, checked = *snap.OldKeysTrusted, true
+		} else {
+			trusted, checked = s.oldKeysTrusted(snap.ID)
+		}
+	}
+	if checked {
+		if !trusted || !wantState {
+			return nil, trusted, nil
+		}
+	} else {
+		// The shared delete could have erased the last row. Even an empty
+		// snapshot cannot cover that history.
+		err := s.materializer.CheckOldBinarySnapshot(branch, snap.Collection, snap.LSN)
+		var ambiguous *wal.AmbiguousOldBinaryError
+		if errors.As(err, &ambiguous) || errors.Is(err, wal.ErrOldBinarySnapshotReclaimed) {
+			s.rememberOldKeys(snap.ID, false)
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	state, err := s.load(ctx, snap, wantState, trusted)
+	if errors.Is(err, errSharedSnapshotKey) {
+		s.rememberOldKeys(snap.ID, false)
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !checked {
+		s.rememberOldKeys(snap.ID, true)
+	}
+	return state, true, nil
 }
 
 // usable reports whether a snapshot holds exactly the history a reader with
@@ -272,6 +411,13 @@ func (s *Service) newestUsable(ctx context.Context, branch *wal.Branch, collecti
 // In either case the snapshot still serves readers at or below the range's
 // end — children, pins and historical reads that keep the pre-reset view.
 func (s *Service) usable(snap *Snapshot, branch *wal.Branch, readUpperBound int64) bool {
+	if !snap.ExactOldBinaryKeys {
+		// Old processes cannot apply a collection resync baseline, even
+		// if its checkpoint was published just after the manifest was built.
+		if start := branch.CollectionStart(snap.Collection, readUpperBound); start != 0 && snap.LSN >= start {
+			return false
+		}
+	}
 	effective := branch.EffectiveDiscardedRanges()
 	for idx, r := range effective {
 		if r.From > snap.LSN {
@@ -302,20 +448,26 @@ func (s *Service) usable(snap *Snapshot, branch *wal.Branch, readUpperBound int6
 // Decompression and per-document BSON decoding dominate snapshot reads —
 // benchmark feedback measured them at ~70% of a warm read — and they
 // parallelize embarrassingly.
-func (s *Service) load(ctx context.Context, snap *Snapshot) (map[string]bson.M, error) {
+func (s *Service) load(ctx context.Context, snap *Snapshot, wantState, trusted bool) (map[string]bson.M, error) {
 	if len(snap.ChunkIDs) == 0 {
 		return make(map[string]bson.M), nil
 	}
-	if len(snap.ChunkIDs) == 1 {
-		state := make(map[string]bson.M, snap.DocCount)
-		data, err := s.store.Get(ctx, snap.ChunkIDs[0])
+	loadChunk := func(id string, capacity int64) (map[string]bson.M, error) {
+		data, err := s.store.Get(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		if err := decodeChunk(data, s.compressor, state); err != nil {
-			return nil, fmt.Errorf("chunk %s: %w", snap.ChunkIDs[0], err)
+		var state map[string]bson.M
+		if wantState {
+			state = make(map[string]bson.M, capacity)
+		}
+		if err := decodeChunk(data, s.compressor, state, trusted); err != nil {
+			return nil, fmt.Errorf("chunk %s: %w", id, err)
 		}
 		return state, nil
+	}
+	if len(snap.ChunkIDs) == 1 {
+		return loadChunk(snap.ChunkIDs[0], snap.DocCount)
 	}
 
 	partials := make([]map[string]bson.M, len(snap.ChunkIDs))
@@ -325,17 +477,7 @@ func (s *Service) load(ctx context.Context, snap *Snapshot) (map[string]bson.M, 
 		wg.Add(1)
 		go func(i int, chunkID string) {
 			defer wg.Done()
-			data, err := s.store.Get(ctx, chunkID)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			partial := make(map[string]bson.M)
-			if err := decodeChunk(data, s.compressor, partial); err != nil {
-				errs[i] = fmt.Errorf("chunk %s: %w", chunkID, err)
-				return
-			}
-			partials[i] = partial
+			partials[i], errs[i] = loadChunk(chunkID, 0)
 		}(i, chunkID)
 	}
 	wg.Wait()
@@ -343,6 +485,9 @@ func (s *Service) load(ctx context.Context, snap *Snapshot) (map[string]bson.M, 
 		if err != nil {
 			return nil, err
 		}
+	}
+	if !wantState {
+		return nil, nil
 	}
 
 	state := make(map[string]bson.M, snap.DocCount)
@@ -360,11 +505,8 @@ func (s *Service) load(ctx context.Context, snap *Snapshot) (map[string]bson.M, 
 // far a collection's entries are covered: pass math.MaxInt64 as
 // readUpperBound to require validity for every possible future reader.
 func (s *Service) NewestUsableLSN(branch *wal.Branch, collection string, maxLSN, readUpperBound int64) (int64, error) {
-	snap, err := s.newestUsable(context.Background(), branch, collection, 0, maxLSN, readUpperBound)
-	if err != nil || snap == nil {
-		return 0, err
-	}
-	return snap.LSN, nil
+	lsn, _, err := s.UsableLSN(branch, collection, 0, maxLSN, readUpperBound)
+	return lsn, err
 }
 
 // CollectionsUpTo implements materializer.SnapshotSource: collections that

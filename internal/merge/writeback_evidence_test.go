@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/x/bsonx/bsoncore"
@@ -40,12 +41,14 @@ func TestWriteBack_EvidenceAfterConflictResolution(t *testing.T) {
 	p := &Plan{FormatVersion: orderedPlanVersion, ProvenanceVersion: 1}
 	for i := range 8 {
 		id := fmt.Sprintf("box-%d", i)
-		doc := bson.M{"_id": id}
-		raw, err := bson.Marshal(doc)
+		ours, theirs := bson.M{"_id": id}, bson.M{"_id": id, "status": "sent"}
+		before, err := bson.Marshal(ours)
+		require.NoError(t, err)
+		after, err := wal.MarshalDocument(theirs)
 		require.NoError(t, err)
 		c := Conflict{
-			Collection: "shipping", DocumentID: id, Ours: doc, Theirs: doc,
-			OursRaw: raw, TheirsRaw: raw, SortedImages: []string{"base", "ours", "theirs"},
+			Collection: "shipping", DocumentID: id, Ours: ours, Theirs: theirs,
+			OursRaw: before, TheirsRaw: after, SortedImages: []string{"base", "ours", "theirs"},
 		}
 		if i == 7 {
 			c.SortedImages = []string{"base"} // Neither strategy uses the base image.

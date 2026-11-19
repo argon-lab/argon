@@ -181,6 +181,12 @@ MongoDB can still open the stream from the saved position. If it can, run
 `source follow` to catch up. `--force` starts the full comparison immediately.
 
 `source detach` ends following and turns `main` back into an ordinary branch.
+If a historical delete cannot distinguish an empty old-binary `_id` from
+four zero bytes, reads of that history report the branch, collection and
+key. Stop the follower and run `argon source resync -p <project> --force`.
+The consistent LSN it prints starts a readable history for the collection.
+On another branch, re-import the collection.
+
 A write-back claim less than five minutes old blocks detach. The error names
 the plans to wait for. After that window, detach reports unsettled plan IDs
 in the table output or in JSON with `unsettled_plans` and `warning`. Inspect
@@ -270,6 +276,10 @@ scope documents keep their order and repetitions. Ordinary
 apply can use these images and older formats. A repeated field within a
 compound `_id` would change the lookup key if collapsed. Ordinary merge
 refuses that document.
+A stored subtype-2 binary whose inner length disagrees with its payload
+prevents document decoding and ordinary merge preview. The error identifies
+the document. Raw WAL image reads preserve the stored bytes.
+
 Write-back requires verified before-images for replacements and deletes and
 verified after-images for inserts and replacements. Use this version for
 write-back even when an older executable can load the plan. Older writers use
@@ -291,6 +301,9 @@ For a followed parent, inspect `merge preview --output json` or
 `merge list -p <project> --output json`. Each eligible pending plan includes
 an `approval_digest` alongside the images. Use that plan's 64 lowercase hex
 characters in `merge apply <plan-id> --write-back --approve <digest>`.
+Write-back checks each selected collection for capped storage and each
+selected replacement for identical before- and after-images. Either leaves
+the plan pending and identifies the affected document before claim.
 The source transaction reads each key again after all writes and before
 commit. It compares the entire stored BSON with the approved after-image
 and checks that each deletion left the key absent. A mismatch rolls back

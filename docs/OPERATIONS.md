@@ -375,6 +375,15 @@ Before it records the resync, it opens and reads the change stream with
 the replay's options and start position. If the source cannot serve that
 stream, `main` stays untouched and no new unfinished resync is recorded.
 
+Older writers could index an empty BSON subtype-2 value and four zero
+bytes under the same key, including within a compound `_id`. Images resolve
+the two IDs. A delete under the shared key without a pre-image leaves the
+affected history unreadable. Stop following and run
+`argon source resync -p <project> --force`. Resync copies the affected
+collection from the source and publishes it at the consistent LSN. Earlier
+ambiguous positions and branches forked from them still need the missing
+information. On an ordinary branch, re-import that collection.
+
 What it does to `main`:
 
 - Resync stores the source BSON for each document whose bytes differ from
@@ -476,7 +485,10 @@ untouched and the plan pending.
   Production may already be ahead. The comparison inside the source transaction
   catches changes to planned documents since that checkpoint. Check
   [source status](#what-argon-source-status-reports-and-what-to-do) if admission fails.
-- Write-back checks that the collection exists before claiming the plan.
+- Write-back checks collection options before claiming the plan. A capped
+  target is refused with its first selected key. If a collection becomes
+  capped after that check, its snapshot-read error aborts the transaction.
+  The preflight also checks that an insert or replacement target exists.
   It never upserts. A collection dropped between this check and an insert
   can be recreated by the insert. Collection identity and intervening changes
   that restore the same document state are outside the comparison.
@@ -491,6 +503,8 @@ untouched and the plan pending.
   current time on write. Set the intended timestamp on the editable branch
   and preview again. A zero timestamp inside an embedded document or in
   `_id` is allowed.
+- A saved replacement with identical before- and after-images is refused
+  before claim. In the transaction each replacement must modify one row.
 - Verification costs one extra source read per written document. If the
   server stores different bytes or a deleted document still exists, the
   transaction aborts. Argon releases the claim, records the reason in
@@ -525,7 +539,9 @@ untouched and the plan pending.
   mark the plan applied after an acknowledged commit or return it to
   pending if it knows the transaction aborted or the commit was never sent.
   The follower marks it applied if it sees the transaction in the change
-  stream. Otherwise, the plan stays `writing_back` with an unknown outcome.
+  stream. If neither records the commit, the plan stays `writing_back` with
+  an unknown outcome. Session ID and transaction number identify the plan
+  even when one source client applies several plans.
   A retry of a known abort clears the previous error as it claims the plan.
   The plan stores up to 4096 UTF-8 bytes of error text and up to 1024 bytes
   of the source display address. You cannot reuse an unsettled plan.

@@ -2,11 +2,14 @@ package wal
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"slices"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // Older writers indexed an empty subtype-2 value as four zero payload bytes,
@@ -70,4 +73,62 @@ func oldBinaryIndexValue(value any) (any, bool) {
 		}
 	}
 	return value, false
+}
+
+// IsSharedOldBinaryKey reports whether pre-upgrade writers could have stored
+// several different IDs under this envelope. The four-zero BSON wire value
+// ends in seven zero bytes, hence at least eight consecutive base64 A's.
+func IsSharedOldBinaryKey(key string) bool {
+	if !strings.HasPrefix(key, documentKeyPrefix) || !strings.Contains(key, "AAAAAAAA") {
+		return false
+	}
+	alias, affected := oldBinaryIndexKey(key)
+	return affected && alias == key
+}
+
+const exactOldBinaryVersion = 2
+
+// AmbiguousOldBinaryError identifies an image-less delete recorded under a
+// key that the writer could have computed from either BSON ID.
+type AmbiguousOldBinaryError struct {
+	BranchID, Collection, Key string
+	LSN                       int64
+}
+
+func (e *AmbiguousOldBinaryError) Error() string {
+	return fmt.Sprintf("branch %q, collection %q, key %q at LSN %d: history recorded before the upgrade cannot tell an empty old-binary _id from a four-zero-byte one. For a followed branch, stop following and run `argon source resync -p <project> --force`. For another branch, re-import the collection", e.BranchID, e.Collection, e.Key, e.LSN)
+}
+
+// CheckStoredKey reports whether an entry can rely on its envelope when
+// there is no image or its image does not supply the ID.
+func (e *Entry) CheckStoredKey() error {
+	if e.DocumentKeyVersion < exactOldBinaryVersion && IsSharedOldBinaryKey(e.DocumentID) {
+		return &AmbiguousOldBinaryError{BranchID: e.BranchID, Collection: e.Collection, Key: e.DocumentID, LSN: e.LSN}
+	}
+	return nil
+}
+
+// CheckOldBinaryDeletes checks the history covered by a pre-upgrade snapshot.
+// A delete could have removed the last frame, leaving an empty snapshot.
+func (s *Service) CheckOldBinaryDeletes(branch *Branch, collection string, from, to int64) error {
+	ctx := context.Background()
+	cursor, err := s.collection.Find(ctx, bson.M{
+		"branch_id": branch.ID, "collection": collection, "lsn": bson.M{"$gte": from, "$lte": to},
+		"operation": OpDelete, "key_v": bson.M{"$not": bson.M{"$gte": exactOldBinaryVersion}}, "pre": bson.M{"$exists": false},
+		"document_id": primitive.Regex{Pattern: "^~argon:bson:.*AAAAAAAA"},
+	}, options.Find().SetProjection(bson.M{"_id": 0, "lsn": 1, "document_id": 1}))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+	for cursor.Next(ctx) {
+		var e Entry
+		if err := cursor.Decode(&e); err != nil {
+			return err
+		}
+		if !branch.IsDiscardedForRead(e.LSN, to) && IsSharedOldBinaryKey(e.DocumentID) {
+			return &AmbiguousOldBinaryError{BranchID: branch.ID, Collection: collection, Key: e.DocumentID, LSN: e.LSN}
+		}
+	}
+	return cursor.Err()
 }

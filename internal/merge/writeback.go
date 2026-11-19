@@ -40,11 +40,11 @@ import (
 //
 // The source and the Argon metadata can be different deployments, so the
 // plan's status cannot commit atomically with the documents. The order is:
-// claim the plan in the metadata (pending → writing_back) with the ID of a
-// session used for nothing else, run the source transaction in that session,
+// claim the plan in the metadata (pending → writing_back) with the source
+// session ID and its current transaction number, run the source transaction,
 // mark the plan applied. If the process dies between the last two steps the
 // plan stays writing_back, cannot be claimed again, and is closed by the
-// follower when the stream delivers a transaction from that session. A plan
+// follower when the stream delivers the claimed transaction. A plan
 // is never written twice: after the claim it is no longer pending, and any
 // new plan is checked against the documents as they then are.
 
@@ -73,9 +73,11 @@ func (plan *Plan) WritingBackAdvice() string {
 // WriteBackRecord is the audit trail of a plan's write-back.
 type WriteBackRecord struct {
 	ApprovedDigest string `bson:"approved_digest,omitempty" json:"-"`
-	// Session is the source session the transaction ran in. Change events
-	// from that session are this plan's.
+	// StartTransaction increments the pooled session's counter on every attempt.
+	// AfterTxn is its value before the first attempt. Older claims omit it.
 	Session   primitive.Binary `bson:"session" json:"-"`
+	AfterTxn  *int64           `bson:"after_txn,omitempty" json:"-"`
+	CommitTxn *int64           `bson:"commit_txn,omitempty" json:"-"`
 	Database  string           `bson:"database" json:"database"`
 	Display   string           `bson:"display,omitempty" json:"display,omitempty"`
 	Strategy  string           `bson:"strategy,omitempty" json:"strategy,omitempty"`
@@ -119,11 +121,10 @@ type WriteBackTarget struct {
 	Redact func(string) string
 }
 
-// EnsureIndexes creates the index the follower uses to recognise write-back
-// sessions.
+// EnsureIndexes lets the follower seek the nearest preceding claim in a session.
 func (s *Service) EnsureIndexes(ctx context.Context) error {
 	_, err := s.plans.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "write_back.session", Value: 1}},
+		Keys:    bson.D{{Key: "write_back.session", Value: 1}, {Key: "write_back.after_txn", Value: -1}},
 		Options: options.Index().SetSparse(true),
 	})
 	return err
@@ -226,16 +227,20 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	// production with default options and a single document, and one that
 	// production dropped would come back. Checked here, before the plan is
 	// claimed, so that a refusal leaves the plan pending.
-	existing, err := target.Database.ListCollectionNames(ctx, bson.D{})
+	existing, err := target.Database.ListCollectionSpecifications(ctx, bson.D{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list the source's collections: %w", err)
 	}
-	present := make(map[string]bool, len(existing))
-	for _, name := range existing {
-		present[name] = true
+	capped := make(map[string]bool, len(existing))
+	for _, spec := range existing {
+		capped[spec.Name], _ = spec.Options.Lookup("capped").BooleanOK()
 	}
 	for _, c := range changes {
-		if !present[c.Collection] && !c.Delete {
+		isCapped, present := capped[c.Collection]
+		if isCapped {
+			return nil, fmt.Errorf("write-back refused before claim: %s/%s targets a capped collection, which does not support snapshot reads", c.Collection, c.DocumentID)
+		}
+		if !present && !c.Delete {
 			return nil, fmt.Errorf("collection %s does not exist in the source database, and write-back does not create collections. Create it there with the options it should have, let following catch up, and preview again", c.Collection)
 		}
 	}
@@ -256,9 +261,25 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if !ok {
 		return nil, errors.New("the source session has no identifier to record")
 	}
+	// The v1 driver exposes the checked-out server session's counter through XSession.
+	driverSession, ok := session.(mongo.XSession) //nolint:staticcheck
+	if !ok {
+		return nil, errors.New("the source session has no transaction number to record")
+	}
+	serverSession := driverSession.ClientSession().Server
+	afterTxn := serverSession.TxnNumber
+	claimClosed := false
+	defer func() {
+		// An open-ended claim must never match a later, unrelated transaction.
+		// Discard its session from the pool if its final state is unknown.
+		if !claimClosed {
+			serverSession.MarkDirty()
+		}
+	}()
 	record := &WriteBackRecord{
 		ApprovedDigest: approved,
 		Session:        primitive.Binary{Subtype: subtype, Data: data},
+		AfterTxn:       &afterTxn,
 		Database:       branch.Follows, Display: boundedAuditText(target.Display, maxDisplayBytes),
 		Strategy: strategy, Changes: len(changes),
 	}
@@ -289,6 +310,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 			"strategy":                bson.M{"$literal": strategy},
 			"applied_at":              bson.M{"$ifNull": bson.A{"$applied_at", now}},
 			"write_back.committed_at": now,
+			"write_back.commit_txn":   serverSession.TxnNumber,
 		}}}})
 		if err == nil && marked.MatchedCount != 1 {
 			err = errors.New("the plan record no longer matches the write-back claim")
@@ -297,6 +319,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		if err != nil {
 			return result, fmt.Errorf("the source transaction committed, but plan %s could not be marked applied: %w", plan.ID.Hex(), err)
 		}
+		claimClosed = true
 		return result, nil
 	}
 
@@ -318,6 +341,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if marked.MatchedCount != 1 {
 		return nil, errors.Join(txnErr, errors.New("the claim could not be released. Inspect the source and let following settle the claim"))
 	}
+	claimClosed = true
 	return nil, txnErr
 }
 
@@ -364,6 +388,12 @@ func writeSourceTransaction(ctx context.Context, session mongo.Session, db *mong
 }
 
 func transientTransaction(err error) bool {
+	// A collection can become capped after preflight. MongoDB labels that
+	// snapshot-read failure transient, but a fresh transaction cannot read it.
+	var command mongo.CommandError
+	if errors.As(err, &command) && command.HasErrorCodeWithMessage(246, "Reading from capped collections with readConcern snapshot is not supported") {
+		return false
+	}
 	var labeled mongo.LabeledError
 	return errors.As(err, &labeled) && labeled.HasErrorLabel("TransientTransactionError")
 }
@@ -533,6 +563,9 @@ func prepareWriteBack(plan *Plan, changes []Change) error {
 		c := &changes[i]
 		if !c.Delete && c.DocumentRaw != nil {
 			checkAfterLayout(*c, failures)
+			if bytes.Equal(c.BeforeRaw, c.DocumentRaw) {
+				failures.add("replacement has identical before and after images", *c)
+			}
 		}
 		key, err := wal.RawDocumentID(c.DocumentID)
 		if err != nil || (!c.storedKey.IsZero() && !c.storedKey.Equal(key)) {
@@ -622,6 +655,9 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, changes []
 			if result.MatchedCount != 1 {
 				return conflict
 			}
+			if result.ModifiedCount != 1 {
+				return &StoredImageError{Collection: c.Collection, DocumentID: c.DocumentID}
+			}
 		}
 	}
 	// Read the final state of the entire batch while the transaction can
@@ -638,18 +674,26 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, changes []
 	return nil
 }
 
-// LookupWriteBack returns the plan whose write-back ran in a source session,
-// or nil. The follower calls it for transactions it has not seen before.
-func (s *Service) LookupWriteBack(ctx context.Context, targetBranchID string, session primitive.Binary) (*Plan, error) {
+// LookupWriteBack returns the plan that claimed this source transaction, or nil.
+func (s *Service) LookupWriteBack(ctx context.Context, targetBranchID string, session primitive.Binary, txnNumber int64) (*Plan, error) {
 	var plan Plan
 	plans := s.plans.Database().Collection(s.plans.Name(), options.Collection().SetReadPreference(readpref.Primary()))
-	err := plans.FindOne(ctx, bson.M{"write_back.session": session, "target_branch_id": targetBranchID},
-		options.FindOne().SetProjection(bson.M{"changes": 0, "conflicts": 0})).Decode(&plan)
+	// The greatest preceding bound owns the transaction, including retries.
+	// Missing bounds sort last and preserve the session-only lookup for old claims.
+	filter := bson.M{"write_back.session": session, "target_branch_id": targetBranchID, "$or": bson.A{
+		bson.M{"write_back.after_txn": bson.M{"$lt": txnNumber}},
+		bson.M{"write_back.after_txn": bson.M{"$exists": false}},
+	}}
+	err := plans.FindOne(ctx, filter, options.FindOne().SetProjection(bson.M{"changes": 0, "conflicts": 0}).
+		SetSort(bson.D{{Key: "write_back.after_txn", Value: -1}})).Decode(&plan)
 	if err == mongo.ErrNoDocuments {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if committed := plan.WriteBack.CommitTxn; committed != nil && *committed != txnNumber {
+		return nil, nil
 	}
 	return &plan, nil
 }

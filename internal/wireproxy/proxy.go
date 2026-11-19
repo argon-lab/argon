@@ -255,6 +255,9 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 
 	var doc bson.D
 	if err := wal.UnmarshalDocument(rawDoc, &doc); err != nil {
+		if errors.Is(err, wal.ErrOldBinaryLength) {
+			return nil, nil, fmt.Errorf("%w: %w", errMalformed, err)
+		}
 		return message, nil, nil
 	}
 

@@ -18,9 +18,11 @@ func TestWriteBack_ChecksEverySelectedKey(t *testing.T) {
 	}
 	old := primitive.Binary{Subtype: 2, Data: []byte{}}
 	before := image(old)
+	after, err := wal.MarshalDocument(bson.D{{Key: "_id", Value: old}, {Key: "stock", Value: 1}})
+	require.NoError(t, err)
 	other := image(primitive.Binary{Subtype: 2, Data: []byte{0, 0, 0, 0}})
 	good := Change{Collection: "inventory", DocumentID: wal.DocumentIDString(old),
-		storedKey: before.Lookup("_id"), BeforeRaw: before, DocumentRaw: before}
+		storedKey: before.Lookup("_id"), BeforeRaw: before, DocumentRaw: after}
 	p := &Plan{FormatVersion: orderedPlanVersion, ProvenanceVersion: provenanceVersion}
 	changes := []Change{good}
 	require.NoError(t, prepareWriteBack(p, changes))

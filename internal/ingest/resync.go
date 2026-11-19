@@ -74,6 +74,7 @@ type ResyncState struct {
 // BranchState reads a branch's documents. The materializer implements it.
 type BranchState interface {
 	DocumentImageReclaimFloor(branchID, collection string) (int64, error)
+	CheckResyncCoverage(branch *wal.Branch, collection string) error
 	CollectionsAtLSN(branch *wal.Branch, targetLSN int64) ([]string, error)
 	MaterializeDocumentsAtLSN(branch *wal.Branch, collection string, keys []string, targetLSN int64) (map[string]bson.M, error)
 	MaterializeCollectionAtLSN(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error)
@@ -286,8 +287,14 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 		return err
 	}
 	r := &resyncer{s: s, branch: branch, src: src, opts: opts, result: result, lease: run.lease, reads: mongo.NewSessionContext(ctx, session)}
+	ambiguousCollections := make(map[string]error)
 	for _, name := range collections {
-		if err := r.compare(ctx, name); err != nil {
+		if err := r.compare(ctx, name, false); err != nil {
+			var ambiguous *wal.AmbiguousOldBinaryError
+			if errors.As(err, &ambiguous) {
+				ambiguousCollections[name] = err
+				continue
+			}
 			return fmt.Errorf("failed to compare source collection %s with the branch: %w", name, err)
 		}
 	}
@@ -300,7 +307,30 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 		onSource[name] = true
 	}
 	for _, name := range held {
-		deleted, err := r.prune(ctx, name, onSource[name])
+		var deleted int64
+		err := ambiguousCollections[name]
+		if err == nil {
+			deleted, err = r.prune(ctx, name, onSource[name])
+		}
+		if oldBinaryCopyRequired(err) {
+			// The old state cannot tell us which documents to prune. Start this
+			// collection from empty and stream its complete source contents again.
+			// Until stream replay finishes, readers still see the ambiguous history.
+			marker := r.entry(wal.OpResyncCollection, name, "", nil)
+			r.pending = []*wal.Entry{marker}
+			if err := r.commit(); err != nil {
+				return err
+			}
+			r.baselines = append(r.baselines, wal.CollectionBaseline{Collection: name, From: marker.LSN})
+			if onSource[name] {
+				if err := r.compare(ctx, name, true); err != nil {
+					return fmt.Errorf("failed to recopy source collection %s: %w", name, err)
+				}
+			} else {
+				result.RemovedCollections = append(result.RemovedCollections, name)
+			}
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("failed to compare the branch's collection %s with the source: %w", name, err)
 		}
@@ -314,7 +344,7 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 
 	expectedHead := branch.HeadLSN
 	point, err := s.followStream(ctx, branchID, src, FollowOptions{
-		AllowInexact: true, WriteBacks: opts.WriteBacks, Redact: opts.Redact, resync: true, startAt: &startAt, expectedHead: &expectedHead,
+		AllowInexact: true, WriteBacks: opts.WriteBacks, Redact: opts.Redact, resync: true, startAt: &startAt, expectedHead: &expectedHead, baselines: r.baselines,
 	}, run, true)
 	if err != nil {
 		return err
@@ -332,8 +362,17 @@ type resyncer struct {
 	result *ResyncResult
 	lease  *sourceLease
 	// reads is a causally consistent session that starts at the boundary.
-	reads   mongo.SessionContext
-	pending []*wal.Entry
+	reads     mongo.SessionContext
+	pending   []*wal.Entry
+	baselines []wal.CollectionBaseline
+	// Bounds already read while comparing the source. A bound above the
+	// recorded floor means an older GC may have removed unlogged rows.
+	reclaimBounds map[string]int64
+}
+
+func oldBinaryCopyRequired(err error) bool {
+	var ambiguous *wal.AmbiguousOldBinaryError
+	return errors.As(err, &ambiguous) || errors.Is(err, wal.ErrOldBinarySnapshotReclaimed)
 }
 
 func (r *resyncer) collection(name string) *mongo.Collection {
@@ -366,7 +405,7 @@ const (
 
 // compare stores every document of one source collection that the branch
 // does not already hold byte for byte.
-func (r *resyncer) compare(ctx context.Context, name string) error {
+func (r *resyncer) compare(ctx context.Context, name string, fresh bool) error {
 	cursor, err := r.collection(name).Find(r.reads, bson.D{})
 	if err != nil {
 		return err
@@ -382,13 +421,17 @@ func (r *resyncer) compare(ctx context.Context, name string) error {
 		if len(batch) == 0 {
 			return nil
 		}
-		keys := make([]string, len(batch))
-		for i, item := range batch {
-			keys[i] = item.key
-		}
-		same, err := r.unchanged(name, keys)
-		if err != nil {
-			return err
+		var same map[string]bson.Raw
+		if !fresh {
+			keys := make([]string, len(batch))
+			for i, item := range batch {
+				keys[i] = item.key
+			}
+			var err error
+			same, err = r.unchanged(name, keys)
+			if err != nil {
+				return err
+			}
 		}
 		for _, item := range batch {
 			if held, ok := same[item.key]; ok && bytes.Equal(held, item.doc) {
@@ -444,7 +487,7 @@ func (r *resyncer) compare(ctx context.Context, name string) error {
 func (r *resyncer) unchanged(collection string, keys []string) (map[string]bson.Raw, error) {
 	branch := r.branch
 	held := make(map[string]bson.Raw, len(keys))
-	entries, err := r.s.wal.LatestDocumentEntries(branch.ID, collection, keys, branch.BaseLSN+1, branch.HeadLSN,
+	entries, err := r.s.wal.LatestDocumentEntries(branch.ID, collection, keys, max(branch.BaseLSN+1, branch.CollectionStart(collection, branch.HeadLSN)), branch.HeadLSN,
 		func(lsn int64) bool { return !branch.IsDiscardedForRead(lsn, branch.HeadLSN) })
 	if errors.Is(err, wal.ErrLegacyDocumentKeys) {
 		return held, nil
@@ -456,6 +499,12 @@ func (r *resyncer) unchanged(collection string, keys []string) (map[string]bson.
 	floor, err := r.opts.State.DocumentImageReclaimFloor(branch.ID, collection)
 	if err != nil {
 		return nil, err
+	}
+	if floor > 0 {
+		if r.reclaimBounds == nil {
+			r.reclaimBounds = make(map[string]int64)
+		}
+		r.reclaimBounds[collection] = floor
 	}
 	for key, entry := range entries {
 		// Even matching bytes need a fresh verified entry if the stream supplied
@@ -587,9 +636,14 @@ func (r *resyncer) prune(ctx context.Context, name string, onSource bool) (int64
 		return 0, err
 	}
 	if floor == 0 && branch.ParentID == "" {
+		if bound := r.reclaimBounds[name]; bound > 0 && bound >= branch.CollectionStart(name, branch.HeadLSN) {
+			if err := r.opts.State.CheckResyncCoverage(branch, name); err != nil {
+				return 0, err
+			}
+		}
 		// The log names every document the branch has ever held here.
 		upTo := branch.HeadLSN
-		err := r.s.wal.ScanDocumentKeys(ctx, branch.ID, name, branch.BaseLSN+1, upTo, func(key string) error {
+		err := r.s.wal.ScanDocumentKeys(ctx, branch.ID, name, max(branch.BaseLSN+1, branch.CollectionStart(name, upTo)), upTo, func(key string) error {
 			return addKey(key, nil)
 		})
 		if err == nil {

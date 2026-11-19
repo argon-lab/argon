@@ -1,6 +1,9 @@
 package wal
 
 import (
+	"bytes"
+	"encoding/binary"
+	"errors"
 	"testing"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -19,6 +22,31 @@ func TestUnmarshalDocumentRejectsNegativeBinaryLength(t *testing.T) {
 	var doc bson.D
 	if err := UnmarshalDocument(raw, &doc); err == nil {
 		t.Fatalf("decoded an invalid binary value: %v", doc)
+	}
+}
+
+func TestUnmarshalOldBinaryLengths(t *testing.T) {
+	for _, count := range []uint32{0, 1, 3, 0xffffffff} {
+		raw, err := bson.Marshal(bson.M{"bin": primitive.Binary{Subtype: 2, Data: []byte{'a', 'b'}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		binary.LittleEndian.PutUint32(bson.Raw(raw).Lookup("bin").Value[5:], count)
+		var doc bson.M
+		if err := UnmarshalDocument(raw, &doc); !errors.Is(err, ErrOldBinaryLength) {
+			t.Fatalf("inner count %d for two bytes: got %v", count, err)
+		}
+	}
+	// In old WALs short payloads can have no inner count at all.
+	for _, payload := range [][]byte{{}, {1}, {1, 2}, {1, 2, 3}, {1, 2, 3, 4}} {
+		value := bson.RawValue{Type: bson.TypeBinary, Value: append([]byte{byte(len(payload)), 0, 0, 0, 2}, payload...)}
+		var decoded primitive.Binary
+		if err := UnmarshalValue(value, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Subtype != 2 || !bytes.Equal(payload, decoded.Data) {
+			t.Fatalf("lengthless payload %x decoded as %+v", payload, decoded)
+		}
 	}
 }
 

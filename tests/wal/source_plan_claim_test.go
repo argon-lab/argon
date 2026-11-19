@@ -182,7 +182,7 @@ func TestFollow_ClaimLookupReadsPrimary(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Disconnect(context.Background())) })
 	reader := merge.NewService(client.Database(f.metadataName), f.services.WAL, f.services.Branches, f.services.Materializer, client)
-	claim, err := reader.LookupWriteBack(t.Context(), plan.TargetBranchID, session)
+	claim, err := reader.LookupWriteBack(t.Context(), plan.TargetBranchID, session, 1)
 	require.NoError(t, err)
 	require.NotNil(t, claim)
 	require.Equal(t, plan.ID, claim.ID)

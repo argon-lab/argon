@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -25,6 +26,8 @@ type frame struct {
 	Key string   `bson:"k"`
 	Doc bson.Raw `bson:"d"`
 }
+
+var errSharedSnapshotKey = errors.New("old snapshot may have collapsed two old-binary document keys")
 
 // encodeState serializes a collection state into compressed chunks.
 func encodeState(state map[string]bson.M, compressor *wal.Compressor) (chunks [][]byte, docCount int64, err error) {
@@ -89,8 +92,9 @@ func encodeState(state map[string]bson.M, compressor *wal.Compressor) (chunks []
 	return chunks, docCount, nil
 }
 
-// decodeChunk appends one decompressed chunk's frames into state.
-func decodeChunk(compressed []byte, compressor *wal.Compressor, state map[string]bson.M) error {
+// decodeChunk appends one decompressed chunk's frames into state. With a
+// nil state, only the frame and document keys of an old snapshot are needed.
+func decodeChunk(compressed []byte, compressor *wal.Compressor, state map[string]bson.M, exactKeys bool) error {
 	raw, err := compressor.Decompress(compressed)
 	if err != nil {
 		return fmt.Errorf("failed to decompress snapshot chunk: %w", err)
@@ -109,20 +113,29 @@ func decodeChunk(compressed []byte, compressor *wal.Compressor, state map[string
 		if err := bson.Unmarshal(raw[offset:offset+docLen], &f); err != nil {
 			return fmt.Errorf("failed to decode snapshot frame at offset %d: %w", offset, err)
 		}
-		var doc bson.M
-		if err := wal.UnmarshalDocument(f.Doc, &doc); err != nil {
-			return fmt.Errorf("failed to decode document %s: %w", f.Key, err)
+		if !exactKeys && wal.IsSharedOldBinaryKey(f.Key) {
+			return errSharedSnapshotKey
 		}
 		// The document is authoritative: old snapshots used keys which
 		// conflated ObjectIDs with equal-looking strings.
-		id, err := wal.DocumentIDFromImage(f.Doc)
-		if err != nil {
-			state[f.Key] = doc
-			offset += docLen
-			continue
+		id, idErr := wal.DocumentIDFromImage(f.Doc)
+		key := f.Key
+		if idErr == nil {
+			key = wal.DocumentIDString(id)
+			if !exactKeys && key != f.Key && wal.IsSharedOldBinaryKey(key) {
+				return errSharedSnapshotKey
+			}
 		}
-		doc["_id"] = id
-		state[wal.DocumentIDString(id)] = doc
+		if state != nil {
+			var doc bson.M
+			if err := wal.UnmarshalDocument(f.Doc, &doc); err != nil {
+				return fmt.Errorf("failed to decode document %s: %w", f.Key, err)
+			}
+			if idErr == nil {
+				doc["_id"] = id
+			}
+			state[key] = doc
+		}
 		offset += docLen
 	}
 	return nil
