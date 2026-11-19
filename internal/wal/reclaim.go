@@ -73,6 +73,37 @@ func (s *Service) ReclaimFloorContext(ctx context.Context, branchID, collection 
 	return floor.LSN, nil
 }
 
+// LatestMissingLSN returns the highest unoccupied project LSN in [from, to],
+// or zero if every position is present. The project/LSN index includes rows
+// for other branches and collections as well as non-data operations.
+func (s *Service) LatestMissingLSN(projectID string, from, to int64) (int64, error) {
+	ctx := context.Background()
+	filter := bson.M{"project_id": projectID, "lsn": bson.M{"$gte": from, "$lte": to}}
+	opts := options.Find().SetSort(bson.D{{Key: "lsn", Value: -1}}).SetProjection(bson.M{"_id": 0, "lsn": 1})
+	cursor, err := s.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+	for cursor.Next(ctx) {
+		at, ok := cursor.Current.Lookup("lsn").AsInt64OK()
+		if !ok {
+			return 0, fmt.Errorf("invalid WAL LSN in project %s", projectID)
+		}
+		if at < to {
+			return to, nil
+		}
+		to--
+	}
+	if err := cursor.Err(); err != nil {
+		return 0, err
+	}
+	if to >= from {
+		return to, nil
+	}
+	return 0, nil
+}
+
 // ReclaimFloors returns every recorded floor of a branch, keyed by
 // collection. The map is empty when nothing was reclaimed.
 func (s *Service) ReclaimFloors(branchID string) (map[string]int64, error) {

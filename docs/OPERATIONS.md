@@ -508,7 +508,8 @@ New snapshots keep qualifying BSON. When they encode a decoded document,
 `_id` takes its place in name order, as it did in 2.8.0 snapshots.
 When reading an older sorted snapshot, replay can recover the original
 field order from a qualifying WAL image or an earlier ordered frame whose
-decoded value matches the snapshot.
+decoded value matches the snapshot. If garbage collection could have removed
+an intervening write, replay keeps the snapshot frame's own field order.
 
 - In the metadata snapshot that claims the plan, `main` has a verified exact
   checkpoint as of its reported

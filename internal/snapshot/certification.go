@@ -59,6 +59,12 @@ type chunkKeys struct {
 	oldBinary, shared bool
 }
 
+// A different copy can be certified independently if this one's chunks
+// cannot be read. Other certification errors still abort selection.
+type candidateChunkError struct{ error }
+
+func (e candidateChunkError) Unwrap() error { return e.error }
+
 type projectCollection struct {
 	project, collection string
 }
@@ -116,7 +122,10 @@ func (p *certificationPass) classify(ctx context.Context, snap *Snapshot, histor
 	}
 	keys, err := p.inspectChunks(ctx, snap.ChunkIDs)
 	if err != nil {
-		return "", err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
+		return "", candidateChunkError{err}
 	}
 	if keys.shared {
 		return keysAmbiguous, nil

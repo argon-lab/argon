@@ -248,21 +248,20 @@ func (s *Service) VisitUsableFrames(branch *wal.Branch, collection string, from,
 	if err != nil || snap == nil {
 		return 0, false, false, err
 	}
-	return snap.LSN, true, snap.OrderedImages, nil
+	return snap.LSN, true, bool(snap.OrderedImages), nil
 }
 
-// On a chunk failure, run the same selection and coverage checks with the
-// failed manifest excluded. Another copy at the same LSN precedes older ones.
+// A failed chunk can only be replaced by a copy of the same snapshot position.
 func (s *Service) loadUsable(branch *wal.Branch, collection string, from, to, upper int64, load func(*Snapshot) (retry bool, err error)) (*Snapshot, error) {
 	var failed []primitive.ObjectID
 	var firstErr error
 	for {
 		snap, err := s.newestUsable(branch, collection, from, to, upper, forReplay, failed...)
-		if err != nil {
+		if err != nil || snap == nil {
+			if firstErr != nil {
+				return nil, firstErr
+			}
 			return nil, err
-		}
-		if snap == nil {
-			return nil, firstErr
 		}
 		retry, err := load(snap)
 		if err == nil {
@@ -274,11 +273,7 @@ func (s *Service) loadUsable(branch *wal.Branch, collection string, from, to, up
 		if firstErr == nil {
 			firstErr = err
 		}
-		if snap.VisibilityRules < CurrentVisibilityRules {
-			// Old GC could delete the covered WAL without recording a
-			// floor. Only another copy at this LSN can replace it safely.
-			from = snap.LSN
-		}
+		from, to = snap.LSN, snap.LSN
 		failed = append(failed, snap.ID)
 	}
 }
@@ -394,22 +389,35 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 	defer func() { _ = cursor.Close(ctx) }()
 
 	var selected *Snapshot
+	var tieLSN int64
+	var candidateErr error
 	var rejectedLSN, unrecordedLSN int64
 	var ancestorGap *wal.ReclaimedOldBinaryError
 	var pass *certificationPass
 	for cursor.Next(ctx) {
-		// The index supplies descending LSN order. Only ties can still
-		// improve the selection after a sorted manifest is usable.
-		if selected != nil {
-			if lsn, ok := cursor.Current.Lookup("lsn").AsInt64OK(); ok && lsn < selected.LSN {
+		// Only a tie can replace an unreadable manifest or improve a
+		// usable sorted one. Inspect the index key and marker first.
+		var lsn int64
+		if err := cursor.Current.Lookup("lsn").Unmarshal(&lsn); err != nil {
+			if selected != nil || candidateErr != nil {
 				break
+			}
+			return nil, fmt.Errorf("failed to decode snapshot manifest LSN: %w", err)
+		}
+		if (selected != nil || candidateErr != nil) && lsn != tieLSN {
+			break
+		}
+		tieLSN = lsn
+		if selected != nil || lookup == forOrderedFrames {
+			if ordered, _ := cursor.Current.Lookup("ordered_images").BooleanOK(); !ordered {
+				continue
 			}
 		}
 		var snap Snapshot
 		if err := cursor.Decode(&snap); err != nil {
-			return nil, fmt.Errorf("failed to decode snapshot manifest: %w", err)
-		}
-		if selected != nil && !snap.OrderedImages {
+			if candidateErr == nil {
+				candidateErr = fmt.Errorf("failed to decode snapshot manifest: %w", err)
+			}
 			continue
 		}
 		if !s.usable(&snap, branch, readUpperBound) {
@@ -420,7 +428,13 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 				pass = s.newCertificationPass()
 			}
 			if err := pass.certify(ctx, branch, &snap); err != nil {
-				return nil, err
+				if _, ok := errors.AsType[candidateChunkError](err); !ok {
+					return nil, err
+				}
+				if candidateErr == nil {
+					candidateErr = err
+				}
+				continue
 			}
 		}
 		usable := snap.ExactOldBinaryKeys || snap.OldKeyCheck == keysTrusted
@@ -443,6 +457,9 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, err
+	}
+	if selected == nil && candidateErr != nil {
+		return nil, candidateErr
 	}
 	if rejectedLSN != 0 {
 		from := minLSN

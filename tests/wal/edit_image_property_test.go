@@ -184,15 +184,21 @@ func checkEditImageHistory(t *testing.T, seed int64) {
 	result, err := h.db.Collection("wal_log").DeleteOne(ctx, bson.M{"branch_id": h.main.ID, "lsn": missing})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, result.DeletedCount)
-	images = slices.DeleteFunc(images, func(image editImageRecord) bool { return !image.frame && image.at == missing })
+	for i, image := range images {
+		if !image.frame && image.at == missing {
+			images[i].reclaimed = true
+		}
+	}
 	t.Run("unrecorded reclamation", check)
 	require.NoError(t, h.wal.RecordReclaimFloor(ctx, h.main.ID, editCollection, reclaimThrough))
 	removed, err := h.wal.DeleteDataEntriesUpTo(h.main.ID, editCollection, reclaimThrough)
 	require.NoError(t, err)
 	require.Positive(t, removed)
-	images = slices.DeleteFunc(images, func(image editImageRecord) bool {
-		return !image.frame && image.branch == h.main.ID && image.at <= reclaimThrough
-	})
+	for i, image := range images {
+		if !image.frame && image.branch == h.main.ID && image.at <= reclaimThrough {
+			images[i].reclaimed = true
+		}
+	}
 	t.Run("recorded reclamation", check)
 }
 
@@ -309,10 +315,12 @@ type editImageRecord struct {
 	frame       bool
 	ordered     bool
 	untrusted   bool
+	reclaimed   bool
 }
 
 type editImageSources struct {
 	row, frame editImageRecord
+	reclaimed  []int64
 }
 
 func visibleEditImages(branch *wal.Branch, pos int64, parents map[string]*wal.Branch, records []editImageRecord) map[string]editImageSources {
@@ -326,7 +334,9 @@ func visibleEditImages(branch *wal.Branch, pos int64, parents map[string]*wal.Br
 			if r.frame && r.at > s.frame.at {
 				s.frame = r
 			}
-			if !r.frame && r.at > s.row.at {
+			if r.reclaimed {
+				s.reclaimed = append(s.reclaimed, r.at)
+			} else if !r.frame && r.at > s.row.at {
 				s.row = r
 			}
 			visible[r.key] = s
@@ -343,9 +353,14 @@ func (s editImageSources) checkBytes(t *testing.T, doc bson.M, got bson.Raw, lab
 	// WAL write. At the same position, also check a new snapshot against its
 	// source write so sorting during snapshot creation cannot pass unnoticed.
 	candidates := []bson.Raw{s.row.raw, s.frame.raw}
+	// A deleted write after the surviving row can change field order
+	// without changing any decoded values in the later frame.
+	reclaimedBetween := slices.ContainsFunc(s.reclaimed, func(at int64) bool {
+		return s.row.at < at && at <= s.frame.at
+	})
 	if s.row.at > s.frame.at {
 		candidates = candidates[:1]
-	} else if s.frame.ordered && s.frame.at > s.row.at {
+	} else if reclaimedBetween || (s.frame.ordered && s.frame.at > s.row.at) {
 		candidates = candidates[1:]
 	}
 	if s.row.untrusted {
