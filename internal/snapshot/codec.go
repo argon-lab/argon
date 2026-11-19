@@ -1,8 +1,8 @@
 package snapshot
 
 import (
+	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"sort"
 
@@ -26,8 +26,6 @@ type frame struct {
 	Key string   `bson:"k"`
 	Doc bson.Raw `bson:"d"`
 }
-
-var errSharedSnapshotKey = errors.New("old snapshot may have collapsed two old-binary document keys")
 
 // encodeState serializes a collection state into compressed chunks.
 func encodeState(state map[string]bson.M, compressor *wal.Compressor) (chunks [][]byte, docCount int64, err error) {
@@ -92,9 +90,8 @@ func encodeState(state map[string]bson.M, compressor *wal.Compressor) (chunks []
 	return chunks, docCount, nil
 }
 
-// decodeChunk appends one decompressed chunk's frames into state. With a
-// nil state, only the frame and document keys of an old snapshot are needed.
-func decodeChunk(compressed []byte, compressor *wal.Compressor, state map[string]bson.M, exactKeys bool) error {
+// walkChunk borrows each frame's key and document directly from the BSON stream.
+func walkChunk(ctx context.Context, compressed []byte, compressor *wal.Compressor, visit func(frame) error) error {
 	raw, err := compressor.Decompress(compressed)
 	if err != nil {
 		return fmt.Errorf("failed to decompress snapshot chunk: %w", err)
@@ -109,34 +106,36 @@ func decodeChunk(compressed []byte, compressor *wal.Compressor, state map[string
 		if docLen < 5 || offset+docLen > len(raw) {
 			return fmt.Errorf("corrupt snapshot frame at offset %d (len %d)", offset, docLen)
 		}
-		var f frame
-		if err := bson.Unmarshal(raw[offset:offset+docLen], &f); err != nil {
-			return fmt.Errorf("failed to decode snapshot frame at offset %d: %w", offset, err)
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if !exactKeys && wal.IsSharedOldBinaryKey(f.Key) {
-			return errSharedSnapshotKey
+		rawFrame := bson.Raw(raw[offset : offset+docLen])
+		key, ok := rawFrame.Lookup("k").StringValueOK()
+		doc, docOK := rawFrame.Lookup("d").DocumentOK()
+		if !ok || !docOK {
+			return fmt.Errorf("invalid snapshot frame at offset %d", offset)
 		}
-		// The document is authoritative: old snapshots used keys which
-		// conflated ObjectIDs with equal-looking strings.
-		id, idErr := wal.DocumentIDFromImage(f.Doc)
-		key := f.Key
-		if idErr == nil {
-			key = wal.DocumentIDString(id)
-			if !exactKeys && key != f.Key && wal.IsSharedOldBinaryKey(key) {
-				return errSharedSnapshotKey
-			}
-		}
-		if state != nil {
-			var doc bson.M
-			if err := wal.UnmarshalDocument(f.Doc, &doc); err != nil {
-				return fmt.Errorf("failed to decode document %s: %w", f.Key, err)
-			}
-			if idErr == nil {
-				doc["_id"] = id
-			}
-			state[key] = doc
+		if err := visit(frame{Key: key, Doc: doc}); err != nil {
+			return err
 		}
 		offset += docLen
 	}
 	return nil
+}
+
+func decodeChunk(ctx context.Context, compressed []byte, compressor *wal.Compressor, state map[string]bson.M) error {
+	return walkChunk(ctx, compressed, compressor, func(f frame) error {
+		var doc bson.M
+		if err := wal.UnmarshalDocument(f.Doc, &doc); err != nil {
+			return fmt.Errorf("failed to decode document %s: %w", f.Key, err)
+		}
+		// Older writers conflated ObjectIDs with equal-looking strings.
+		key := f.Key
+		if id, err := wal.DocumentIDFromImage(f.Doc); err == nil {
+			key = wal.DocumentIDString(id)
+			doc["_id"] = id
+		}
+		state[key] = doc
+		return nil
+	})
 }

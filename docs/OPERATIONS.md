@@ -375,14 +375,10 @@ Before it records the resync, it opens and reads the change stream with
 the replay's options and start position. If the source cannot serve that
 stream, `main` stays untouched and no new unfinished resync is recorded.
 
-Older writers could index an empty BSON subtype-2 value and four zero
-bytes under the same key, including within a compound `_id`. Images resolve
-the two IDs. A delete under the shared key without a pre-image leaves the
-affected history unreadable. Stop following and run
-`argon source resync -p <project> --force`. Resync copies the affected
-collection from the source and publishes it at the consistent LSN. Earlier
-ambiguous positions and branches forked from them still need the missing
-information. On an ordinary branch, re-import that collection.
+For old-binary key errors on a followed branch, stop the follower and run
+`argon source resync -p <project> --force`. The completed resync repairs
+the collection at the consistent LSN it prints. Earlier reads that depend
+on the missing history still fail. See [upgrading older snapshots](#upgrading-older-snapshots).
 
 What it does to `main`:
 
@@ -642,6 +638,35 @@ coverage, and below every pin's coverage. Consequences, stated plainly:
   pins).
 
 `--dry-run` reports what would be deleted, per branch and collection.
+
+### Upgrading older snapshots
+
+Argon 2.7.0 could store an empty BSON subtype-2 value and four zero bytes
+under the same key, even inside a compound `_id`. A delete under that key
+without a pre-image could remove both from the snapshot. If GC reclaimed
+part of the collection's WAL through the snapshot LSN, Argon checks for
+subtype-2 IDs of any length in the branch's and its ancestors' retained WAL,
+in snapshots of that collection anywhere in the project, and in the
+branch's own checkout if it has one. If any trace survives, reads that need
+the suspect snapshot report the branch, collection and unknown LSN range.
+Collections with ordinary IDs can continue using their old snapshots after GC.
+
+An older import snapshot containing the key, or a later WAL entry for the
+surviving row, is enough evidence. If every trace is gone, Argon accepts
+the snapshot. For example, a followed branch can hold neither row even
+though the four-zero-byte row still exists on the source. Stop the follower
+and run `argon source resync -p <project> --force` to repair current
+`main`. Earlier positions can still return a result missing the row.
+
+On an ordinary branch, check a readable position before the affected
+history with `argon time-travel query -p P -b B --lsn N`. Fork from it with
+`argon restore branch -p P -b B --lsn N --as recovered` to keep the original
+head, or rewind that branch with `argon restore reset -p P -b B --lsn N`
+after releasing any checkout. If the good position predates the branch,
+fork from its parent at that position. To start from an authoritative
+database, pause its writers and DDL, then run
+`argon import database -p NEW -d DB --uri URI --source-quiesced`.
+This copies the database into a new project. The original branch keeps its history.
 
 ## Migrating from WAL schema v1
 

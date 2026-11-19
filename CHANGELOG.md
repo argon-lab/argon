@@ -11,6 +11,35 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Changed
+
+- A read that depends on a snapshot written before 2.8.0 is refused when
+  garbage collection reclaimed the WAL the snapshot covers and the
+  collection shows a BSON binary subtype-2 `_id` in a snapshot, the retained
+  WAL or a checked-out branch. The error names the branch, the collection
+  and the range of positions that cannot be established. On a followed
+  branch, stop following and run `argon source resync -p <project> --force`;
+  reads from the new baseline onward succeed and earlier positions stay
+  refused. Collections without such an `_id` read as before.
+- Known limitation: if a collection held both an empty and a four-zero-byte
+  subtype-2 `_id`, one was deleted without a pre-image, and garbage
+  collection then removed every trace of both, reads at positions before a
+  resync can lack the surviving row. A forced resync repairs the current
+  state. See the upgrade notes in `docs/OPERATIONS.md`.
+- The ambiguous-history error for a branch that does not follow a source
+  now names steps that exist: check an earlier position with
+  `argon time-travel query`, fork there with `argon restore branch` or
+  rewind with `argon restore reset`, or copy the database into a new
+  project with `argon import database`.
+
+### Fixed
+
+- The startup check of snapshots written by earlier versions scans each
+  WAL prefix once for all snapshots that share it, reads index keys only,
+  and runs under one five-second deadline that covers every query it makes.
+  Checks completed on demand are saved with the snapshot, so each snapshot
+  is checked once.
+
 ## [2.8.0] - 2026-11-19
 
 Write-back to a followed source database is available by default. Applying

@@ -8,6 +8,7 @@
 package materializer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -19,6 +20,7 @@ import (
 // BranchLookup resolves branch metadata during ancestry traversal.
 type BranchLookup interface {
 	GetBranchByIDAny(branchID string) (*wal.Branch, error)
+	GetBranchByIDAnyContext(ctx context.Context, branchID string) (*wal.Branch, error)
 }
 
 // SnapshotSource serves materialized snapshots so replay can start from the
@@ -90,6 +92,10 @@ func (s *Service) ancestrySegments(branch *wal.Branch, targetLSN int64) ([]segme
 // A completed source copy supplies its collection's entire starting state.
 // Stop at that copy while walking the ordinary ancestry chain.
 func (s *Service) collectionSegments(branch *wal.Branch, collection string, targetLSN int64) ([]segment, error) {
+	return collectionSegments(branch, collection, targetLSN, s.branches.GetBranchByIDAny)
+}
+
+func collectionSegments(branch *wal.Branch, collection string, targetLSN int64, getBranch func(string) (*wal.Branch, error)) ([]segment, error) {
 	var reversed []segment
 
 	cur := branch
@@ -114,7 +120,7 @@ func (s *Service) collectionSegments(branch *wal.Branch, collection string, targ
 		if cur.ParentID == "" {
 			break
 		}
-		parent, err := s.branches.GetBranchByIDAny(cur.ParentID)
+		parent, err := getBranch(cur.ParentID)
 		if err != nil {
 			return nil, fmt.Errorf("branch %s references parent %s which cannot be loaded: %w", cur.ID, cur.ParentID, err)
 		}
@@ -136,25 +142,6 @@ func (s *Service) collectionSegments(branch *wal.Branch, collection string, targ
 	return reversed, nil
 }
 
-// CheckOldBinarySnapshot checks for ambiguity even when the old snapshot
-// contains no trace of the deleted key.
-func (s *Service) CheckOldBinarySnapshot(branch *wal.Branch, collection string, snapLSN int64) error {
-	segs, err := s.ancestrySegments(branch, snapLSN)
-	if err != nil {
-		return err
-	}
-	for _, seg := range segs {
-		// An older writer also ignores a completed copy on an ancestor.
-		if seg.branch.CollectionStart(collection, seg.toLSN) != 0 {
-			return wal.ErrOldBinarySnapshotReclaimed
-		}
-		if err := s.wal.CheckOldBinaryDeletes(seg.branch, collection, seg.fromLSN, seg.toLSN); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // CheckRejectedSnapshotCoverage checks the WAL only when a snapshot with
 // uncertain old-binary keys was skipped. GC before 2.1.6 could remove its
 // covered entries without recording a floor.
@@ -170,7 +157,7 @@ func (s *Service) CheckRejectedSnapshotCoverage(branch *wal.Branch, collection s
 	if err := s.wal.CheckOldBinaryDeletes(branch, collection, from, at); err != nil {
 		return err
 	}
-	return fmt.Errorf("branch %q, collection %q: %w at LSN %d. %w through LSN %d may prevent replay. For a followed branch, stop following and run `argon source resync -p <project> --force`. For another branch, re-import the collection", branch.ID, collection, wal.ErrOldBinarySnapshotReclaimed, rejectedLSN, wal.ErrHistoryReclaimed, end)
+	return &wal.ReclaimedOldBinaryError{BranchID: branch.ID, Collection: collection, From: from, To: end}
 }
 
 // CheckResyncCoverage checks a possible pre-floor GC gap identified while
@@ -372,6 +359,17 @@ func (s *Service) ValidateReadable(branch *wal.Branch, targetLSN int64) error {
 				continue
 			}
 			if floor := floors[i][collection]; needsReclaimed(segments[i], from, floor) {
+				if s.snapshots != nil {
+					// A descendant's rejected manifest can identify why
+					// this ancestral range cannot be reconstructed.
+					for j := len(segments) - 1; j >= i; j-- {
+						seg := segments[j]
+						start := max(seg.fromLSN, seg.branch.CollectionStart(collection, seg.toLSN))
+						if err := s.snapshots.CheckReplayCoverage(seg.branch, collection, start, seg.toLSN); err != nil {
+							return err
+						}
+					}
+				}
 				return reclaimedError(segments[i].branch, collection, floor, targetLSN)
 			}
 		}
@@ -644,10 +642,29 @@ func (s *Service) MaterializeDocumentsAtLSN(branch *wal.Branch, collection strin
 			return nil, reclaimedError(seg.branch, collection, suspect, targetLSN)
 		}
 		state, snapLSN, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
-		if err != nil {
+		if err != nil && !errors.Is(err, wal.ErrHistoryReclaimed) {
 			return nil, fmt.Errorf("failed to look up snapshot for branch %s: %w", seg.branch.ID, err)
 		}
-		if !ok || needsReclaimed(seg, snapLSN+1, suspect) {
+		if err != nil || !ok || needsReclaimed(seg, snapLSN+1, suspect) {
+			if i < len(segments)-1 {
+				// Point lookups above this hop skipped its descendants'
+				// snapshots because their own WAL was intact. A descendant
+				// snapshot can still cover this ancestral gap, or hold the
+				// reason that its historical state cannot be established.
+				full, err := s.MaterializeCollectionAtLSN(branch, collection, targetLSN)
+				if err != nil {
+					return nil, err
+				}
+				for key := range remaining {
+					if doc, ok := full[key]; ok {
+						result[key] = doc
+					}
+				}
+				return result, nil
+			}
+			if err != nil {
+				return nil, err
+			}
 			return nil, reclaimedError(seg.branch, collection, suspect, targetLSN)
 		}
 		// Entries above the snapshot were looked at first, so a pending

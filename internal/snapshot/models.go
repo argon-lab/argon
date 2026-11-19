@@ -8,6 +8,8 @@ package snapshot
 import (
 	"time"
 
+	"github.com/argon-lab/argon/v2/internal/wal"
+
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -48,9 +50,14 @@ type Snapshot struct {
 	// four-zero-byte subtype-2 IDs and checked for ambiguous WAL deletes.
 	ExactOldBinaryKeys bool `bson:"exact_old_binary_keys,omitempty" json:"-"`
 
-	// OldKeysTrusted records a completed check of a manifest written
-	// before ExactOldBinaryKeys. An absent result still requires inspection.
+	// OldKeysTrusted keeps the decision readable by earlier versions. Their
+	// boolean alone did not account for subtype-2 evidence after reclaim.
 	OldKeysTrusted *bool `bson:"old_keys_trusted,omitempty" json:"-"`
+
+	// OldKeyCheck identifies the completed decision, including the reason for
+	// rejecting an old manifest. A reclaimed prefix also records its range.
+	OldKeyCheck string                       `bson:"old_key_check,omitempty" json:"-"`
+	OldKeyGap   *wal.ReclaimedOldBinaryError `bson:"old_key_gap,omitempty" json:"-"`
 
 	ChunkIDs  []string  `bson:"chunk_ids" json:"chunk_ids"`
 	DocCount  int64     `bson:"doc_count" json:"doc_count"`
