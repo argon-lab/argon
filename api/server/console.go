@@ -515,11 +515,14 @@ func (r *Router) listSandboxes(c *gin.Context) {
 	for _, b := range boxes {
 		item := gin.H{"branch": b}
 		if own, err := b.OwnDatabase(); b.IsLive() && !r.opts.DemoMode && err == nil {
+			// A sandbox whose capture cannot run stays in the list, so that it
+			// can be seen and discarded, but without a connection string:
+			// writes to it would not be captured.
 			if err := r.startIngester(b.ID); err != nil {
-				abortErr(c, http.StatusServiceUnavailable, err)
-				return
+				item["capture_error"] = err.Error()
+			} else {
+				item["connection_string"] = r.services.BranchConnectionString(own)
 			}
-			item["connection_string"] = r.services.BranchConnectionString(own)
 		}
 		items = append(items, item)
 	}

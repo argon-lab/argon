@@ -34,16 +34,27 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Fixed
 
+- Listing a project's sandboxes over REST no longer fails with 503 when one
+  sandbox's capture cannot run. That sandbox is listed with `capture_error`
+  and no connection string, and the console marks it so it can be discarded
+  there.
 - A sandbox create, or a sandbox from a pin, that fails at checkout no longer
   leaves its branch and a partly filled `argon_br_*` database behind. Checkout
   drops a database it had started to fill when it fails, also when the
   caller's context was cancelled, and the sandbox's branch is removed. If that
   cleanup fails, the error names what is left.
 - Checkout, re-checkout (including after restore) and snapshots preserve stored
-  BSON field order, including inside arrays, when a trusted image matches the
-  decoded document. A follower's last inexact read can supply that order.
-  Repeated data fields keep their last value at their first position. When no
-  image qualifies, map fields use name order with `_id` first.
+  BSON field order, including inside arrays, when a trusted, canonical image
+  matches the decoded document. A follower's last inexact read can supply that
+  order. Repeated names (including in code scopes), nonsequential array indexes,
+  short subtype-2 binaries and unsorted regex options cause the whole document
+  to be encoded from its decoded value. Map fields use name order, and MongoDB
+  places `_id` first on checkout.
+- Snapshot creation writes chunks for every collection before publishing
+  manifests, so a materialization failure cannot give GC new coverage.
+  Reads can use another copy at the same LSN or an earlier usable snapshot
+  when a chunk fails to load. Once a snapshot loads, older manifest contents
+  cannot block the read.
 - The startup check of snapshots written by earlier versions scans each
   WAL prefix once for all snapshots that share it, reads index keys only,
   and runs under one five-second deadline that covers every query it makes.

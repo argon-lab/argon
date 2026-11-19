@@ -24,7 +24,7 @@ func (s *Service) EditCollectionAtLSN(branch *wal.Branch, collection string, tar
 
 func (s *Service) editSnapshot(branch *wal.Branch, collection string, from, to int64) (map[string]bson.Raw, int64, bool, error) {
 	frames := make(map[string]bson.Raw)
-	lsn, found, ordered, err := s.visitSnapshot(branch, collection, from, to, nil, func(k string, doc *wal.DecodedImage) error {
+	lsn, found, ordered, err := s.visitSnapshotFrames(branch, collection, from, to, func() { clear(frames) }, func(k string, doc *wal.DecodedImage) error {
 		image, err := editImage(doc, doc, wal.SnapshotImage, nil)
 		if err == nil {
 			frames[k] = bytes.Clone(image)
@@ -60,7 +60,9 @@ func (s *Service) recoverSnapshotOrder(branch *wal.Branch, collection string, ls
 		start := seg.fromLSN
 		var walk func(func(string, bson.Raw) error) error
 		if source, ok := s.snapshots.(orderedFrameSource); ok {
-			at, visit, err := source.OrderedSnapshotFrames(seg.branch, collection, start, seg.toLSN, seg.toLSN)
+			// A usable ordered copy at the selected LSN would have won
+			// the tie. It cannot supply order after its chunks failed.
+			at, visit, err := source.OrderedSnapshotFrames(seg.branch, collection, start, min(seg.toLSN, lsn-1), seg.toLSN)
 			if err != nil {
 				return
 			}
@@ -129,7 +131,7 @@ func recoverEditFrame(frames map[string]bson.Raw, key string, candidate bson.Raw
 	}
 	// The selected frame already has clean bytes. Recover original order
 	// only when the other image can be used verbatim.
-	if image, ok := matchingEditImage(doc, source, role, entry); ok && bytes.Equal(image, candidate) {
+	if image, ok := matchingEditImage(doc, source, role, entry); ok {
 		frames[key] = bytes.Clone(image)
 	}
 }

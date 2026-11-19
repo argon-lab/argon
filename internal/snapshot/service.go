@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/materializer"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -93,7 +95,7 @@ func NewServiceWithStore(db *mongo.Database, branches *branchwal.BranchService, 
 // itself starts from the previous snapshot when one exists, successive
 // snapshots are built incrementally, and unchanged collections re-serialize
 // to identical chunks that deduplicate away in the chunk store.
-func (s *Service) CreateSnapshot(ctx context.Context, branchID string, lsn int64) ([]*Snapshot, error) {
+func (s *Service) CreateSnapshot(ctx context.Context, branchID string, lsn int64) (snapshots []*Snapshot, err error) {
 	branch, err := s.branches.GetBranchByIDAny(branchID)
 	if err != nil {
 		return nil, fmt.Errorf("branch %s not found: %w", branchID, err)
@@ -110,31 +112,47 @@ func (s *Service) CreateSnapshot(ctx context.Context, branchID string, lsn int64
 		return nil, fmt.Errorf("failed to materialize branch at LSN %d: %w", lsn, err)
 	}
 
-	snapshots := make([]*Snapshot, 0, len(collections))
-	for _, collection := range collections {
-		docs, err := s.materializer.EditCollectionAtLSN(branch, collection, lsn)
+	// Materialize one collection at a time. Keep its compressed chunks until
+	// the whole branch succeeds, so replay runs outside the publication lock.
+	var staged []encodedCollection
+	for _, name := range collections {
+		docs, err := s.materializer.EditCollectionAtLSN(branch, name, lsn)
 		if err != nil {
 			return nil, err
 		}
-		snap, err := s.storeCollectionSnapshot(ctx, branch, collection, lsn, docs)
+		chunks, count, err := encodeState(docs, s.compressor)
 		if err != nil {
-			return nil, fmt.Errorf("collection %s: %w", collection, err)
+			return nil, fmt.Errorf("collection %s: %w", name, err)
 		}
-		snapshots = append(snapshots, snap)
+		staged = append(staged, encodedCollection{name: name, chunks: chunks, docCount: count})
 	}
-	return snapshots, nil
-}
+	snapshots = make([]*Snapshot, 0, len(staged))
+	if len(staged) == 0 {
+		return snapshots, nil
+	}
 
-func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branch, collection string, lsn int64, docs map[string]bson.Raw) (*Snapshot, error) {
-	chunks, docCount, err := encodeState(docs, s.compressor)
-	if err != nil {
-		return nil, err
-	}
 	unlock, err := s.lockPublication(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	unpublished := make(map[string]bool)
+	defer func() {
+		if err != nil && len(unpublished) != 0 {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			_, cleanupErr := s.deleteUnreferencedChunks(cleanupCtx, unpublished)
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
+	for i, collection := range staged {
+		snap, err := s.storeCollectionChunks(ctx, branch, lsn, collection, unpublished)
+		if err != nil {
+			return nil, fmt.Errorf("collection %s: %w", collection.name, err)
+		}
+		staged[i].chunks = nil
+		snapshots = append(snapshots, snap)
+	}
 	fresh, err := s.branches.GetBranchByIDAny(branch.ID)
 	if err != nil {
 		return nil, err
@@ -143,36 +161,52 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 		return nil, fmt.Errorf("branch was deleted while building its snapshot")
 	}
 
-	chunkIDs := make([]string, 0, len(chunks))
+	for _, snap := range snapshots {
+		// An insert can succeed even if its acknowledgement is lost.
+		// Only clean up chunks whose manifests were never attempted.
+		for _, id := range snap.ChunkIDs {
+			delete(unpublished, id)
+		}
+		if _, err := s.manifests.InsertOne(ctx, snap); err != nil {
+			return nil, fmt.Errorf("failed to store snapshot manifest: %w", err)
+		}
+	}
+	return snapshots, nil
+}
+
+type encodedCollection struct {
+	name     string
+	chunks   [][]byte
+	docCount int64
+}
+
+func (s *Service) storeCollectionChunks(ctx context.Context, branch *wal.Branch, lsn int64, collection encodedCollection, unpublished map[string]bool) (*Snapshot, error) {
+	chunkIDs := make([]string, 0, len(collection.chunks))
 	var sizeBytes int64
-	for _, chunk := range chunks {
+	for _, chunk := range collection.chunks {
 		id, err := s.store.Put(ctx, chunk)
 		if err != nil {
 			return nil, err
 		}
+		unpublished[id] = true
 		chunkIDs = append(chunkIDs, id)
 		sizeBytes += int64(len(chunk))
 	}
 
-	snap := &Snapshot{
+	return &Snapshot{
 		ProjectID:          branch.ProjectID,
 		BranchID:           branch.ID,
-		Collection:         collection,
+		Collection:         collection.name,
 		LSN:                lsn,
 		RangesApplied:      len(branch.DiscardedRanges),
 		VisibilityRules:    CurrentVisibilityRules,
 		ExactOldBinaryKeys: true,
 		OrderedImages:      true,
 		ChunkIDs:           chunkIDs,
-		DocCount:           docCount,
+		DocCount:           collection.docCount,
 		SizeBytes:          sizeBytes,
 		CreatedAt:          time.Now(),
-	}
-
-	if _, err := s.manifests.InsertOne(ctx, snap); err != nil {
-		return nil, fmt.Errorf("failed to store snapshot manifest: %w", err)
-	}
-	return snap, nil
+	}, nil
 }
 
 // FindUsable implements materializer.SnapshotSource: it returns the loaded
@@ -183,35 +217,70 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 // Usability honors discarded ranges with the same visibility rule replay
 // applies to individual entries; see usable.
 func (s *Service) FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (map[string]bson.M, int64, bool, error) {
-	snap, err := s.newestUsable(branch, collection, minLSN, maxLSN, readUpperBound, forReplay)
+	var state map[string]bson.M
+	snap, err := s.loadUsable(branch, collection, minLSN, maxLSN, readUpperBound, func(snap *Snapshot) (retry bool, err error) {
+		state, err = s.load(context.Background(), snap)
+		return true, err
+	})
 	if err != nil || snap == nil {
-		return nil, 0, false, err
-	}
-	state, err := s.load(context.Background(), snap)
-	if err != nil {
 		return nil, 0, false, err
 	}
 	return state, snap.LSN, true, nil
 }
 
 // VisitUsableFrames lends each decoded snapshot value and its stored BSON
-// together. Selection and frame decoding are the same as in FindUsable.
-func (s *Service) VisitUsableFrames(branch *wal.Branch, collection string, from, to int64, visit func(string, *wal.DecodedImage) error) (int64, bool, bool, error) {
-	snap, err := s.newestUsable(branch, collection, from, to, to, forReplay)
+// together. A failed chunk can follow frames already visited, so reset
+// discards that candidate's partial state before starting another one.
+func (s *Service) VisitUsableFrames(branch *wal.Branch, collection string, from, to int64, reset func(), visit func(string, *wal.DecodedImage) error) (int64, bool, bool, error) {
+	snap, err := s.loadUsable(branch, collection, from, to, to, func(snap *Snapshot) (bool, error) {
+		reset()
+		var visitErr error
+		err := s.visitFrames(snap, func(f frame) error {
+			key, doc, err := f.decoded()
+			if err != nil {
+				return err
+			}
+			visitErr = visit(key, doc)
+			return visitErr
+		})
+		return visitErr == nil, err
+	})
 	if err != nil || snap == nil {
 		return 0, false, false, err
 	}
-	err = s.visitFrames(snap, func(f frame) error {
-		key, doc, err := f.decoded()
-		if err != nil {
-			return err
-		}
-		return visit(key, doc)
-	})
-	if err != nil {
-		return 0, false, false, err
-	}
 	return snap.LSN, true, snap.OrderedImages, nil
+}
+
+// On a chunk failure, run the same selection and coverage checks with the
+// failed manifest excluded. Another copy at the same LSN precedes older ones.
+func (s *Service) loadUsable(branch *wal.Branch, collection string, from, to, upper int64, load func(*Snapshot) (retry bool, err error)) (*Snapshot, error) {
+	var failed []primitive.ObjectID
+	var firstErr error
+	for {
+		snap, err := s.newestUsable(branch, collection, from, to, upper, forReplay, failed...)
+		if err != nil {
+			return nil, err
+		}
+		if snap == nil {
+			return nil, firstErr
+		}
+		retry, err := load(snap)
+		if err == nil {
+			return snap, nil
+		}
+		if !retry {
+			return nil, err
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if snap.VisibilityRules < CurrentVisibilityRules {
+			// Old GC could delete the covered WAL without recording a
+			// floor. Only another copy at this LSN can replace it safely.
+			from = snap.LSN
+		}
+		failed = append(failed, snap.ID)
+	}
 }
 
 // OrderedSnapshotFrames selects the latest usable ordered snapshot in the LSN
@@ -305,12 +374,15 @@ const (
 )
 
 // newestUsable checks both reads and GC coverage against the same rules.
-func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64, lookup snapshotLookup) (*Snapshot, error) {
+func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64, lookup snapshotLookup, failed ...primitive.ObjectID) (*Snapshot, error) {
 	ctx := context.Background()
 	filter := bson.M{
 		"branch_id":  branch.ID,
 		"collection": collection,
 		"lsn":        bson.M{"$gte": minLSN, "$lte": maxLSN},
+	}
+	if len(failed) != 0 {
+		filter["_id"] = bson.M{"$nin": failed}
 	}
 	if lookup == forOrderedFrames {
 		filter["ordered_images"] = true
@@ -326,20 +398,19 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 	var ancestorGap *wal.ReclaimedOldBinaryError
 	var pass *certificationPass
 	for cursor.Next(ctx) {
+		// The index supplies descending LSN order. Only ties can still
+		// improve the selection after a sorted manifest is usable.
+		if selected != nil {
+			if lsn, ok := cursor.Current.Lookup("lsn").AsInt64OK(); ok && lsn < selected.LSN {
+				break
+			}
+		}
 		var snap Snapshot
 		if err := cursor.Decode(&snap); err != nil {
 			return nil, fmt.Errorf("failed to decode snapshot manifest: %w", err)
 		}
-		if selected != nil {
-			// The index already supplies descending LSN order. A snapshot
-			// built after upgrading can share its LSN with a value-only
-			// snapshot. Prefer its ordered frames when both are usable.
-			if snap.LSN < selected.LSN {
-				break
-			}
-			if !snap.OrderedImages {
-				continue
-			}
+		if selected != nil && !snap.OrderedImages {
+			continue
 		}
 		if !s.usable(&snap, branch, readUpperBound) {
 			continue

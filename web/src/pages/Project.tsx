@@ -153,6 +153,13 @@ function Sandboxes({
                   >
                     {s.branch.name}
                   </Link>
+                  {s.capture_error && (
+                    <p className="mt-1 text-xs text-red-400">
+                      <Badge tone="danger">capture failed</Badge>{" "}
+                      {s.capture_error}. Its writes are not recorded; discard
+                      it.
+                    </p>
+                  )}
                 </td>
                 <td className="py-2">
                   {s.branch.expires_at && (
