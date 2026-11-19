@@ -94,7 +94,6 @@ func newFollowFixture(t *testing.T, sourceURI string) *followFixture {
 		_ = services.Client.Disconnect(cleanup)
 		// The test owns the source and removes it itself. Argon never does.
 		_ = f.source.Drop(cleanup)
-		_ = client.Database("follow_tick").Drop(cleanup)
 		_ = client.Disconnect(cleanup)
 	})
 	return f

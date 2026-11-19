@@ -158,7 +158,7 @@ func TestSource_WritesBeforeLaterLegacySnapshot(t *testing.T) {
 			events, err := h.wal.GetDocumentHistory(child.ID, collection, key, lsn, lsn)
 			require.NoError(t, err)
 			require.Len(t, events, 1)
-			require.Equal(t, rows[0].PostImage, events[0].PreImage)
+			require.Equal(t, initial, decodeEditImage(t, events[0].PreImage))
 		})
 	}
 }
