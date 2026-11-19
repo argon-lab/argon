@@ -184,3 +184,21 @@ func TestWriteBack_ApprovalRejectsHiddenDocumentKey(t *testing.T) {
 	require.Nil(t, p.Conflicts[0].Ours)
 	require.Nil(t, p.Conflicts[0].Theirs)
 }
+
+func TestWriteBackUnassignedPlanApproval(t *testing.T) {
+	p := approvalPlan(t)
+	p.ID, p.Status = primitive.NilObjectID, StatusPending
+	digest, err := ApprovalDigest(p)
+	require.Empty(t, digest)
+	require.ErrorContains(t, err, "assigned")
+	body, err := p.CLIJSON(true)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), `"approval_digest"`)
+
+	p.ID = primitive.NewObjectID()
+	digest, err = ApprovalDigest(p)
+	require.NoError(t, err)
+	body, err = p.CLIJSON(true)
+	require.NoError(t, err)
+	require.Contains(t, string(body), digest)
+}

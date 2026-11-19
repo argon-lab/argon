@@ -414,7 +414,7 @@ func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Da
 			return importedCount, walEntriesCount, err
 		}
 		var doc bson.M
-		if err := cursor.Decode(&doc); err != nil {
+		if err := wal.UnmarshalDocument(cursor.Current, &doc); err != nil {
 			return importedCount, walEntriesCount, fmt.Errorf("failed to decode document: %w", err)
 		}
 

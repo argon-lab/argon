@@ -311,6 +311,8 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/merge/writeback.go:claimWriteBack WithTransaction",
 		// Applies the plan one document at a time in existing source collections.
 		"internal/merge/writeback.go:writeChanges DeleteOne",
+		"internal/merge/writeback.go:writeChanges FindOne", // compare the before-image
+		"internal/merge/writeback.go:writeChanges FindOne", // verify the final stored image
 		"internal/merge/writeback.go:writeChanges InsertOne",
 		"internal/merge/writeback.go:writeChanges ReplaceOne",
 		"internal/merge/writeback.go:writeSourceTransaction AbortTransaction",
@@ -444,7 +446,8 @@ func confinedSourceCalls(root string) (drops, writes []string, err error) {
 			if call.name == "Drop" {
 				drops = append(drops, scope.site)
 			}
-			if inSourcePath && (methods[call.name] || helpers[call]) {
+			writeBackRead := scope.site == "internal/merge/writeback.go:writeChanges" && call.name == "FindOne"
+			if inSourcePath && (methods[call.name] || helpers[call] || writeBackRead) {
 				writes = append(writes, scope.site+" "+call.name)
 			}
 		}

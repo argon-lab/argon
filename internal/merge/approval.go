@@ -1,16 +1,15 @@
 package merge
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash"
 
 	"github.com/argon-lab/argon/v2/internal/wal"
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 // All variable-size fields carry an unsigned 64-bit big-endian byte length.
@@ -51,20 +50,15 @@ func (p *Plan) approvalEligible() bool {
 // A lossless proposal names the same typed key that apply will pass to MongoDB.
 // Some BSON values decode identically despite having different bytes.
 func (c *Change) approvalKey() ([]byte, error) {
-	if c.ID == nil && c.storedKey.Type == 0 {
-		return nil, nil
+	key, err := c.documentKey()
+	if err != nil || key.IsZero() {
+		return nil, err
 	}
-	if c.ID != nil && wal.DocumentIDString(c.ID) == c.DocumentID {
-		raw, err := wal.MarshalDocument(bson.D{{Key: "key", Value: c.ID}})
-		if err != nil {
-			return nil, err
-		}
-		typed := raw.Lookup("key")
-		if c.storedKey.Type == 0 || (typed.Type == c.storedKey.Type && bytes.Equal(typed.Value, c.storedKey.Value)) {
-			return append([]byte{byte(typed.Type)}, typed.Value...), nil
-		}
+	id, err := wal.RawDocumentID(c.DocumentID)
+	if err != nil || !key.Equal(id) || (!c.storedKey.IsZero() && !c.storedKey.Equal(key)) {
+		return nil, fmt.Errorf("inconsistent document_key in merge plan for %s/%s; preview again with this version using --output json", c.Collection, c.DocumentID)
 	}
-	return nil, errors.New("inconsistent document_key in merge plan; preview again with this version using --output json")
+	return append([]byte{byte(key.Type)}, key.Value...), nil
 }
 
 func (e approvalEncoder) images(images ...planImage) error {
@@ -78,8 +72,11 @@ func (e approvalEncoder) images(images ...planImage) error {
 }
 
 // ApprovalDigest binds a source write to one version of a saved proposal.
-// The document_id is the type-preserving WAL key used by documentIDValue.
+// The document_id is the type-preserving WAL key checked against the images.
 func ApprovalDigest(p *Plan) (string, error) {
+	if p.ID.IsZero() {
+		return "", errors.New("merge plan must have an assigned ID before obtaining approval")
+	}
 	if !p.approvalEligible() {
 		return "", errors.New(oldPlanEvidence)
 	}

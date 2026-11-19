@@ -88,13 +88,12 @@ func (paths *exactBytePaths) value(path string, value bson.RawValue) error {
 		return paths.container(path+".$scope", bson.RawValue{Type: bson.TypeEmbeddedDocument, Value: scope})
 	case bson.TypeBinary:
 		if value.Value[4] == bson.TypeBinaryBinaryOld {
-			// The reader interprets up to four bytes as payload, including
-			// the four-byte length of a valid empty old binary.
-			if len(value.Value) <= 9 {
+			// A short, lengthless value cannot be reconstructed from JSON.
+			if len(value.Value) < 9 || (len(value.Value) == 9 && binary.LittleEndian.Uint32(value.Value[5:9]) != 0) {
 				paths.add(path, value)
 			} else if uint64(binary.LittleEndian.Uint32(value.Value[5:9])) != uint64(len(value.Value)-9) {
-				// A bad inner length can consume another field or split this
-				// payload into extra fields. Their JSON paths are ambiguous.
+				// Preserve the complete image for conflicting lengths. Older
+				// readers can interpret part of this value as another field.
 				return errAmbiguousPath
 			}
 		}

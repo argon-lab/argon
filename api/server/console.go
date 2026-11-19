@@ -7,8 +7,8 @@ package server
 
 import (
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
-	"github.com/argon-lab/argon/v2/pkg/version"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/argon-lab/argon/v2/pkg/version"
 	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
@@ -435,6 +436,15 @@ func (r *Router) timeTravelQuery(c *gin.Context) {
 
 // --- merge plans (read side) ---
 
+func writePlanJSON(c *gin.Context, status int, view any) {
+	data, err := json.Marshal(view)
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, fmt.Errorf("cannot encode merge plan for REST (%w). Inspect it with argon merge list --output json -p <project>", err))
+		return
+	}
+	c.Data(status, "application/json; charset=utf-8", data)
+}
+
 func (r *Router) listMergePlans(c *gin.Context) {
 	name := c.Query("project")
 	if name == "" {
@@ -460,7 +470,7 @@ func (r *Router) listMergePlans(c *gin.Context) {
 	for _, plan := range plans {
 		views = append(views, walcli.ViewMergePlan(plan, name, followed[plan.TargetBranchID] != ""))
 	}
-	c.JSON(http.StatusOK, gin.H{"plans": views})
+	writePlanJSON(c, http.StatusOK, gin.H{"plans": views})
 }
 
 func (r *Router) getMergePlan(c *gin.Context) {
@@ -486,7 +496,7 @@ func (r *Router) getMergePlan(c *gin.Context) {
 			project = p.Name
 		}
 	}
-	c.JSON(http.StatusOK, walcli.ViewMergePlan(plan, project, followed[plan.TargetBranchID] != ""))
+	writePlanJSON(c, http.StatusOK, walcli.ViewMergePlan(plan, project, followed[plan.TargetBranchID] != ""))
 }
 
 // --- sandbox lifecycle (beyond create) ---

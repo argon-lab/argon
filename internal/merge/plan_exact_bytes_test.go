@@ -187,14 +187,14 @@ func TestPlanJSONExactBytesPaths(t *testing.T) {
 		change := renderExactChange(t, raw)
 		require.Equal(t, map[string]jsonExactValue{"document": {"03", hex.EncodeToString(raw)}}, change.Exact)
 	}
-	// The old binary reader can expose part of an ill-sized payload as a
-	// second field. Only the image as a whole has an unambiguous JSON path.
+	// The inner length is short. The rest is still part of this value, so
+	// it cannot become another field in the document's JSON.
 	payload := bsoncore.AppendInt32Element([]byte{42}, "extra", 7)
 	binary := bsoncore.AppendBinary(nil, 2, payload)
 	binary[5] = 1
 	raw := jsonImage(t, bson.RawValue{Type: bson.TypeBinary, Value: binary})
 	change := renderExactChange(t, raw)
-	require.Contains(t, string(change.Document), `"extra"`)
+	require.NotContains(t, string(change.Document), `"extra"`)
 	require.Equal(t, map[string]jsonExactValue{"document": {"03", hex.EncodeToString(raw)}}, change.Exact)
 }
 

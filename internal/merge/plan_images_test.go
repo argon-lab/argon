@@ -27,8 +27,30 @@ func TestSortedImageWithCodeScope(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, bson.Raw(expectedID), raw.Lookup("_id").Document())
 	_, scope := raw.Lookup("scripts", "0").CodeWithScope()
-	expected, err := bson.Marshal(bson.D{{Key: "aisle", Value: int32(4)}, {Key: "zone", Value: int32(5)}})
+	expected, err := bson.Marshal(doc["scripts"].(bson.A)[0].(primitive.CodeWithScope).Scope)
 	require.NoError(t, err)
 	require.Equal(t, bson.Raw(expected), scope)
 	require.Equal(t, []string{"theirs"}, sorted)
+}
+
+func TestOrdinaryImageRetainsFieldPositions(t *testing.T) {
+	original := bson.D{
+		{Key: "_id", Value: "order"}, {Key: "z", Value: int32(1)},
+		{Key: "items", Value: bson.A{bson.D{
+			{Key: "z", Value: 0}, {Key: "v", Value: int32(10)}, {Key: "a", Value: 1}, {Key: "v", Value: int64(11)},
+		}}}, {Key: "a", Value: int32(2)}, {Key: "z", Value: int64(3)}, {Key: "_id", Value: "other"},
+	}
+	input, err := bson.Marshal(original)
+	require.NoError(t, err)
+	actual, rebuilt, err := ordinaryImage(input)
+	require.NoError(t, err)
+	require.True(t, rebuilt)
+	want, err := bson.Marshal(bson.D{
+		{Key: "_id", Value: "order"}, {Key: "z", Value: int64(3)},
+		{Key: "items", Value: bson.A{bson.D{
+			{Key: "z", Value: 0}, {Key: "v", Value: int64(11)}, {Key: "a", Value: 1},
+		}}}, {Key: "a", Value: int32(2)},
+	})
+	require.NoError(t, err)
+	require.Equal(t, bson.Raw(want), actual)
 }

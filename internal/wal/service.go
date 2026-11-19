@@ -324,7 +324,7 @@ func (s *Service) LatestDocumentImageEntry(branchID, collection, documentID stri
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
-		if !entry.IsData() || !visible(entry.LSN) {
+		if !entry.IsData() || (visible != nil && !visible(entry.LSN)) {
 			continue
 		}
 		storedVersion := entry.DocumentKeyVersion
@@ -351,11 +351,14 @@ func (s *Service) documentHistoryCandidates(branchID, collection, documentID str
 	if err != nil {
 		return nil, err
 	}
-	legacyKey := LegacyDocumentIDString(id)
+	candidates := []string{documentID, LegacyDocumentIDString(id)}
+	if alias, affected := oldBinaryIndexKey(documentID); affected && alias != documentID {
+		candidates = append(candidates, alias)
+	}
 	filter := bson.M{
 		"branch_id":   branchID,
 		"collection":  collection,
-		"document_id": bson.M{"$in": []string{documentID, legacyKey}},
+		"document_id": bson.M{"$in": candidates},
 		"lsn": bson.M{
 			"$gte": startLSN,
 			"$lte": endLSN,
@@ -482,6 +485,24 @@ func (s *Service) LatestDocumentEntries(branchID, collection string, keys []stri
 		return nil, fmt.Errorf("collection %q: %w", collection, ErrLegacyDocumentKeys)
 	}
 
+	// A historical index entry with four zero bytes may contain rows for
+	// two BSON IDs. Resolve these keys from images before taking the latest
+	// visible row. Other keys keep the indexed positions-only lookup.
+	ordinary := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, affected := oldBinaryIndexKey(key); !affected {
+			ordinary = append(ordinary, key)
+			continue
+		}
+		entry, err := s.LatestDocumentImageEntry(branchID, collection, key, startLSN, endLSN, visible)
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
+			latest[key] = entry
+		}
+	}
+	keys = ordinary
 	ctx := context.Background()
 	for start := 0; start < len(keys); start += documentLookupBatch {
 		end := start + documentLookupBatch
@@ -603,7 +624,8 @@ func (s *Service) ScanBranchDataEntries(branchID string, startLSN, endLSN int64,
 // entries of a collection name in [startLSN, endLSN], in key order. It reads
 // the (branch, collection, document, lsn) index alone and holds one key at a
 // time, so the collection's size does not matter to the caller's memory. A
-// key is reported whether its newest entry is a put or a delete.
+// key is reported whether its newest entry is a put or a delete. An older
+// binary key indexed under a different ID requires a collection replay.
 func (s *Service) ScanDocumentKeys(ctx context.Context, branchID, collection string, startLSN, endLSN int64, fn func(key string) error) error {
 	if startLSN > endLSN {
 		return nil
@@ -626,6 +648,11 @@ func (s *Service) ScanDocumentKeys(ctx context.Context, branchID, collection str
 			continue
 		}
 		last, first = key, false
+		if alias, affected := oldBinaryIndexKey(key); affected && alias == key {
+			// The index alone cannot show every key when older rows share an
+			// envelope. A replay recovers them directly from their images.
+			return ErrLegacyDocumentKeys
+		}
 		if err := fn(key); err != nil {
 			return err
 		}

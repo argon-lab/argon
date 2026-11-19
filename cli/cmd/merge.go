@@ -183,10 +183,14 @@ docs/OPERATIONS.md for known issues. Inspect every image with
 approval_digest with --approve. Even a plan with zero writes requires a digest
 to complete in metadata. Every replacement and delete
 checks the saved before-image byte for byte in the source transaction. Every insert
-checks for an absent key. Inserts and replacements write the saved after-image.
-Older plans, missing or incorrect approval, unverified images and duplicate
-fields are refused before the claim. For an older plan, preview again with this
-version.
+checks for an absent key. After all writes and before commit, Argon reads each
+key again to verify the exact after-image or confirm deletion. A mismatch
+rolls back the batch and leaves the plan pending.
+Before claim, the raw BSON keys must match and each after-image must start
+with _id. MongoDB replaces a top-level zero timestamp outside _id with the
+current time on write. Change that field and preview again. Older plans,
+missing or incorrect approval, unverified images and duplicate fields are
+refused before the claim. For an older plan, preview again with this version.
 Argon checks capture health in the claim transaction and waits for majority
 acknowledgment. The writer has two minutes from before claim acquisition
 through all source transaction and commit attempts. If a plan stays writing_back,
@@ -397,7 +401,7 @@ func init() {
 	}
 	mergeListCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	mergeApplyCmd.Flags().String("strategy", "", "Conflict resolution: theirs (take the branch) or ours (keep the target)")
-	mergeApplyCmd.Flags().Bool("write-back", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Write the plan to the external database the target follows, in one transaction that first checks every document against the plan (requires a source bound by replica-set ID)")
+	mergeApplyCmd.Flags().Bool("write-back", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Write to the followed database and verify each stored image or deletion before commit (requires a source bound by replica-set ID)")
 	mergeApplyCmd.Flags().String("approve", "", "With --write-back, supply the plan's approval_digest from lossless JSON output")
 	mergeApplyCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		// A bare --approve reaches the flag parser before Args can give the

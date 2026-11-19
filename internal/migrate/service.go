@@ -321,7 +321,7 @@ func (s *Service) decompressDoc(compressed []byte) (bson.M, error) {
 		return nil, fmt.Errorf("failed to decompress payload: %w", err)
 	}
 	var doc bson.M
-	if err := bson.Unmarshal(raw, &doc); err != nil {
+	if err := wal.UnmarshalDocument(raw, &doc); err != nil {
 		return nil, fmt.Errorf("failed to decode payload: %w", err)
 	}
 	return doc, nil
@@ -343,7 +343,7 @@ func decodeLegacyUpdatePayload(payload bson.M) (filter, update bson.M, err error
 			return d, nil
 		case bson.Raw:
 			var doc bson.M
-			if err := bson.Unmarshal(d, &doc); err != nil {
+			if err := wal.UnmarshalDocument(d, &doc); err != nil {
 				return nil, fmt.Errorf("failed to decode legacy %s: %w", name, err)
 			}
 			return doc, nil
@@ -357,7 +357,7 @@ func decodeLegacyUpdatePayload(payload bson.M) (filter, update bson.M, err error
 			var wrapper struct {
 				V bson.M `bson:"v"`
 			}
-			if err := bson.Unmarshal(raw, &wrapper); err != nil {
+			if err := wal.UnmarshalDocument(raw, &wrapper); err != nil {
 				return nil, fmt.Errorf("failed to normalize legacy %s: %w", name, err)
 			}
 			return wrapper.V, nil

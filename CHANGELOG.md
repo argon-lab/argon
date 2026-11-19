@@ -20,11 +20,21 @@ entry — a synchronization barrier, not in-proxy capture).
 - Experimental write-back requires a verified, saved before-image for every
   replacement or delete and compares it byte for byte in the source transaction.
   Inserts require an absent key. Inserts and replacements write the saved
-  after-image. Selected unverified or duplicate-field images are refused before claim.
+  after-image. After all writes, the transaction reads each key once more
+  before commit to verify the exact stored BSON or confirm deletion. A
+  mismatch rolls back the batch and leaves the plan pending.
+- Write-back checks the raw BSON type and bytes of every selected key.
+  Followed plans save after-images with `_id` first. Selected images with
+  unverified bytes, duplicate fields or inconsistent keys require a fresh
+  preview. A selected after-image with a top-level zero timestamp outside
+  `_id` is refused because MongoDB replaces it with the current time.
 - `merge apply --write-back` requires `--approve <digest>`, including for
   empty plans. CLI JSON preview and list provide the digest alongside the
   saved images. The claim verifies the approved contents and records the
-  digest. Plans saved by older writers require a fresh preview.
+  digest. A plan needs an assigned ID to receive a digest. An explicit BSON
+  null auxiliary key survives reload. Plans saved by older writers require a fresh preview.
+- Ordinary merge preview refuses a compound `_id` that repeats a field name.
+  Version 2.7.0 merged it.
 - Source detach refuses recent write-back claims and reports older unsettled
   plan IDs for inspection. Source transaction and commit retries share a
   two-minute writer deadline.
@@ -40,7 +50,21 @@ entry — a synchronization barrier, not in-proxy capture).
 ### Fixed
 
 - Ordinary merges into WAL-backed and checked-out branches collapse repeated
-  BSON field names to one value, keeping raw and materialized reads consistent.
+  names in documents and embedded documents, including array elements. The
+  last value occupies the data field's first position in the raw image.
+  The first top-level `_id` supplies document identity. JavaScript
+  code scopes preserve their field order and repeated names.
+- Reads of old BSON binary (subtype 2) preserve the stored payload length.
+  A WAL image with an empty payload now decodes to zero bytes. Version
+  2.7.0 decoded those same bytes as four zeros and could persist the four
+  zeros during an ordinary merge. Images that already store four payload
+  bytes still read as four. Historical lookups distinguish empty and
+  four-byte IDs by their image when an older index key matches both.
+  CLI merge JSON now renders a valid empty subtype-2 value without an
+  `exact_bytes` annotation.
+- REST merge preview, list, get and branch diff render non-finite doubles
+  as Extended JSON `$numberDouble` values. A plan encoding error returns a
+  JSON error body with HTTP 500.
 
 - Ordinary merges preserve verified BSON order for current documents in a
   collection that also contains older WAL keys.

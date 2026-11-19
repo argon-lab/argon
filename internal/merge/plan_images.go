@@ -3,9 +3,9 @@ package merge
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 
-	"github.com/argon-lab/argon/v2/internal/ingest"
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -23,15 +23,43 @@ type changeBSON Change
 type conflictBSON Conflict
 
 func (c Change) MarshalBSON() ([]byte, error) {
-	if err := c.encodeImages(false); err != nil {
+	if err := c.encodeImages(imagesAsStored); err != nil {
 		return nil, err
 	}
-	// A programmatic compound document_key can be a map.
+	key, err := c.documentKey()
+	if err != nil {
+		return nil, err
+	}
+	if !key.IsZero() {
+		c.ID = key
+	}
 	return wal.MarshalDocument(changeBSON(c))
 }
 
-func (c *Change) encodeImages(ordinary bool) error {
-	images := planImageEncoder{c.DocumentID, &c.SortedImages, ordinary}
+// Keep the auxiliary key's original BSON on load and re-save. A Go caller
+// may instead supply or edit ID, including an ordered compound key.
+func (c *Change) documentKey() (bson.RawValue, error) {
+	if !c.storedKey.IsZero() {
+		var saved any
+		if err := wal.UnmarshalValue(c.storedKey, &saved); err != nil {
+			return bson.RawValue{}, err
+		}
+		if reflect.DeepEqual(saved, c.ID) {
+			return c.storedKey, nil
+		}
+	}
+	if c.ID == nil {
+		return bson.RawValue{}, nil
+	}
+	raw, err := wal.MarshalDocument(bson.D{{Key: "key", Value: c.ID}})
+	if err != nil {
+		return bson.RawValue{}, err
+	}
+	return raw.LookupErr("key")
+}
+
+func (c *Change) encodeImages(mode imageEncoding) error {
+	images := planImageEncoder{&c.SortedImages, mode}
 	if err := images.encode("document", &c.DocumentRaw, &c.Document); err != nil {
 		return err
 	}
@@ -40,11 +68,15 @@ func (c *Change) encodeImages(ordinary bool) error {
 
 func (c *Change) UnmarshalBSON(data []byte) error {
 	*c = Change{}
-	if err := bson.Unmarshal(data, (*changeBSON)(c)); err != nil {
+	if err := wal.UnmarshalDocument(data, (*changeBSON)(c)); err != nil {
 		return err
 	}
 	c.storedKey = bson.Raw(data).Lookup("document_key")
 	c.storedKey.Value = slices.Clone(c.storedKey.Value)
+	if c.storedKey.Type == bson.TypeNull {
+		// A typed nil keeps the field present in both BSON and JSON.
+		c.ID = (*primitive.Null)(nil)
+	}
 	return c.decodeStoredImages()
 }
 
@@ -56,14 +88,14 @@ func (c *Change) decodeStoredImages() error {
 }
 
 func (c Conflict) MarshalBSON() ([]byte, error) {
-	if err := c.encodeImages(false); err != nil {
+	if err := c.encodeImages(imagesAsStored); err != nil {
 		return nil, err
 	}
 	return bson.Marshal(conflictBSON(c))
 }
 
-func (c *Conflict) encodeImages(ordinary bool) error {
-	images := planImageEncoder{c.DocumentID, &c.SortedImages, ordinary}
+func (c *Conflict) encodeImages(mode imageEncoding) error {
+	images := planImageEncoder{&c.SortedImages, mode}
 	if err := images.encode("base", &c.BaseRaw, &c.Base); err != nil {
 		return err
 	}
@@ -91,10 +123,17 @@ func (c *Conflict) decodeStoredImages() error {
 	return decodeImage(c.TheirsRaw, &c.Theirs)
 }
 
+type imageEncoding int
+
+const (
+	imagesAsStored imageEncoding = iota
+	ordinaryImages
+	followedImages
+)
+
 type planImageEncoder struct {
-	key      string
-	sorted   *[]string
-	ordinary bool
+	sorted *[]string
+	mode   imageEncoding
 }
 
 func (e planImageEncoder) encode(name string, raw *bson.Raw, doc *bson.M) error {
@@ -106,34 +145,28 @@ func (e planImageEncoder) encode(name string, raw *bson.Raw, doc *bson.M) error 
 		}
 		*raw = image
 	}
-	if e.ordinary && *raw != nil && ingest.HasDuplicateKeys(*raw) {
-		// A programmatic save can supply new bytes alongside a stale map.
-		// Decode from the authoritative image before selecting its last values.
-		if err := decodeImage(*raw, doc); err != nil {
-			return err
-		}
-		id, err := wal.DocumentIDValue(e.key)
+	if e.mode == ordinaryImages {
+		image, rebuilt, err := ordinaryImage(*raw)
 		if err != nil {
 			return err
 		}
-		image, err := sortedImage(*doc, id, false)
-		if err != nil {
-			return err
-		}
-		if (*raw).Index(0).Key() == "_id" {
-			image, err = withIDFirst(image)
-			if err != nil {
+		if rebuilt {
+			*raw = image
+			if err := decodeImage(image, doc); err != nil {
 				return err
 			}
+			fromMap = true
 		}
-		*raw = image
-		if err := decodeImage(image, doc); err != nil {
-			return err
-		}
-		fromMap = true
 	}
 	if fromMap {
 		markSorted(e.sorted, name)
+	}
+	if e.mode == followedImages && *raw != nil && (name == "document" || name == "theirs") {
+		image, err := withIDFirst(*raw)
+		if err != nil {
+			return err
+		}
+		*raw = image
 	}
 	return nil
 }
@@ -149,7 +182,7 @@ func decodeImage(raw bson.Raw, doc *bson.M) error {
 		return nil
 	}
 	*doc = nil
-	return bson.Unmarshal(raw, doc)
+	return wal.UnmarshalDocument(raw, doc)
 }
 
 // PreparePlan computes a proposal with the ordered BSON images that SavePlan
@@ -261,10 +294,9 @@ func (image imageRequest) store(entry *wal.Entry, idFirst, preserveDuplicates bo
 	// Followed targets retain all fields so write-back can identify duplicates.
 	// Ordinary merges publish the single value selected by the materializer.
 	if entry != nil && entry.Operation == wal.OpPut && len(entry.PostImage) > 0 &&
-		entry.Metadata["capture_images"] != "attached_unverified" &&
-		(preserveDuplicates || !ingest.HasDuplicateKeys(entry.PostImage)) {
+		entry.Metadata["capture_images"] != "attached_unverified" {
 		var doc bson.M
-		if err := bson.Unmarshal(entry.PostImage, &doc); err != nil {
+		if err := wal.UnmarshalDocument(entry.PostImage, &doc); err != nil {
 			return err
 		}
 		changed, err := docsUnequal(image.doc, doc)
@@ -277,15 +309,21 @@ func (image imageRequest) store(entry *wal.Entry, idFirst, preserveDuplicates bo
 		}
 	}
 	if raw == nil {
-		if image.sorted != nil {
-			raw, err = sortedImage(image.doc, id, preserveDuplicates)
-		} else {
-			raw, err = wal.MarshalDocument(image.doc)
-		}
+		raw, err = wal.MarshalDocument(image.doc)
 		if err != nil {
 			return err
 		}
 		markSorted(image.sorted, image.name)
+	}
+	if !preserveDuplicates {
+		var rebuilt bool
+		raw, rebuilt, err = ordinaryImage(raw)
+		if err != nil {
+			return err
+		}
+		if rebuilt {
+			markSorted(image.sorted, image.name)
+		}
 	}
 	if idFirst {
 		raw, err = withIDFirst(raw)
@@ -297,52 +335,36 @@ func (image imageRequest) store(entry *wal.Entry, idFirst, preserveDuplicates bo
 	return nil
 }
 
-// Code scopes retain ordered documents even when the enclosing image is
-// decoded into a map. Collapse their duplicates too, preserving the typed ID.
-func sortedImage(doc bson.M, id any, allowDuplicateID bool) (bson.Raw, error) {
-	sorted := mapImageValue(doc).(bson.M)
+// Only pre-existing checked-out plans can require this comparison. Earlier
+// writers marked before-images after sorting and deduplicating even code scopes.
+func legacySortedBefore(doc bson.M, id any) (bson.Raw, error) {
+	sorted := legacySortedValue(doc).(bson.M)
 	sorted["_id"] = id
-	raw, err := wal.MarshalDocument(sorted)
-	if err == nil && !allowDuplicateID && ingest.HasDuplicateKeys(raw) {
-		return nil, fmt.Errorf("duplicate fields in compound _id cannot be merged without changing the document key")
-	}
-	return raw, err
+	return wal.MarshalDocument(sorted)
 }
 
-// Pending plans from an earlier writer can already contain duplicate fields.
-// Ordinary apply publishes the same single values as a fresh ordinary plan.
-func ordinaryImage(raw bson.Raw, doc bson.M, id any) (bson.Raw, error) {
-	if raw != nil && ingest.HasDuplicateKeys(raw) {
-		return sortedImage(doc, id, false)
-	}
-	return raw, nil
-}
-
-// Convert every document in a fallback image to the value representation:
-// a repeated field contributes its last value, and MarshalDocument orders
-// the resulting maps. Arrays retain their positions.
-func mapImageValue(value any) any {
+func legacySortedValue(value any) any {
 	switch v := value.(type) {
 	case bson.M:
 		doc := make(bson.M, len(v))
 		for key, val := range v {
-			doc[key] = mapImageValue(val)
+			doc[key] = legacySortedValue(val)
 		}
 		return doc
 	case bson.D:
 		doc := make(bson.M, len(v))
 		for _, field := range v {
-			doc[field.Key] = mapImageValue(field.Value)
+			doc[field.Key] = legacySortedValue(field.Value)
 		}
 		return doc
 	case bson.A:
 		items := make(bson.A, len(v))
 		for i := range v {
-			items[i] = mapImageValue(v[i])
+			items[i] = legacySortedValue(v[i])
 		}
 		return items
 	case primitive.CodeWithScope:
-		v.Scope = mapImageValue(v.Scope)
+		v.Scope = legacySortedValue(v.Scope)
 		return v
 	default:
 		return v
@@ -357,7 +379,10 @@ func withIDFirst(raw bson.Raw) (bson.Raw, error) {
 		return nil, err
 	}
 	for i, field := range fields {
-		if field.Key() == "_id" && i > 0 {
+		if field.Key() == "_id" {
+			if i == 0 {
+				return raw, nil
+			}
 			result := make(bson.Raw, 0, len(raw))
 			result = append(result, raw[:4]...)
 			result = append(result, field...)
