@@ -50,6 +50,12 @@ func (s *Service) CleanupBranch(ctx context.Context, branchID string) (manifests
 	}
 	manifestsRemoved = res.DeletedCount
 
+	chunksRemoved, err = s.deleteUnreferencedChunks(ctx, candidates)
+	return manifestsRemoved, chunksRemoved, err
+}
+
+// The caller holds the publication lock across the reference check and delete.
+func (s *Service) deleteUnreferencedChunks(ctx context.Context, candidates map[string]bool) (int64, error) {
 	// Keep chunks still referenced by any surviving manifest.
 	candidateIDs := make([]string, 0, len(candidates))
 	for id := range candidates {
@@ -57,7 +63,7 @@ func (s *Service) CleanupBranch(ctx context.Context, branchID string) (manifests
 	}
 	stillUsed, err := s.manifests.Distinct(ctx, "chunk_ids", bson.M{"chunk_ids": bson.M{"$in": candidateIDs}})
 	if err != nil {
-		return manifestsRemoved, 0, fmt.Errorf("failed to check chunk references: %w", err)
+		return 0, fmt.Errorf("failed to check chunk references: %w", err)
 	}
 	for _, v := range stillUsed {
 		if id, ok := v.(string); ok {
@@ -66,7 +72,7 @@ func (s *Service) CleanupBranch(ctx context.Context, branchID string) (manifests
 	}
 
 	if len(candidates) == 0 {
-		return manifestsRemoved, 0, nil
+		return 0, nil
 	}
 	orphaned := make([]string, 0, len(candidates))
 	for id := range candidates {
@@ -75,7 +81,7 @@ func (s *Service) CleanupBranch(ctx context.Context, branchID string) (manifests
 	// Through the store interface, so filesystem and S3 backends reclaim
 	// their objects too — not just the MongoDB collection.
 	if err := s.store.Delete(ctx, orphaned); err != nil {
-		return manifestsRemoved, 0, fmt.Errorf("failed to delete orphaned chunks: %w", err)
+		return 0, fmt.Errorf("failed to delete orphaned chunks: %w", err)
 	}
-	return manifestsRemoved, int64(len(orphaned)), nil
+	return int64(len(orphaned)), nil
 }

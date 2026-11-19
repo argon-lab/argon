@@ -1,7 +1,7 @@
 package wal
 
 import (
-	"encoding/binary"
+	"bytes"
 	"fmt"
 	"strconv"
 
@@ -66,56 +66,30 @@ func (d *DecodedImage) TakeValue() bson.M {
 	return d.value
 }
 
-// TrustedImage checks this stored image and its role. An unchanged image
-// returns the same decoder result. A normalized image gets its own result.
-// Release the bytes once so a later mutation cannot reuse this proof.
+// TrustedImage releases the original bytes once, if their encoding is canonical
+// in the stored field order and the image is trusted for its role.
 func (d *DecodedImage) TrustedImage(role ImageRole, entry *Entry) (bson.Raw, *DecodedImage) {
 	if d == nil || d.raw == nil || d.idErr != nil || (role == PostImage && (entry == nil || entry.UnverifiedPostImage())) {
 		return nil, nil
 	}
-	image, rebuilt, err := normalizeEditImage(d.raw, true)
-	if err != nil {
-		return nil, nil
-	}
+	raw := d.raw
 	d.raw = nil
-	if !rebuilt {
-		return image, d
-	}
-	normalized, err := DecodeImage(image)
-	if err != nil || normalized.idErr != nil {
+	if !canonicalEditImage(raw) {
 		return nil, nil
 	}
-	normalized.raw = nil
-	return image, normalized
+	return raw, d
 }
 
-// NormalizeEditImage keeps the values used by decoded replay in their original
-// field positions. A JavaScript code scope is a scalar and keeps its bytes.
-// Replay uses the first _id verbatim, including the order of a compound key.
-func NormalizeEditImage(raw bson.Raw) (bson.Raw, bool, error) {
-	return normalizeEditImage(raw, false)
-}
-
-func normalizeEditImage(raw bson.Raw, decoded bool) (bson.Raw, bool, error) {
-	if raw == nil {
-		return nil, false, nil
+func canonicalEditImage(raw bson.Raw) bool {
+	// Decode into ordered documents at every depth, including code scopes.
+	// Re-encoding checks every value and array index, but preserves repeated
+	// names, so those must also be checked independently.
+	var fields bson.D
+	if err := UnmarshalDocument(raw, &fields); err != nil {
+		return false
 	}
-	// A BSON decoder can stop after one document and ignore trailing bytes.
-	if len(raw) < 5 || uint64(binary.LittleEndian.Uint32(raw)) != uint64(len(raw)) || raw[len(raw)-1] != 0 {
-		return nil, false, fmt.Errorf("invalid edit image length or terminator")
-	}
-	if !decoded {
-		// Reject invalid values even when a subsequent field would overwrite them.
-		var doc bson.M
-		if err := UnmarshalDocument(raw, &doc); err != nil {
-			return nil, false, err
-		}
-	}
-	scan := imageFieldScan{arrayKeys: true, edit: true}
-	if !scan.hasDuplicateFields(raw) {
-		return raw, false, nil
-	}
-	return collapseFields(raw, false, true, false)
+	encoded, err := bson.Marshal(fields)
+	return err == nil && bytes.Equal(raw, encoded) && !HasDuplicateImageFields(raw, true)
 }
 
 // NormalizeMergeImage collapses fields for ordinary merge plans. Refuse a
@@ -124,12 +98,12 @@ func NormalizeMergeImage(raw bson.Raw) (bson.Raw, bool, error) {
 	if raw == nil || !HasDuplicateImageFields(raw, true) {
 		return raw, false, nil
 	}
-	return collapseFields(raw, false, true, true)
+	return collapseFields(raw, false, true)
 }
 
 // A document keeps each key's first position and last value. Arrays expose
 // all their values by position, even if the original BSON repeated an index.
-func collapseFields(raw bson.Raw, array, root, rejectDuplicateID bool) (bson.Raw, bool, error) {
+func collapseFields(raw bson.Raw, array, root bool) (bson.Raw, bool, error) {
 	elements, err := raw.Elements()
 	if err != nil {
 		return nil, false, err
@@ -140,8 +114,8 @@ func collapseFields(raw bson.Raw, array, root, rejectDuplicateID bool) (bson.Raw
 	for i, elem := range elements {
 		key, value := elem.Key(), elem.Value()
 		compoundKey := root && key == "_id"
-		if (!compoundKey || rejectDuplicateID) && (value.Type == bson.TypeEmbeddedDocument || value.Type == bson.TypeArray) {
-			nested, rebuilt, err := collapseFields(value.Value, value.Type == bson.TypeArray, false, rejectDuplicateID)
+		if value.Type == bson.TypeEmbeddedDocument || value.Type == bson.TypeArray {
+			nested, rebuilt, err := collapseFields(value.Value, value.Type == bson.TypeArray, false)
 			if err != nil {
 				return nil, false, err
 			}
@@ -175,10 +149,8 @@ func collapseFields(raw bson.Raw, array, root, rejectDuplicateID bool) (bson.Raw
 	return result, true, err
 }
 
-// Capture and write-back inspect code scopes too. Edit reads leave their
-// fields alone, but check that the full image can be decoded.
 type imageFieldScan struct {
-	arrayKeys, edit bool
+	arrayKeys bool
 }
 
 func (s *imageFieldScan) hasDuplicateFields(document bson.Raw) bool {
@@ -232,10 +204,8 @@ func (s *imageFieldScan) valueHasDuplicateFields(value bson.RawValue) bool {
 			}
 		}
 	case bson.TypeCodeWithScope:
-		if !s.edit {
-			_, scope, ok := value.CodeWithScopeOK()
-			return ok && s.hasDuplicateFields(scope)
-		}
+		_, scope, ok := value.CodeWithScopeOK()
+		return ok && s.hasDuplicateFields(scope)
 	}
 	return false
 }

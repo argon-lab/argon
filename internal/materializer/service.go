@@ -191,32 +191,40 @@ func (s *Service) decodedSnapshot(branch *wal.Branch, collection string, from, t
 
 // A frame visitor lends the decoded value and stored bytes of the same frame.
 type frameSource interface {
-	VisitUsableFrames(branch *wal.Branch, collection string, from, to int64, visit func(string, *wal.DecodedImage) error) (lsn int64, found, ordered bool, err error)
+	VisitUsableFrames(branch *wal.Branch, collection string, from, to int64, reset func(), visit func(string, *wal.DecodedImage) error) (lsn int64, found, ordered bool, err error)
+}
+
+// Deliver the requested key only after the entire snapshot has loaded.
+func (s *Service) visitSnapshot(branch *wal.Branch, collection string, from, to int64, key *string, visit func(string, *wal.DecodedImage) error) (int64, bool, bool, error) {
+	if source, ok := s.snapshots.(frameSource); ok {
+		var match *wal.DecodedImage
+		lsn, found, ordered, err := source.VisitUsableFrames(branch, collection, from, to, func() { match = nil }, func(k string, doc *wal.DecodedImage) error {
+			if k == *key {
+				match = doc
+			}
+			return nil
+		})
+		if err == nil && match != nil {
+			err = visit(*key, match)
+		}
+		return lsn, found, ordered, err
+	}
+	docs, lsn, found, err := s.decodedSnapshot(branch, collection, from, to)
+	if doc := docs[*key]; err == nil && found && doc != nil {
+		err = visit(*key, wal.DecodedValue(doc))
+	}
+	return lsn, found, false, err
 }
 
 // Decoded-only providers can release each document as its encoded form takes
 // its place. The snapshot service streams both directly from the same frame.
-func (s *Service) visitSnapshot(branch *wal.Branch, collection string, from, to int64, key *string, visit func(string, *wal.DecodedImage) error) (int64, bool, bool, error) {
+func (s *Service) visitSnapshotFrames(branch *wal.Branch, collection string, from, to int64, reset func(), visit func(string, *wal.DecodedImage) error) (int64, bool, bool, error) {
 	if source, ok := s.snapshots.(frameSource); ok {
-		if key == nil {
-			return source.VisitUsableFrames(branch, collection, from, to, visit)
-		}
-		return source.VisitUsableFrames(branch, collection, from, to, func(k string, doc *wal.DecodedImage) error {
-			if k == *key {
-				return visit(k, doc)
-			}
-			return nil
-		})
+		return source.VisitUsableFrames(branch, collection, from, to, reset, visit)
 	}
 	docs, lsn, found, err := s.decodedSnapshot(branch, collection, from, to)
 	if err != nil || !found {
 		return lsn, found, false, err
-	}
-	if key != nil {
-		if doc, ok := docs[*key]; ok {
-			err = visit(*key, wal.DecodedValue(doc))
-		}
-		return lsn, true, false, err
 	}
 	for k, doc := range docs {
 		if err := visit(k, wal.DecodedValue(doc)); err != nil {

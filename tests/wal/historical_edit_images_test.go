@@ -83,9 +83,7 @@ func TestSource_CheckoutRepeatedCaptureField(t *testing.T) {
 				}
 			}
 			assert.Equal(t, []any{"back"}, values)
-			if mode == "older sorted snapshot" {
-				assert.Equal(t, mustMarshalBSON(sorted), raw, "the older frame already has the correct value")
-			}
+			assert.Equal(t, mustMarshalBSON(sorted), raw, "name order after decoding the repeated field")
 			current, err := physical.CountDocuments(ctx, bson.M{"z": "back"})
 			require.NoError(t, err)
 			assert.EqualValues(t, 1, current)

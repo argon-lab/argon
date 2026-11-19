@@ -478,9 +478,9 @@ A missing approval or a digest for different contents leaves the source
 untouched and the plan pending.
 
 In 2.8.0, checkout rebuilt documents from Go maps and could reorder fields
-before the first sandbox edit. Checkout and re-checkout now load the stored
-BSON, including the order inside embedded documents and arrays. With the
-imported image available, a sandbox starts with the source's field order.
+before the first sandbox edit. Checkout and re-checkout now load eligible
+stored BSON, including the order inside embedded documents and arrays. With
+a qualifying imported image, a sandbox starts with the source's field order.
 Setting an existing field keeps its position, and pushing onto an array keeps
 the existing elements in order, just as when MongoDB applies the same update
 directly. The saved CLI JSON preview shows the exact field order that an
@@ -495,15 +495,20 @@ can supply the order when its identity and decoded values match. A follower's
 it stood at catch-up time. A capture marked `attached_unverified` cannot
 supply post-image order.
 
-Without a usable image, or when the candidate differs in identity or value,
-map fields are sorted by name at each depth, with the top-level `_id` first.
-A repeated data field keeps its last value at its first position, including
-in documents inside arrays. The first top-level `_id` supplies identity.
-Compound IDs and JavaScript code scopes retain their original fields.
+Repeated names anywhere in an image, including in arrays and JavaScript code
+scopes, disqualify the whole image. So do nonsequential array indexes, a
+missing subtype-2 binary inner length, unsorted regex options, or any other
+encoding that changes when written back in stored field order. Without a
+qualifying image, replay encodes the decoded value with map fields sorted
+by name at each depth. A repeated map field contributes its last value. The
+first top-level `_id` supplies identity, preserving compound key order.
+MongoDB stores `_id` first on checkout.
 
-New snapshots keep the BSON used for checkout. Earlier snapshots sorted map
-fields by name. A clean retained WAL image or earlier ordered frame can
-restore their order when its decoded value matches the snapshot.
+New snapshots keep qualifying BSON. When they encode a decoded document,
+`_id` takes its place in name order, as it did in 2.8.0 snapshots.
+When reading an older sorted snapshot, replay can recover the original
+field order from a qualifying WAL image or an earlier ordered frame whose
+decoded value matches the snapshot.
 
 - In the metadata snapshot that claims the plan, `main` has a verified exact
   checkpoint as of its reported
