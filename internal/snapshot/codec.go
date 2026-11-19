@@ -100,19 +100,26 @@ func walkChunk(ctx context.Context, compressed []byte, compressor *wal.Compresso
 	return nil
 }
 
+// decoded supplies the key and value used by every snapshot replay.
+func (f frame) decoded() (string, *wal.DecodedImage, error) {
+	doc, err := wal.DecodeImage(f.Doc)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to decode document %s: %w", f.Key, err)
+	}
+	// Older writers conflated ObjectIDs with equal-looking strings.
+	key, idErr := doc.Key()
+	if idErr != nil {
+		key = f.Key
+	}
+	return key, doc, nil
+}
+
 func decodeChunk(ctx context.Context, compressed []byte, compressor *wal.Compressor, state map[string]bson.M) error {
 	return walkChunk(ctx, compressed, compressor, func(f frame) error {
-		var doc bson.M
-		if err := wal.UnmarshalDocument(f.Doc, &doc); err != nil {
-			return fmt.Errorf("failed to decode document %s: %w", f.Key, err)
+		key, doc, err := f.decoded()
+		if err == nil {
+			state[key] = doc.TakeValue()
 		}
-		// Older writers conflated ObjectIDs with equal-looking strings.
-		key := f.Key
-		if id, err := wal.DocumentIDFromImage(f.Doc); err == nil {
-			key = wal.DocumentIDString(id)
-			doc["_id"] = id
-		}
-		state[key] = doc
-		return nil
+		return err
 	})
 }

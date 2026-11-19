@@ -1,13 +1,63 @@
 package wal_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/argon-lab/argon/v2/internal/undo"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
+
+func TestWriteBack_LiveUndoUsesCleanNativePreImage(t *testing.T) {
+	f := newIngestFixture(t, "undo-native-pre-image")
+	ctx := captureContext(t)
+	const id = "t"
+	users := f.physical.Collection("users")
+	_, err := users.InsertOne(ctx, bson.D{
+		{Key: "_id", Value: id}, {Key: "z", Value: "new"}, {Key: "b", Value: int32(10)},
+		{Key: "pad", Value: strings.Repeat("x", 80)}, {Key: "n", Value: bson.D{{Key: "m", Value: true}}},
+	})
+	require.NoError(t, err)
+	original := readSourceCase(t, users, id)
+	session, err := f.client.StartSession()
+	require.NoError(t, err)
+	defer session.EndSession(ctx)
+	_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		return users.UpdateByID(sc, id, mongo.Pipeline{
+			{{Key: "$unset", Value: "z"}},
+			{{Key: "$set", Value: bson.D{{Key: "z", Value: "back"}, {Key: "first", Value: "$b"}}}},
+		})
+	})
+	require.NoError(t, err)
+	require.NoError(t, f.ingest.Stop(ctx, f.branchID))
+	branch, err := f.branches.GetBranchByID(f.branchID)
+	require.NoError(t, err)
+	entries, err := f.wal.GetDocumentHistory(branch.ID, "users", id, 0, branch.HeadLSN)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	last := entries[1]
+	require.Equal(t, "attached_unverified", last.Metadata["capture_images"])
+	fields, err := last.PostImage.Elements()
+	require.NoError(t, err)
+	var z []string
+	for _, field := range fields {
+		if field.Key() == "z" {
+			z = append(z, field.Value().StringValue())
+		}
+	}
+	require.Equal(t, []string{"new", "back"}, z)
+	require.Equal(t, original, last.PreImage)
+	svc := undo.NewService(f.wal, f.branches, f.client, f.mat)
+	plan, err := svc.BuildPlan(branch, last.LSN, last.LSN, "")
+	require.NoError(t, err)
+	restored, _, err := svc.Apply(ctx, branch, plan)
+	require.NoError(t, err)
+	require.Equal(t, 1, restored)
+	require.Equal(t, original, readSourceCase(t, users, id))
+}
 
 func TestWriteBack_UndoFieldOrder(t *testing.T) {
 	for _, mode := range []string{"live", "released", "missing pre-image"} {

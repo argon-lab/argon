@@ -85,15 +85,10 @@ type Entry struct {
 	Metadata map[string]interface{} `bson:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
-// HasOrderedEditImage reports whether a keyed image can supply field order
-// for editing. Approximate follower reads may describe a later state. An
-// unverified stream image can repeat a moved field.
-func (e *Entry) HasOrderedEditImage() bool {
-	switch e.Metadata["capture_images"] {
-	case "attached_unverified", "current":
-		return false
-	}
-	return e.DocumentKeyVersion > 0
+// UnverifiedPostImage reports whether capture marked this entry's post-image
+// as suspect. The entry's pre-image has independent provenance.
+func (e *Entry) UnverifiedPostImage() bool {
+	return e.Metadata["capture_images"] == "attached_unverified"
 }
 
 // IsLegacy reports whether the entry predates the physical-log schema and

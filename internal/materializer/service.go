@@ -182,30 +182,66 @@ func (s *Service) CheckResyncCoverage(branch *wal.Branch, collection string) err
 // fails with wal.ErrHistoryReclaimed instead of returning a state that
 // lacks them.
 func (s *Service) MaterializeCollectionAtLSN(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error) {
-	return replayCollection(s, branch, collection, targetLSN, s.decodedSnapshot, func(state map[string]bson.M, seg segment) error {
-		return scanSegment(s, collection, state, seg, s.ApplyEntry)
-	})
+	return replayCollection(s, branch, collection, targetLSN, s.decodedSnapshot, decodedValue)
 }
 
 func (s *Service) decodedSnapshot(branch *wal.Branch, collection string, from, to int64) (map[string]bson.M, int64, bool, error) {
 	return s.snapshots.FindUsable(branch, collection, from, to, to)
 }
 
+// A frame visitor lends the decoded value and stored bytes of the same frame.
+type frameSource interface {
+	VisitUsableFrames(branch *wal.Branch, collection string, from, to int64, visit func(string, *wal.DecodedImage) error) (lsn int64, found, ordered bool, err error)
+}
+
+// Decoded-only providers can release each document as its encoded form takes
+// its place. The snapshot service streams both directly from the same frame.
+func (s *Service) visitSnapshot(branch *wal.Branch, collection string, from, to int64, key *string, visit func(string, *wal.DecodedImage) error) (int64, bool, bool, error) {
+	if source, ok := s.snapshots.(frameSource); ok {
+		if key == nil {
+			return source.VisitUsableFrames(branch, collection, from, to, visit)
+		}
+		return source.VisitUsableFrames(branch, collection, from, to, func(k string, doc *wal.DecodedImage) error {
+			if k == *key {
+				return visit(k, doc)
+			}
+			return nil
+		})
+	}
+	docs, lsn, found, err := s.decodedSnapshot(branch, collection, from, to)
+	if err != nil || !found {
+		return lsn, found, false, err
+	}
+	if key != nil {
+		if doc, ok := docs[*key]; ok {
+			err = visit(*key, wal.DecodedValue(doc))
+		}
+		return lsn, true, false, err
+	}
+	for k, doc := range docs {
+		if err := visit(k, wal.DecodedValue(doc)); err != nil {
+			return 0, false, false, err
+		}
+		delete(docs, k)
+	}
+	return lsn, true, false, nil
+}
+
 func replayCollection[T any](s *Service, branch *wal.Branch, collection string, targetLSN int64,
 	snapshot func(*wal.Branch, string, int64, int64) (map[string]T, int64, bool, error),
-	replay func(map[string]T, segment) error,
+	value replayValue[T],
 ) (map[string]T, error) {
 	// If GC overtook the read, retry once with the snapshot GC relied on.
-	state, err := replayCollectionOnce(s, branch, collection, targetLSN, snapshot, replay)
+	state, err := replayCollectionOnce(s, branch, collection, targetLSN, snapshot, value)
 	if errors.Is(err, wal.ErrHistoryReclaimed) {
-		return replayCollectionOnce(s, branch, collection, targetLSN, snapshot, replay)
+		return replayCollectionOnce(s, branch, collection, targetLSN, snapshot, value)
 	}
 	return state, err
 }
 
 func replayCollectionOnce[T any](s *Service, branch *wal.Branch, collection string, targetLSN int64,
 	snapshot func(*wal.Branch, string, int64, int64) (map[string]T, int64, bool, error),
-	replay func(map[string]T, segment) error,
+	value replayValue[T],
 ) (map[string]T, error) {
 	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
@@ -237,7 +273,7 @@ func replayCollectionOnce[T any](s *Service, branch *wal.Branch, collection stri
 		if seg.fromLSN > seg.toLSN {
 			continue // Snapshot sits exactly at the segment's end.
 		}
-		if err := replay(state, seg); err != nil {
+		if err := scanSegment(s, collection, state, seg, value); err != nil {
 			return nil, fmt.Errorf("failed to replay collection %s on branch %s: %w", collection, seg.branch.ID, err)
 		}
 	}
@@ -251,12 +287,12 @@ func replayCollectionOnce[T any](s *Service, branch *wal.Branch, collection stri
 	return state, nil
 }
 
-func scanSegment[T any](s *Service, collection string, state map[string]T, seg segment, apply func(map[string]T, *wal.Entry) error) error {
+func scanSegment[T any](s *Service, collection string, state map[string]T, seg segment, value replayValue[T]) error {
 	return s.wal.ScanCollectionDataEntries(seg.branch.ID, collection, seg.fromLSN, seg.toLSN, false, func(entry *wal.Entry) error {
 		if seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
 			return nil
 		}
-		if err := apply(state, entry); err != nil {
+		if err := applyEntry(state, entry, value); err != nil {
 			return fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
 		}
 		return nil
@@ -476,6 +512,23 @@ func (s *Service) MaterializeBranch(branch *wal.Branch) (map[string]map[string]b
 // the document's own history via the (branch, collection, document, lsn)
 // index instead of replaying the whole collection.
 func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, documentID string, targetLSN int64) (bson.M, error) {
+	doc, err := s.readDocumentAtLSN(branch, collection, documentID, targetLSN, nil)
+	if err != nil || doc == nil {
+		return nil, err
+	}
+	return doc.TakeValue(), nil
+}
+
+type documentOrigin struct {
+	segment
+	entry       *wal.Entry
+	snapshotLSN int64
+	ordered     bool
+}
+
+// A reader that needs field order can also request the origin of the decoded
+// answer. Both readers consult exactly the same entries and snapshots.
+func (s *Service) readDocumentAtLSN(branch *wal.Branch, collection, documentID string, targetLSN int64, origin *documentOrigin) (*wal.DecodedImage, error) {
 	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
 		return nil, err
@@ -511,9 +564,12 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 			return nil, err
 		}
 		if latest != nil && (!collision || latest.LSN > floor) {
-			state := make(map[string]bson.M)
-			if err := s.ApplyEntry(state, latest); err != nil {
+			state := make(map[string]*wal.DecodedImage)
+			if err := applyEntry(state, latest, pointValue); err != nil {
 				return nil, err
+			}
+			if origin != nil {
+				*origin = documentOrigin{segment: seg, entry: latest}
 			}
 			return state[documentID], nil
 		}
@@ -524,7 +580,7 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 		// one of them might have been this document's — and an older value
 		// would be returned as if it were current.
 		if s.snapshots != nil {
-			state, snapLSN, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+			doc, snapLSN, ok, err := s.snapshotDocument(seg, collection, documentID, origin)
 			if err != nil {
 				return nil, err
 			}
@@ -532,7 +588,7 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 				if needsReclaimed(seg, snapLSN+1, floor) {
 					return nil, reclaimedError(seg.branch, collection, floor, targetLSN)
 				}
-				return state[documentID], nil
+				return doc, nil
 			}
 		}
 		if needsReclaimed(seg, seg.fromLSN, floor) {
@@ -540,6 +596,23 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 		}
 	}
 	return nil, nil
+}
+
+// A point lookup still checks every frame for decoding errors, but keeps only
+// the requested document and, for edits, its source bytes.
+func (s *Service) snapshotDocument(seg segment, collection, key string, origin *documentOrigin) (*wal.DecodedImage, int64, bool, error) {
+	var value *wal.DecodedImage
+	lsn, ok, ordered, err := s.visitSnapshot(seg.branch, collection, seg.fromLSN, seg.toLSN, &key, func(_ string, doc *wal.DecodedImage) error {
+		value = doc
+		if origin != nil {
+			doc.KeepSource()
+		}
+		return nil
+	})
+	if origin != nil {
+		origin.segment, origin.snapshotLSN, origin.ordered = seg, lsn, ordered
+	}
+	return value, lsn, ok, err
 }
 
 // MaterializeDocumentsAtLSN reconstructs the given documents of one
@@ -739,21 +812,27 @@ func (s *Service) MaterializeDocument(branch *wal.Branch, collection, documentID
 // ApplyEntry applies a WAL entry to a state map. Puts and deletes are
 // idempotent by construction; control operations are no-ops here.
 func (s *Service) ApplyEntry(state map[string]bson.M, entry *wal.Entry) error {
-	return applyEntry(state, entry, decodePut, func(doc bson.M) any { return doc["_id"] })
+	return applyEntry(state, entry, decodedValue)
 }
 
-func decodePut(entry *wal.Entry, id any, hasID bool) (bson.M, error) {
-	var doc bson.M
-	if err := wal.UnmarshalDocument(entry.PostImage, &doc); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal post-image for %s/%s: %w", entry.Collection, entry.DocumentID, err)
-	}
-	if hasID {
-		doc["_id"] = id
-	}
-	return doc, nil
+// The replay decides each key, value and deletion before choosing how to
+// store the value. The identity accessor is needed only for untyped deletes.
+type replayValue[T any] struct {
+	store func(*wal.DecodedImage, *wal.Entry) (T, error)
+	id    func(T) any
 }
 
-func applyEntry[T any](state map[string]T, entry *wal.Entry, put func(*wal.Entry, any, bool) (T, error), idOf func(T) any) error {
+var decodedValue = replayValue[bson.M]{
+	store: func(doc *wal.DecodedImage, _ *wal.Entry) (bson.M, error) { return doc.TakeValue(), nil },
+	id:    func(doc bson.M) any { return doc["_id"] },
+}
+
+var pointValue = replayValue[*wal.DecodedImage]{
+	store: func(doc *wal.DecodedImage, _ *wal.Entry) (*wal.DecodedImage, error) { return doc, nil },
+	id:    func(doc *wal.DecodedImage) any { return doc.TakeValue()["_id"] },
+}
+
+func applyEntry[T any](state map[string]T, entry *wal.Entry, value replayValue[T]) error {
 	if entry.IsLegacy() {
 		return fmt.Errorf("entry LSN %d uses the legacy schema-v1 format (%s) and cannot be replayed deterministically; run the WAL migration", entry.LSN, entry.Operation)
 	}
@@ -763,19 +842,23 @@ func applyEntry[T any](state map[string]T, entry *wal.Entry, put func(*wal.Entry
 		if entry.DocumentID == "" {
 			return fmt.Errorf("put entry LSN %d has no document ID", entry.LSN)
 		}
-		id, idErr := wal.DocumentIDFromImage(entry.PostImage)
-		key := entry.DocumentID
-		if idErr == nil {
-			key = wal.DocumentIDString(id)
-		} else if ambiguous := entry.CheckStoredKey(); ambiguous != nil {
-			return errors.Join(ambiguous, idErr)
+		doc, err := wal.DecodeImage(entry.PostImage)
+		key, idErr := doc.Key()
+		if idErr != nil {
+			if ambiguous := entry.CheckStoredKey(); ambiguous != nil {
+				return errors.Join(ambiguous, idErr)
+			}
+			// Early physical WAL producers kept the ID only in the envelope.
+			key = entry.DocumentID
 		}
-		// Early physical WAL producers kept the ID only in the envelope.
-		doc, err := put(entry, id, idErr == nil)
+		if err != nil {
+			return fmt.Errorf("failed to unmarshal post-image for %s/%s: %w", entry.Collection, entry.DocumentID, err)
+		}
+		stored, err := value.store(doc, entry)
 		if err != nil {
 			return err
 		}
-		state[key] = doc
+		state[key] = stored
 	case wal.OpDelete:
 		if entry.DocumentID == "" {
 			return fmt.Errorf("delete entry LSN %d has no document ID", entry.LSN)
@@ -799,7 +882,7 @@ func applyEntry[T any](state map[string]T, entry *wal.Entry, put func(*wal.Entry
 			// existing state only when unambiguous; never guess and delete both.
 			matched := ""
 			for key, doc := range state {
-				if wal.LegacyDocumentIDString(idOf(doc)) == entry.DocumentID {
+				if wal.LegacyDocumentIDString(value.id(doc)) == entry.DocumentID {
 					if matched != "" {
 						return fmt.Errorf("legacy delete %q has an ambiguous BSON ID and no pre-image", entry.DocumentID)
 					}

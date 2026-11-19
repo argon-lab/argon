@@ -509,7 +509,7 @@ func (r *resyncer) unchanged(collection string, keys []string) (map[string]bson.
 	for key, entry := range entries {
 		// Even matching bytes need a fresh verified entry if the stream supplied
 		// an unverified post-image. A new preview can then use the source read.
-		if entry.LSN > floor && entry.Operation == wal.OpPut && entry.Metadata["capture_images"] != "attached_unverified" {
+		if entry.LSN > floor && entry.Operation == wal.OpPut && !entry.UnverifiedPostImage() {
 			held[key] = entry.PostImage
 		}
 	}

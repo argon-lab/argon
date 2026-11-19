@@ -1,7 +1,6 @@
 package snapshot
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -195,25 +194,24 @@ func (s *Service) FindUsable(branch *wal.Branch, collection string, minLSN, maxL
 	return state, snap.LSN, true, nil
 }
 
-// FindUsableFrames reads the BSON held in the newest usable snapshot, optionally
-// for a single document key. OrderedImages distinguishes snapshots built from
-// edit images from older ones built from decoded values.
-func (s *Service) FindUsableFrames(branch *wal.Branch, collection string, from, to int64, key *string) (map[string]bson.Raw, int64, bool, bool, error) {
+// VisitUsableFrames lends each decoded snapshot value and its stored BSON
+// together. Selection and frame decoding are the same as in FindUsable.
+func (s *Service) VisitUsableFrames(branch *wal.Branch, collection string, from, to int64, visit func(string, *wal.DecodedImage) error) (int64, bool, bool, error) {
 	snap, err := s.newestUsable(branch, collection, from, to, to, forReplay)
 	if err != nil || snap == nil {
-		return nil, 0, false, false, err
+		return 0, false, false, err
 	}
-	images := make(map[string]bson.Raw)
-	err = s.visitFrames(snap, func(frameKey string, raw bson.Raw) error {
-		if key == nil || *key == frameKey {
-			images[frameKey] = bytes.Clone(raw)
+	err = s.visitFrames(snap, func(f frame) error {
+		key, doc, err := f.decoded()
+		if err != nil {
+			return err
 		}
-		return nil
+		return visit(key, doc)
 	})
 	if err != nil {
-		return nil, 0, false, false, err
+		return 0, false, false, err
 	}
-	return images, snap.LSN, true, snap.OrderedImages, nil
+	return snap.LSN, true, snap.OrderedImages, nil
 }
 
 // OrderedSnapshotFrames selects the latest usable ordered snapshot in the LSN
@@ -225,24 +223,24 @@ func (s *Service) OrderedSnapshotFrames(branch *wal.Branch, collection string, f
 		return 0, nil, err
 	}
 	return snap.LSN, func(visit func(string, bson.Raw) error) error {
-		return s.visitFrames(snap, visit)
+		return s.visitFrames(snap, func(f frame) error {
+			id, err := wal.DocumentIDFromImage(f.Doc)
+			if err != nil {
+				return nil // A frame without its own identity cannot supply order.
+			}
+			return visit(wal.DocumentIDString(id), f.Doc)
+		})
 	}, nil
 }
 
-func (s *Service) visitFrames(snap *Snapshot, visit func(string, bson.Raw) error) error {
+func (s *Service) visitFrames(snap *Snapshot, visit func(frame) error) error {
 	ctx := context.Background()
 	for _, chunkID := range snap.ChunkIDs {
 		data, err := s.store.Get(ctx, chunkID)
 		if err != nil {
 			return err
 		}
-		err = walkChunk(ctx, data, s.compressor, func(f frame) error {
-			frameKey := f.Key
-			if id, err := wal.DocumentIDFromImage(f.Doc); err == nil {
-				frameKey = wal.DocumentIDString(id)
-			}
-			return visit(frameKey, f.Doc)
-		})
+		err = walkChunk(ctx, data, s.compressor, visit)
 		if err != nil {
 			return fmt.Errorf("chunk %s: %w", chunkID, err)
 		}

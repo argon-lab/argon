@@ -153,8 +153,8 @@ without one, fall back to full replay unchanged.
 - **Storage**: content-addressed chunks (hex SHA-256 of the compressed
   bytes, ~4MB pre-compression, zstd); manifests always in `wal_snapshots`.
   Identical content stores once, so snapshots of slowly-changing
-  collections share almost all their chunks. Documents serialize in
-  canonical sorted-key form to keep the bytes deterministic.
+  collections share almost all their chunks. New frames store the BSON
+  returned for editing.
 - **Chunk store backends** (`ARGON_SNAPSHOT_STORE`):
   - `mongodb` (default) — chunks in `wal_snapshot_chunks`; zero
     configuration, works everywhere.
@@ -192,6 +192,19 @@ without one, fall back to full replay unchanged.
 - **Reclamation**: deleting a branch (which requires it to have no
   children) drops its WAL entries, its manifests and any chunks no other
   manifest references.
+
+### Stored images for editing
+
+The singular decoded point read or the decoded collection replay determines
+existence and value at the requested position. A stored WAL post-image,
+pre-image or snapshot frame supplies its bytes only if it identifies the
+same document, decodes cleanly, is trusted for that role and matches the
+decoded value under the merge comparison, including `_id`. Repeated data
+fields keep their last value at their first position. The first top-level
+`_id` and JavaScript code scopes retain their BSON identity and order.
+`attached_unverified` applies only to the post-image. A follower's `current`
+image can supply order. Without a matching image, encode the decoded value
+with `_id` first and map fields in name order at each depth.
 
 ## Agent sandboxes and the MCP server
 

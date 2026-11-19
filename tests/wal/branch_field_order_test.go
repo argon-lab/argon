@@ -124,7 +124,7 @@ func TestWriteBack_CheckoutMixedImageProvenance(t *testing.T) {
 			require.NoError(t, err)
 			require.EqualValues(t, 1, result.ModifiedCount)
 		}
-		if id == "typed" {
+		if id != "attached" {
 			expected[id] = image
 			continue
 		}

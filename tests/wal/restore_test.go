@@ -274,25 +274,25 @@ func TestRestore_CreateBranchAtTime(t *testing.T) {
 	t.Run("Create branch from timestamp", func(t *testing.T) {
 		// Create timed history
 		_, err := interceptor.Put(ctx, "timeline", bson.M{"_id": "t1", "event": "past"})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
-		time.Sleep(50 * time.Millisecond)
-		checkpoint := time.Now()
+		lsn, err := interceptor.Put(ctx, "timeline", bson.M{"_id": "t2", "event": "present"})
+		require.NoError(t, err)
+		present, err := walService.GetEntry(project.ID, lsn)
+		require.NoError(t, err)
 
-		_, err = interceptor.Put(ctx, "timeline", bson.M{"_id": "t2", "event": "present"})
-		assert.NoError(t, err)
-
-		time.Sleep(50 * time.Millisecond)
+		// WAL timestamps are stored to the millisecond. Keep t3 beyond the cutoff.
+		time.Sleep(time.Until(present.Timestamp.Add(time.Millisecond)))
 
 		_, err = interceptor.Put(ctx, "timeline", bson.M{"_id": "t3", "event": "future"})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		// Update main branch
 		mainBranch, _ = branchService.GetBranchByID(mainBranch.ID)
 
 		// Create branch at checkpoint
-		timeBranch, err := restoreService.CreateBranchAtTime(project.ID, mainBranch.ID, "time-branch", checkpoint.Add(25*time.Millisecond))
-		assert.NoError(t, err)
+		timeBranch, err := restoreService.CreateBranchAtTime(project.ID, mainBranch.ID, "time-branch", present.Timestamp)
+		require.NoError(t, err)
 
 		// Verify state
 		state, err := materializerService.MaterializeCollection(timeBranch, "timeline")
