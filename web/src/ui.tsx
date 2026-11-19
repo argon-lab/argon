@@ -55,14 +55,16 @@ export function Badge({
   tone = "muted",
 }: {
   children: ReactNode;
-  tone?: "muted" | "primary";
+  tone?: "muted" | "primary" | "danger";
 }) {
   return (
     <span
-      className={`border px-1.5 py-0.5 font-mono text-[11px] ${
+      className={`whitespace-nowrap border px-1.5 py-0.5 font-mono text-[11px] ${
         tone === "primary"
           ? "border-brand-primary/60 text-brand-primary"
-          : "border-brand-edge text-brand-muted"
+          : tone === "danger"
+            ? "border-red-400/50 text-red-400"
+            : "border-brand-edge text-brand-muted"
       }`}
     >
       {children}

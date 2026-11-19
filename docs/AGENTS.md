@@ -176,7 +176,10 @@ GET    /api/v1/status/ingesters
 ```
 
 Sandbox-creating endpoints start a supervised ingester; errors return
-`{"error": "..."}` with a meaningful status. Optional switches, all off
+`{"error": "..."}` with a meaningful status. Listing sandboxes returns each
+live sandbox's `connection_string`; a sandbox whose capture cannot run, for
+example after a collection drop, is listed with `capture_error` instead and
+can still be discarded. Optional switches, all off
 by default: `ARGON_API_TOKEN` (Bearer auth on every `/api` endpoint
 except `/meta`), `ARGON_READ_ONLY=1`, `ARGON_CORS_ORIGINS`,
 `ARGON_ALLOWED_HOSTS` (extra hostnames a token-less local server answers
