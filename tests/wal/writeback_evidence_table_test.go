@@ -25,7 +25,6 @@ import (
 type sourceDifference struct {
 	name         string
 	before, live bson.D // fields after _id; nil means no source document
-	oldJSONLoss  bool   // the original before-image loses information in unmarked Extended JSON
 }
 
 func existingSourceDifferences(t *testing.T) []sourceDifference {
@@ -48,9 +47,9 @@ func existingSourceDifferences(t *testing.T) []sourceDifference {
 	missing := sourceDifference{name: "missing document", before: field("sample")}
 	return []sourceDifference{
 		change("none", int32(1), int32(1)),
-		{"none with NaN payload", field(nan), field(nan), true},
-		{"top level field order", shape, reversed, false},
-		{"duplicate top level name", shape, duplicate, false},
+		{"none with NaN payload", field(nan), field(nan)},
+		{"top level field order", shape, reversed},
+		{"duplicate top level name", shape, duplicate},
 		change("embedded field order", shape, reversed),
 		change("duplicate nested name", shape, duplicate),
 		change("duplicate name in array document", nested(shape), nested(duplicate)),
@@ -60,10 +59,10 @@ func existingSourceDifferences(t *testing.T) []sourceDifference {
 		change("int32 to equal decimal", int32(1), decimal),
 		change("decimal encoding for equal value", decimal, otherScale),
 		change("double signed zero", float64(0), math.Copysign(0, -1)),
-		{"double NaN payload", field(nan), field(math.Float64frombits(0x7ff8000000000012)), true},
-		{"double NaN sign", field(nan), field(math.Float64frombits(0xfff8000000000011)), true},
+		{"double NaN payload", field(nan), field(math.Float64frombits(0x7ff8000000000012))},
+		{"double NaN sign", field(nan), field(math.Float64frombits(0xfff8000000000011))},
 		change("opposite infinities", math.Inf(1), math.Inf(-1)),
-		{"decimal NaN payload", field(decimalNaN), field(primitive.NewDecimal128(0x7c00000000000000, 2)), true},
+		{"decimal NaN payload", field(decimalNaN), field(primitive.NewDecimal128(0x7c00000000000000, 2))},
 		change("decimal signed zero", primitive.NewDecimal128(0x3040000000000000, 0), primitive.NewDecimal128(0xb040000000000000, 0)),
 		change("decimal opposite infinities", primitive.NewDecimal128(0x7800000000000000, 0), primitive.NewDecimal128(0xf800000000000000, 0)),
 		change("regex option order", primitive.Regex{Pattern: "sample", Options: "im"}, bson.RawValue{Type: bson.TypeRegex, Value: []byte("sample\x00mi\x00")}),
@@ -75,11 +74,11 @@ func existingSourceDifferences(t *testing.T) []sourceDifference {
 		change("date to timestamp", primitive.DateTime(1000), primitive.Timestamp{T: 1}),
 		change("null to empty document", nil, bson.D{}),
 		change("null to empty array", nil, bson.A{}),
-		{"null to missing", field(nil), bson.D{}, false},
+		{"null to missing", field(nil), bson.D{}},
 		change("array order", bson.A{2, 4, 4}, bson.A{4, 2, 4}),
 		change("array duplicate count", bson.A{2, 4, 4}, bson.A{2, 4}),
 		change("last byte in one MiB value", padding, padding[:len(padding)-1]+"q"),
-		{"extra field", shape, append(slices.Clone(shape), bson.E{Key: "extra", Value: nil}), false},
+		{"extra field", shape, append(slices.Clone(shape), bson.E{Key: "extra", Value: nil})},
 		missing,
 	}
 }
@@ -103,7 +102,7 @@ const (
 	verifiedEvidence   = "verified format 3"
 	unverifiedBefore   = "before marked unverified"
 	unverifiedAfter    = "after marked unverified"
-	unmarkedFormat3    = "format 3 before exact bytes"
+	unmarkedFormat3    = "format 3 without provenance"
 	previousFormat2    = "42efadc format 2"
 	releaseFormat2     = "2.7.0 format 2"
 	reclaimedAfter     = "history reclaimed after preview"
@@ -118,12 +117,8 @@ const (
 func (c sourceEvidenceCell) outcome(t *testing.T, provenance string) string {
 	t.Helper()
 	switch provenance {
-	case unverifiedBefore, unverifiedAfter, reclaimedBefore, previousFormat2, releaseFormat2:
+	case unverifiedBefore, unverifiedAfter, reclaimedBefore, previousFormat2, releaseFormat2, unmarkedFormat3:
 		return refusedBeforeClaim
-	case unmarkedFormat3:
-		if c.oldJSONLoss {
-			return refusedBeforeClaim
-		}
 	case verifiedEvidence, reclaimedAfter:
 	default:
 		t.Fatalf("missing expectation for %q", provenance)
@@ -265,12 +260,12 @@ func saveEvidenceCell(t *testing.T, storedPlans *mongo.Collection, template *mer
 	p := *template
 	p.ID = primitive.NewObjectID()
 	if provenance == unmarkedFormat3 {
-		p.ExactBytesVersion = 0
+		p.ProvenanceVersion = 0
 	}
 	if historicalGuard, ok := guards[provenance]; ok {
 		// The first change is the insert saved by that binary. Use its
 		// format and the same map-based encoding for the selected row.
-		p.FormatVersion, p.ExactBytesVersion = 2, 0
+		p.FormatVersion, p.ProvenanceVersion = 2, 0
 		guard = historicalGuard
 		var err error
 		if proposal.Before != nil {
@@ -381,49 +376,69 @@ func TestWriteBack_SourceEvidenceTable(t *testing.T) {
 					require.NoError(t, err, "source storage for %s", cell.name)
 				}
 				require.True(t, bytes.Equal(live, readSourceCase(t, samples, cell.id)), "server must retain the supplied bytes")
-				claims.Store(0)
-				guardInserts.Store(0)
-				aborts.Store(0)
-				result, applyErr := writer.ApplyToSource(ctx, p.ID, "", target)
-				state := f.plan(t, p)
-				outcome := cell.outcome(t, provenance)
-				switch outcome {
-				case written:
-					require.NoError(t, applyErr)
-					require.Equal(t, 2, result.Applied)
-					require.Equal(t, merge.StatusApplied, state.Status)
-					require.EqualValues(t, 1, claims.Load())
-					require.EqualValues(t, 1, guardInserts.Load())
-					require.Zero(t, aborts.Load())
-					require.Equal(t, guard.DocumentRaw, readSourceCase(t, catalog, "parcel"))
-					live = proposal.DocumentRaw // nil after a successful delete
-				case refusedBeforeClaim:
-					require.ErrorContains(t, applyErr, "samples/"+cell.id)
-					require.Nil(t, result)
-					require.Equal(t, merge.StatusPending, state.Status)
-					require.Nil(t, state.WriteBack)
-					require.Empty(t, state.WriteBackLastError)
-					require.Zero(t, claims.Load())
-					require.Zero(t, guardInserts.Load())
-					require.Zero(t, aborts.Load())
-					require.Nil(t, readSourceCase(t, catalog, "parcel"))
-				case aborted:
-					var conflict *merge.ConflictError
-					require.ErrorAs(t, applyErr, &conflict)
-					require.Equal(t, cell.id, conflict.DocumentID)
-					require.Nil(t, result)
-					require.Equal(t, merge.StatusPending, state.Status)
-					require.Nil(t, state.WriteBack)
-					require.NotEmpty(t, state.WriteBackLastError)
-					require.EqualValues(t, 1, claims.Load())
-					require.EqualValues(t, 1, guardInserts.Load())
-					require.EqualValues(t, 1, aborts.Load())
-					require.Nil(t, readSourceCase(t, catalog, "parcel"), "transaction rolled back its earlier insert")
-				default:
-					t.Fatalf("unhandled outcome %q", outcome)
+				// Check refusals first so every digest case starts with the same pending plan and live BSON.
+				for _, approval := range []string{"missing", "wrong", "correct"} {
+					t.Run(approval, func(t *testing.T) {
+						digest := wrongApproval
+						if approval == "missing" {
+							digest = ""
+						} else if approval == "correct" && p.ProvenanceVersion != 0 {
+							digest = approvalFor(t, p)
+						}
+						claims.Store(0)
+						guardInserts.Store(0)
+						aborts.Store(0)
+						result, applyErr := writer.ApplyToSource(ctx, p.ID, "", target, digest)
+						state := f.plan(t, p)
+						outcome := refusedBeforeClaim
+						if approval == "correct" {
+							outcome = cell.outcome(t, provenance)
+						}
+						switch outcome {
+						case written:
+							require.NoError(t, applyErr)
+							require.Equal(t, 2, result.Applied)
+							require.Equal(t, merge.StatusApplied, state.Status)
+							require.EqualValues(t, 1, claims.Load())
+							require.EqualValues(t, 1, guardInserts.Load())
+							require.Zero(t, aborts.Load())
+							require.Equal(t, guard.DocumentRaw, readSourceCase(t, catalog, "parcel"))
+							live = proposal.DocumentRaw // nil after a successful delete
+						case refusedBeforeClaim:
+							if p.ProvenanceVersion == 0 {
+								require.ErrorContains(t, applyErr, "preview again with this version")
+							} else if approval == "correct" {
+								require.ErrorContains(t, applyErr, "samples/"+cell.id)
+							} else {
+								require.ErrorContains(t, applyErr, "--output json")
+							}
+							require.Nil(t, result)
+							require.Equal(t, merge.StatusPending, state.Status)
+							require.Nil(t, state.WriteBack)
+							require.Empty(t, state.WriteBackLastError)
+							require.Zero(t, claims.Load())
+							require.Zero(t, guardInserts.Load())
+							require.Zero(t, aborts.Load())
+							require.Nil(t, readSourceCase(t, catalog, "parcel"))
+						case aborted:
+							var conflict *merge.ConflictError
+							require.ErrorAs(t, applyErr, &conflict)
+							require.Equal(t, cell.id, conflict.DocumentID)
+							require.Nil(t, result)
+							require.Equal(t, merge.StatusPending, state.Status)
+							require.Nil(t, state.WriteBack)
+							require.NotEmpty(t, state.WriteBackLastError)
+							require.EqualValues(t, 1, claims.Load())
+							require.EqualValues(t, 1, guardInserts.Load())
+							require.EqualValues(t, 1, aborts.Load())
+							require.Nil(t, readSourceCase(t, catalog, "parcel"), "transaction rolled back its earlier insert")
+						default:
+							t.Fatalf("unhandled outcome %q", outcome)
+						}
+						require.True(t, bytes.Equal(live, readSourceCase(t, samples, cell.id)), "source bytes after apply")
+						count[outcome]++
+					})
 				}
-				require.True(t, bytes.Equal(live, readSourceCase(t, samples, cell.id)), "source bytes after apply")
-				count[outcome]++
 			})
 		}
 	}

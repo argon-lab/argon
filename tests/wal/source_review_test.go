@@ -128,7 +128,7 @@ func TestFollow_ForeignWriteToMainIsDegraded(t *testing.T) {
 	_, err = sandboxDB.Collection("catalog").UpdateOne(ctx, bson.M{"_id": "item-05"}, bson.M{"$set": bson.M{"stock": int32(1)}})
 	require.NoError(t, err)
 	plan := f.preview(t, sandbox.BranchID)
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "degraded")
 	require.Equal(t, merge.StatusPending, f.plan(t, plan).Status)
 
@@ -169,7 +169,7 @@ func TestWriteBack_UnobservedClaimsStayClaimed(t *testing.T) {
 		return plan
 	}
 	old, young := claim("agent-old", 30*time.Minute), claim("agent-young", time.Minute)
-	_, err := f.services.WriteBackMerge(ctx, old.ID, "", f.sourceURI)
+	_, err := f.services.WriteBackMerge(ctx, old.ID, "", f.sourceURI, approvalFor(t, old))
 	require.ErrorContains(t, err, "will not be written again")
 
 	stop := f.follow(t, f.services, walcli.FollowSourceOptions{})

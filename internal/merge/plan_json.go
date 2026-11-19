@@ -14,11 +14,12 @@ import (
 
 // CLIJSON renders BSON document values as canonical Extended JSON v2 while
 // retaining the ordinary JSON types of the plan's metadata.
-func (p *Plan) CLIJSON() (json.RawMessage, error) {
+func (p *Plan) CLIJSON(targetFollowed bool) (json.RawMessage, error) {
 	out := struct {
 		*Plan
-		Changes   []json.RawMessage `json:"changes"`
-		Conflicts []json.RawMessage `json:"conflicts"`
+		Changes        []json.RawMessage `json:"changes"`
+		Conflicts      []json.RawMessage `json:"conflicts"`
+		ApprovalDigest string            `json:"approval_digest,omitempty"`
 	}{Plan: p}
 	if p.Changes != nil {
 		out.Changes = make([]json.RawMessage, 0, len(p.Changes))
@@ -43,6 +44,13 @@ func (p *Plan) CLIJSON() (json.RawMessage, error) {
 			return nil, err
 		}
 		out.Conflicts = append(out.Conflicts, item)
+	}
+	if targetFollowed && p.FollowedDatabase != "" && p.Status == StatusPending && p.approvalEligible() {
+		digest, err := ApprovalDigest(p)
+		if err != nil {
+			return nil, err
+		}
+		out.ApprovalDigest = digest
 	}
 	return json.Marshal(out)
 }

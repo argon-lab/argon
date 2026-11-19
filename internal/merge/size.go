@@ -38,7 +38,8 @@ func planAuditReserve() (int, error) {
 	applied, err := bson.Marshal(bson.M{
 		"strategy": StrategyTheirs, "applied_at": now,
 		"write_back": &WriteBackRecord{
-			Session: primitive.Binary{Subtype: 4, Data: make([]byte, 16)},
+			ApprovedDigest: strings.Repeat("f", 64),
+			Session:        primitive.Binary{Subtype: 4, Data: make([]byte, 16)},
 			// MongoDB database names are at most 63 bytes.
 			Database: strings.Repeat("d", 63), Display: strings.Repeat("d", maxDisplayBytes),
 			Strategy: StrategyTheirs, StartedAt: now, CommittedAt: &now, SettledAt: &now,

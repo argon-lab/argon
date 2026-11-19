@@ -97,7 +97,7 @@ argon source follow -p P [--uri U] [--allow-inexact] [--enable-source-images] [-
 argon source status -p P [-o json]
 argon source resync -p P [--uri U] [--force] [-o json]
 argon source detach -p P --yes
-argon merge apply <plan-id> --write-back [--uri U] [--strategy theirs|ours]
+argon merge apply <plan-id> --write-back --approve <digest> [--uri U] [--strategy theirs|ours]
 ```
 
 A project imported with `--online` has a `main` that mirrors its source.
@@ -125,7 +125,7 @@ The follower checks the lease before each alteration.
 While `main` follows a source, the source is the only thing that changes it:
 `merge apply` without `--write-back`, `undo`, `restore reset`, `checkout` and
 programmatic writes on `main` are refused. Sandboxes forked from it work as
-usual. To bring a sandbox's changes back, `merge apply <plan-id> --write-back`
+usual. To bring a sandbox's changes back, `merge apply <plan-id> --write-back --approve <digest>`
 writes the plan to the source database in one transaction. It starts after
 a majority-acknowledged metadata claim, and checks replacements and deletes byte for byte
 against verified before-images in the plan. Inserts require an absent key. One mismatch aborts the
@@ -221,13 +221,14 @@ that moment, so the same applies when that moment was later discarded.
 ```
 argon diff          -p P -b B                  what merging B would change
 argon merge preview -p P -b B                  persist a reviewable plan
-argon merge apply <plan-id> [--strategy theirs|ours]
+argon merge apply <plan-id> [--strategy theirs|ours] [--write-back --approve <digest>]
 argon merge list    -p P
 ```
 
 An ordinary apply requires the parent head saved by preview. Both apply paths
 accept only `theirs` and `ours` when a strategy is supplied. Conflicts require
-an explicit choice. Table preview prints the apply command for the target.
+an explicit choice. For an ordinary target, table preview prints the apply
+command. For a followed target, it gives the JSON inspection and approval steps.
 
 In `merge preview --output json` and `merge list --output json`, document IDs,
 keys and document images use canonical MongoDB Extended JSON v2. For example,
@@ -261,21 +262,29 @@ alone then maps to type `03` and the complete BSON document in hex. Empty
 paths requiring exact bytes. Use `--output json` to inspect them.
 
 A `sorted_images` entry identifies an image for which only decoded values
-were available. Ordinary apply can use these images and older formats.
+were available or an ordinary merge collapsed repeated field names. Ordinary
+apply can use these images and older formats. A repeated field within a
+compound `_id` would change the lookup key if collapsed. Ordinary merge
+refuses that document.
 Write-back requires verified before-images for replacements and deletes and
 verified after-images for inserts and replacements. Use this version for
 write-back even when an older executable can load the plan. Older writers use
-their own comparison rules. This version refuses a selected write with a duplicate field name, an older plan format, or an earlier preview
-that omitted required exact bytes. The pending plan's error groups affected
-documents by cause. See the recovery steps in
+their own comparison rules. Preview plans saved by older versions again,
+including format 3. This version refuses a selected write with a duplicate
+field name. The error groups affected documents by cause. See the recovery steps in
 [Writing a plan back to the source](OPERATIONS.md#writing-a-plan-back-to-the-source).
 When listing older plans, CLI JSON shows the field order actually stored in
 each image and the typed lookup key separately. Unreadable plans appear by ID.
 Preview reports the encoded size if the plan and its outcome fields exceed
 MongoDB's 16 MiB document limit.
 
-When the parent follows an external database, a plan is applied with
-`--write-back`. Write-back is experimental, off by default, and has known
+For a followed parent, inspect `merge preview --output json` or
+`merge list -p <project> --output json`. Each eligible pending plan includes
+an `approval_digest` alongside the images. Use that plan's 64 lowercase hex
+characters in `merge apply <plan-id> --write-back --approve <digest>`.
+Approval is explicit on each invocation, including plans with zero writes.
+An absent, malformed or mismatched digest leaves the plan pending. Ordinary
+apply rejects `--approve`. Write-back is experimental, off by default, and has known
 open issues. Set `ARGON_EXPERIMENTAL_SOURCE=1` to enable it. See
 [Follow a live database](#follow-a-live-database).
 A write-back plan in `writing_back` is claimed and cannot be used again.

@@ -47,7 +47,7 @@ func TestWriteBack_DeleteOverAChangedDocumentIsAConflict(t *testing.T) {
 			tc.cause(t, f)
 			before := f.sourceState(t, nil)
 
-			_, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+			_, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 			var got bson.M
 			findErr := f.source.Collection("catalog").FindOne(ctx, bson.M{"_id": "item-03"}).Decode(&got)
 			t.Logf("write-back error: %v; item-03 in source afterwards: %v (find error: %v)", err, got, findErr)

@@ -78,6 +78,7 @@ export type MergePlan = {
   strategy?: string;
   created_at: string;
   applied_at?: string;
+  write_back_guidance?: string;
 };
 
 export type Meta = {

@@ -72,6 +72,7 @@ func (plan *Plan) WritingBackAdvice() string {
 
 // WriteBackRecord is the audit trail of a plan's write-back.
 type WriteBackRecord struct {
+	ApprovedDigest string `bson:"approved_digest,omitempty" json:"-"`
 	// Session is the source session the transaction ran in. Change events
 	// from that session are this plan's.
 	Session   primitive.Binary `bson:"session" json:"-"`
@@ -158,7 +159,7 @@ func resolveChanges(plan *Plan, strategy string) ([]Change, int, error) {
 
 // ApplyToSource writes a pending plan to the external database its target
 // branch follows. It is never reached implicitly: the caller names it.
-func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, strategy string, target WriteBackTarget) (*ApplyResult, error) {
+func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, strategy string, target WriteBackTarget, approved string) (*ApplyResult, error) {
 	if err := ValidateStrategy(strategy); err != nil {
 		return nil, err
 	}
@@ -170,6 +171,9 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		return nil, err
 	}
 	if err := plan.RequirePending(); err != nil {
+		return nil, err
+	}
+	if err := plan.CheckApproval(approved); err != nil {
 		return nil, err
 	}
 	changes, resolved, err := resolveChanges(plan, strategy)
@@ -188,6 +192,9 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if err != nil {
 		return nil, err
 	}
+	if plan.FollowedDatabase != databaseName || plan.FollowedReplicaSetID == "" {
+		return nil, errors.New("write-back requires the database and replica-set ID recorded at preview; preview again with this version")
+	}
 	source, err := s.branches.GetBranchByID(plan.SourceBranchID)
 	if err != nil {
 		return nil, fmt.Errorf("source branch not found: %w", err)
@@ -197,7 +204,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	}
 
 	if len(changes) == 0 {
-		if err := s.claimWriteBack(ctx, plan, databaseName, nil, strategy); err != nil {
+		if err := s.claimWriteBack(ctx, plan, databaseName, nil, strategy, approved); err != nil {
 			return nil, err
 		}
 		return &ApplyResult{ConflictsResolved: resolved}, nil
@@ -239,15 +246,16 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		return nil, errors.New("the source session has no identifier to record")
 	}
 	record := &WriteBackRecord{
-		Session:  primitive.Binary{Subtype: subtype, Data: data},
-		Database: branch.Follows, Display: boundedAuditText(target.Display, maxDisplayBytes),
+		ApprovedDigest: approved,
+		Session:        primitive.Binary{Subtype: subtype, Data: data},
+		Database:       branch.Follows, Display: boundedAuditText(target.Display, maxDisplayBytes),
 		Strategy: strategy, Changes: len(changes),
 	}
 	// A metadata election must not undo the claim after the separate
 	// source transaction commits. Require majority acknowledgement for
 	// the claim and both transitions out of it.
 	plans := s.plans.Database().Collection(s.plans.Name(), options.Collection().SetWriteConcern(writeconcern.Majority()))
-	if err := s.claimWriteBack(writerCtx, plan, databaseName, record, strategy); err != nil {
+	if err := s.claimWriteBack(writerCtx, plan, databaseName, record, strategy, approved); err != nil {
 		return nil, err
 	}
 
@@ -368,7 +376,7 @@ func (s *Service) admitWriteBack(ctx context.Context, branchID, databaseName str
 
 // claimWriteBack checks the capture checkpoint and consumes the pending plan
 // in one metadata snapshot. An empty change set is complete at that commit.
-func (s *Service) claimWriteBack(ctx context.Context, plan *Plan, databaseName string, record *WriteBackRecord, strategy string) error {
+func (s *Service) claimWriteBack(ctx context.Context, plan *Plan, databaseName string, record *WriteBackRecord, strategy, approved string) error {
 	session, err := s.plans.Database().Client().StartSession()
 	if err != nil {
 		return err
@@ -382,13 +390,26 @@ func (s *Service) claimWriteBack(ctx context.Context, plan *Plan, databaseName s
 			}
 			return nil, err
 		}
-		if err := source.FenceWriteBackClaim(sc, s.plans.Database(), plan.TargetBranchID, databaseName); err != nil {
+		// The caller selected and checked its source changes from a record
+		// with this same digest. Check again on every transaction retry.
+		stored, err := s.GetPlan(sc, plan.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := stored.CheckApproval(approved); err != nil {
+			return nil, err
+		}
+		if err := source.FenceWriteBackClaim(sc, s.plans.Database(), stored.TargetBranchID, stored.ProjectID, stored.FollowedDatabase, stored.FollowedReplicaSetID); err != nil {
 			return nil, err
 		}
 		fields := bson.M{"status": StatusWritingBack, "write_back": bson.M{"$literal": record}, "write_back_last_error": "$$REMOVE"}
 		update := mongo.Pipeline{{{Key: "$set", Value: fields}}}
 		if record == nil {
-			fields["status"], fields["write_back"] = StatusApplied, "$$REMOVE"
+			fields["status"] = StatusApplied
+			fields["write_back"] = bson.M{
+				"approved_digest": approved, "database": bson.M{"$literal": databaseName},
+				"strategy": bson.M{"$literal": strategy}, "changes": 0, "started_at": "$$NOW",
+			}
 			fields["applied_at"], fields["strategy"] = "$$NOW", bson.M{"$literal": strategy}
 		} else {
 			update = append(update, bson.D{{Key: "$set", Value: bson.M{"write_back.started_at": "$$NOW"}}})
@@ -484,23 +505,21 @@ func (failures evidenceFailures) err() error {
 }
 
 const (
-	oldPlanEvidence   = "older plan format lacks verified ordered images. Run preview again with this version"
+	oldPlanEvidence   = "older plan format or unknown image provenance; preview again with this version using --output json"
 	unverifiedBefore  = "unverified before-image: capture recorded an unverified image or target history was reclaimed. Stop following, run argon source resync -p <project> --force, then preview again"
 	unverifiedAfter   = "unverified after-image: capture recorded an unverified image or sandbox history was reclaimed. Record the intended sandbox document again with verified capture, then preview again"
 	duplicateEvidence = "duplicate fields in a plan image. Remove the repeated field names, recapture the document and preview again"
-	lossyEvidence     = "an image rendered lossily without exact_bytes in its original preview. Inspect exact_bytes for the listed documents with argon merge list -p <project> --output json, then run preview again with this version"
 )
 
 // prepareWriteBack validates only images selected by the conflict strategy.
 // The transaction will consume these saved images without consulting either branch's history.
 func prepareWriteBack(plan *Plan, changes []Change) error {
+	if !plan.approvalEligible() {
+		return errors.New(oldPlanEvidence)
+	}
 	failures := evidenceFailures{}
 	for i := range changes {
 		c := &changes[i]
-		if plan.FormatVersion < orderedPlanVersion {
-			failures.add(oldPlanEvidence, *c)
-			continue
-		}
 		id, err := documentIDValue(*c)
 		if err != nil {
 			failures.add("invalid typed document key. Run preview again", *c)
@@ -520,25 +539,14 @@ func prepareWriteBack(plan *Plan, changes []Change) error {
 			}
 		}
 		// Report each document once for each cause, even when both images have it.
-		duplicates, unmarked := false, false
 		for _, image := range c.cliImages() {
 			if image.raw == nil || (c.Delete && image.name == "document") {
 				continue
 			}
 			if ingest.HasDuplicateKeys(image.raw) {
-				duplicates = true
-			} else if plan.ExactBytesVersion != exactBytesVersion {
-				markers, err := imageExactBytes(image.raw, image.name)
-				if err != nil || len(markers) != 0 {
-					unmarked = true
-				}
+				failures.add(duplicateEvidence, *c)
+				break
 			}
-		}
-		if duplicates {
-			failures.add(duplicateEvidence, *c)
-		}
-		if unmarked {
-			failures.add(lossyEvidence, *c)
 		}
 	}
 	return failures.err()

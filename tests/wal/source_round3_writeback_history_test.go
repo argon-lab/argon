@@ -33,7 +33,7 @@ func TestWriteBack_TargetHistoryReclaimedAfterPreview(t *testing.T) {
 	history, err = f.services.WAL.GetDocumentHistory(main.ID, "catalog", "item-00", main.BaseLSN+1, plan.TargetHead)
 	require.NoError(t, err)
 	require.Empty(t, history)
-	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Applied)
 	after, err := f.source.Collection("catalog").FindOne(ctx, bson.M{"_id": "item-00"}).Raw()

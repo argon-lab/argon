@@ -45,9 +45,9 @@ func TestSource_UnexpectedHeadChangeDegradesStatusAndAdmitsResync(t *testing.T) 
 	require.Equal(t, int32(-1), f.mainState(t, 0)["catalog"]["item-00"]["stock"])
 
 	// An invalid source address must never be reached after a head mismatch.
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", "invalid-source-uri")
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", "invalid-source-uri", approvalFor(t, plan))
 	require.ErrorContains(t, err, "without the follower")
-	_, err = f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: f.source})
+	_, err = f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: f.source}, approvalFor(t, plan))
 	require.ErrorContains(t, err, "without the follower")
 	require.Equal(t, merge.StatusPending, f.plan(t, plan).Status)
 

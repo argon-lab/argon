@@ -53,7 +53,7 @@ func TestResync_RecapturesUnverifiedBeforeImage(t *testing.T) {
 			require.NoError(t, err)
 			checkRefused := func() {
 				t.Helper()
-				_, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+				_, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 				require.ErrorContains(t, err, "unverified before-image")
 				stored := f.plan(t, plan)
 				require.Equal(t, merge.StatusPending, stored.Status)
@@ -71,7 +71,7 @@ func TestResync_RecapturesUnverifiedBeforeImage(t *testing.T) {
 			require.Len(t, fresh.Changes, 1)
 			require.Empty(t, fresh.Changes[0].SortedImages)
 			require.Equal(t, original, fresh.Changes[0].BeforeRaw)
-			_, err = f.services.WriteBackMerge(ctx, fresh.ID, "", f.sourceURI)
+			_, err = f.services.WriteBackMerge(ctx, fresh.ID, "", f.sourceURI, approvalFor(t, fresh))
 			require.NoError(t, err)
 			got, err := catalog.FindOne(ctx, bson.M{"_id": "parcel"}).Raw()
 			require.NoError(t, err)
@@ -107,7 +107,7 @@ func TestWriteBack_BeforeImageAcrossResync(t *testing.T) {
 	// Resync records new target images. The old plan still checks its own.
 	f.resync(t, f.services, walcli.ResyncSourceOptions{Force: true})
 	require.Greater(t, f.main(t).HeadLSN, plan.TargetHead)
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	var conflict *merge.ConflictError
 	require.ErrorAs(t, err, &conflict)
 	require.Equal(t, id, conflict.DocumentID)
@@ -117,7 +117,7 @@ func TestWriteBack_BeforeImageAcrossResync(t *testing.T) {
 	require.Equal(t, int32(33), changed.Lookup("stock").Int32())
 	_, err = catalog.ReplaceOne(ctx, key, original)
 	require.NoError(t, err)
-	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.Equal(t, 2, result.Applied)
 }
@@ -140,7 +140,7 @@ func TestWriteBack_DuplicateBeforeImage(t *testing.T) {
 	require.NoError(t, err)
 	plan := f.preview(t, child.ID)
 	require.Empty(t, plan.Changes[0].SortedImages)
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "duplicate fields")
 	source, err := catalog.FindOne(ctx, bson.M{"_id": "parcel"}).Raw()
 	require.NoError(t, err)

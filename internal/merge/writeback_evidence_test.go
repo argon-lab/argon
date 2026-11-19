@@ -13,7 +13,7 @@ import (
 func TestWriteBack_PersistedMapImagesRequireVerifiedCapture(t *testing.T) {
 	doc := bson.M{"_id": "box"}
 	p := &Plan{
-		FormatVersion: orderedPlanVersion,
+		FormatVersion: orderedPlanVersion, ProvenanceVersion: 1,
 		Changes: []Change{{
 			Collection: "items", DocumentID: "box", Before: doc, Document: doc,
 		}},
@@ -37,7 +37,7 @@ func TestWriteBack_PersistedMapImagesRequireVerifiedCapture(t *testing.T) {
 }
 
 func TestWriteBack_EvidenceAfterConflictResolution(t *testing.T) {
-	p := &Plan{FormatVersion: orderedPlanVersion, ExactBytesVersion: 1}
+	p := &Plan{FormatVersion: orderedPlanVersion, ProvenanceVersion: 1}
 	for i := range 8 {
 		id := fmt.Sprintf("box-%d", i)
 		doc := bson.M{"_id": id}
@@ -72,7 +72,7 @@ func TestWriteBack_RefusesRepeatedArrayKeys(t *testing.T) {
 	array := bsoncore.BuildDocument(nil, bsoncore.AppendInt32Element(nil, "0", 1), bsoncore.AppendInt32Element(nil, "0", 2))
 	id := bsoncore.AppendStringElement(nil, "_id", "box")
 	raw := bsoncore.BuildDocument(nil, id, bsoncore.AppendArrayElement(nil, "contents", array))
-	p := &Plan{FormatVersion: orderedPlanVersion, ExactBytesVersion: 1}
+	p := &Plan{FormatVersion: orderedPlanVersion, ProvenanceVersion: 1}
 	for _, c := range []Change{
 		{Collection: "items", DocumentID: "box", BeforeRaw: raw, Delete: true},
 		{Collection: "items", DocumentID: "box", DocumentRaw: raw},

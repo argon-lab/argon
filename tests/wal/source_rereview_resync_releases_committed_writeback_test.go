@@ -34,7 +34,7 @@ func TestResync_DoesNotReleaseCommittedWriteBack(t *testing.T) {
 	_, err = sandboxDB.Collection("catalog").InsertOne(ctx, bson.D{{Key: "_id", Value: "item-new"}, {Key: "name", Value: "from the plan"}})
 	require.NoError(t, err)
 	plan := f.preview(t, info.BranchID)
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	var onSource bson.M
 	require.NoError(t, f.source.Collection("catalog").FindOne(ctx, bson.M{"_id": "item-new"}).Decode(&onSource), "the write-back committed on the source")
@@ -51,7 +51,7 @@ func TestResync_DoesNotReleaseCommittedWriteBack(t *testing.T) {
 	claimed := f.plan(t, plan)
 	require.Equal(t, merge.StatusWritingBack, claimed.Status)
 	require.NotNil(t, claimed.WriteBack)
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "will not be written again")
 	require.ErrorContains(t, err, "Check the source database")
 	require.ErrorContains(t, err, "argon merge preview")
@@ -73,7 +73,7 @@ func TestResync_DoesNotReleaseCommittedWriteBack(t *testing.T) {
 	// Production later removes the document the plan inserted.
 	_, err = f.source.Collection("catalog").DeleteOne(ctx, bson.M{"_id": "item-new"})
 	require.NoError(t, err)
-	_, againErr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, againErr := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	count, err := f.source.Collection("catalog").CountDocuments(ctx, bson.M{"_id": "item-new"})
 	require.NoError(t, err)
 

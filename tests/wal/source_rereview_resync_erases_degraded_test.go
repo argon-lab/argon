@@ -39,7 +39,7 @@ func TestResync_FailedPreflightPreservesDegradedState(t *testing.T) {
 	before := f.degrade(t, "time-series collection metrics")
 	beforeState := f.readIngestState(t, before.BranchID)
 
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "write-back refused: following ended as degraded")
 
 	for range 2 {
@@ -53,6 +53,6 @@ func TestResync_FailedPreflightPreservesDegradedState(t *testing.T) {
 	}
 
 	require.NotEqual(t, f.sourceState(t, nil)["catalog"]["item-00"]["stock"], f.mainState(t, 0)["catalog"]["item-00"]["stock"])
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "write-back refused: following ended as degraded")
 }

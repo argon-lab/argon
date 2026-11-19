@@ -19,7 +19,7 @@ func TestPlanJSONCompoundKeysAndConflictImages(t *testing.T) {
 		Changes:       []Change{{DocumentID: key, Before: doc, ID: doc["_id"], Delete: true}},
 		Conflicts:     []Conflict{{DocumentID: key, Base: doc, Ours: doc, Theirs: doc}},
 	}
-	output, err := plan.CLIJSON()
+	output, err := plan.CLIJSON(false)
 	require.NoError(t, err)
 	type image struct {
 		ID    json.RawMessage `json:"_id"`
@@ -58,7 +58,7 @@ func TestPlanJSONLiteralDollarPathsByImage(t *testing.T) {
 		Changes:       []Change{{DocumentID: "x", Before: doc, Delete: true}},
 		Conflicts:     []Conflict{{DocumentID: "y", Base: doc, Ours: doc, Theirs: doc}},
 	}
-	data, err := plan.CLIJSON()
+	data, err := plan.CLIJSON(false)
 	require.NoError(t, err)
 	type item struct {
 		Paths []string `json:"literal_dollar_paths"`

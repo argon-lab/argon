@@ -43,7 +43,14 @@ func TestWriteBack_EmptyPlan(t *testing.T) {
 		return raw.Lookup("transactions", "totalCommitted").AsInt64()
 	}
 	before := commits()
-	cmd := exec.CommandContext(t.Context(), buildSourceCLI(t), "merge", "apply", plan.ID.Hex(), "--write-back", "--uri", f.sourceURI, "--output", "json")
+	for _, approval := range []string{"", wrongApproval} {
+		_, err := f.services.WriteBackMerge(t.Context(), plan.ID, "", f.sourceURI, approval)
+		require.ErrorContains(t, err, "--output json")
+		saved := f.plan(t, plan)
+		require.Equal(t, merge.StatusPending, saved.Status)
+		require.Nil(t, saved.WriteBack)
+	}
+	cmd := exec.CommandContext(t.Context(), buildSourceCLI(t), "merge", "apply", plan.ID.Hex(), "--write-back", "--approve", approvalFor(t, plan), "--uri", f.sourceURI, "--output", "json")
 	cmd.Env = append(os.Environ(), "MONGODB_URI="+metadataDeploymentURI, "ARGON_METADATA_DB="+f.metadataName)
 	body, err := cmd.Output()
 	if exit, ok := err.(*exec.ExitError); ok {
@@ -60,7 +67,8 @@ func TestWriteBack_EmptyPlan(t *testing.T) {
 	done := f.plan(t, plan)
 	require.Equal(t, merge.StatusApplied, done.Status)
 	require.NotNil(t, done.AppliedAt)
-	require.Nil(t, done.WriteBack)
+	require.NotNil(t, done.WriteBack)
+	require.Equal(t, approvalFor(t, plan), done.WriteBack.ApprovedDigest)
 }
 
 func TestWriteBack_RetryClearsFailure(t *testing.T) {
@@ -76,7 +84,7 @@ func TestWriteBack_RetryClearsFailure(t *testing.T) {
 	_, err = writer.Put(ctx, "catalog", bson.M{"_id": "new-item", "tag": "reserved"})
 	require.NoError(t, err)
 	plan := f.preview(t, branchID)
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.True(t, mongo.IsDuplicateKeyError(err), "%v", err)
 	require.Contains(t, f.plan(t, plan).WriteBackLastError, "duplicate key")
 	_, err = col.UpdateByID(ctx, "item-00", bson.M{"$unset": bson.M{"tag": ""}})
@@ -90,7 +98,7 @@ func TestWriteBack_RetryClearsFailure(t *testing.T) {
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(f.sourceURI).SetMonitor(monitor))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Disconnect(context.Background())) })
-	result, err := f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: client.Database(f.source.Name())})
+	result, err := f.services.Merge.ApplyToSource(ctx, plan.ID, "", merge.WriteBackTarget{Database: client.Database(f.source.Name())}, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	require.Equal(t, merge.StatusWritingBack, claimed.Status)
@@ -125,9 +133,9 @@ func TestWriteBack_StrategyPrecedesPreflight(t *testing.T) {
 	for _, id := range []primitive.ObjectID{plan.ID, primitive.NewObjectID()} {
 		_, err := f.services.Merge.Apply(t.Context(), id, "typo")
 		require.ErrorContains(t, err, "unknown strategy")
-		_, err = f.services.Merge.ApplyToSource(t.Context(), id, "typo", merge.WriteBackTarget{})
+		_, err = f.services.Merge.ApplyToSource(t.Context(), id, "typo", merge.WriteBackTarget{}, "")
 		require.ErrorContains(t, err, "unknown strategy")
-		_, err = f.services.WriteBackMerge(t.Context(), id, "typo", "invalid URI")
+		_, err = f.services.WriteBackMerge(t.Context(), id, "typo", "invalid URI", "")
 		require.ErrorContains(t, err, "unknown strategy")
 	}
 	done := f.plan(t, plan)
@@ -154,7 +162,7 @@ func TestWriteBack_CheckpointChangesBeforeClaim(t *testing.T) {
 	client, err := mongo.Connect(t.Context(), options.Client().ApplyURI(f.sourceURI).SetMonitor(monitor))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Disconnect(context.Background())) })
-	_, err = f.services.Merge.ApplyToSource(t.Context(), plan.ID, "", merge.WriteBackTarget{Database: client.Database(f.source.Name())})
+	_, err = f.services.Merge.ApplyToSource(t.Context(), plan.ID, "", merge.WriteBackTarget{Database: client.Database(f.source.Name())}, approvalFor(t, plan))
 	require.True(t, changed)
 	require.ErrorContains(t, err, "write-back refused")
 	done := f.plan(t, plan)

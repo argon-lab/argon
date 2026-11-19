@@ -42,7 +42,7 @@ func TestWriteBack_RefusedWhileResyncIsUnfinished(t *testing.T) {
 	plan := f.preview(t, info.BranchID)
 	require.Len(t, plan.Changes, 1)
 
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "resync of the followed branch has not finished")
 	inSource, err := settings.FindOne(ctx, bson.M{"_id": "s1"}).Raw()
 	require.NoError(t, err)

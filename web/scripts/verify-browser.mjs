@@ -112,6 +112,32 @@ try {
   await page.getByText(/^applied \d+ changes/).waitFor();
   await page.screenshot({ path: `${out}/merge-desktop.png`, fullPage: true });
   const project = new URL(page.url()).pathname.split("/")[2];
+  // A followed target has a CLI-only approval step. Supply the REST
+  // guidance for this UI state while reusing the plan's actual images.
+  const planURL = page.url();
+  const planEndpoint =
+    "**/api/v1/merge-plans/" + new URL(planURL).pathname.split("/").pop();
+  const guidance = `For write-back, inspect every image with argon merge list -p ${project} --output json and use the approval_digest for this plan.`;
+  await page.route(planEndpoint, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      json: {
+        ...(await response.json()),
+        status: "pending",
+        write_back_guidance: guidance,
+      },
+    });
+  });
+  await page.reload();
+  await page.getByText(guidance, { exact: true }).waitFor();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "apply merge", exact: true })
+      .count(),
+    0,
+  );
+  await page.unroute(planEndpoint);
   await page.goto(`${origin}/p/${project}/b/${scenario.branch}`);
   const undoPanel = page.locator('[data-tour="undo"]');
   const undoResponse = (dry) =>

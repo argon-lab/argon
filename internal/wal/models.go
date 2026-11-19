@@ -216,7 +216,7 @@ func (b *Branch) IsFollower() bool {
 // RefuseFollowerWrite is the error every Argon-side writer returns for a
 // branch that follows an external database.
 func (b *Branch) RefuseFollowerWrite(operation string) error {
-	return fmt.Errorf("%s refused: branch %s follows the external database %q and only changes when that database does; write to a sandbox forked from it, write a reviewed plan to the source with `argon merge apply <plan> --write-back`, or stop following with `argon source detach`", operation, b.Name, b.Follows)
+	return fmt.Errorf("%s refused: branch %s follows the external database %q and only changes when that database does; write to a sandbox forked from it, inspect the lossless images with `argon merge list -p <project> --output json` and write the plan to the source with `argon merge apply <plan> --write-back --approve <digest>`, or stop following with `argon source detach`", operation, b.Name, b.Follows)
 }
 
 // IsExpired reports whether a sandbox branch has passed its TTL.

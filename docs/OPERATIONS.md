@@ -449,22 +449,25 @@ hold documents its source does not. A reviewed plan is written to the source
 instead:
 
 ```sh
-argon merge preview -p myapp -b <sandbox>
-ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
+argon merge preview -p myapp -b <sandbox> --output json
+ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back --approve <approval_digest>
 ```
 
 #### Ordinary apply versus write-back
 
 | Apply target | What Argon checks | Accepted plans |
 | --- | --- | --- |
-| An Argon branch | Preview compares decoded BSON values with document keys sorted recursively. Apply checks the saved branch heads and, for formats that record them, branch versions. On a checked-out target, the transaction also compares each live document's decoded values with the plan. | Current plans, including sorted images, and older formats with recoverable IDs and images. Older formats can use branch history. |
-| A followed source | After conflict resolution, one source transaction requires an absent typed key for every insert and byte-for-byte equality with the saved target BSON for every replacement or delete. One mismatch rolls back all writes. | Format 3 with verified, unambiguous images for every selected write. If JSON loses a distinction, the original preview must have identified the exact bytes. |
+| An Argon branch | Preview compares decoded BSON values with document keys sorted recursively. Apply checks the saved branch heads and, for formats that record them, branch versions. On a checked-out target, the transaction also compares each live document's decoded values with the plan. | Current plans, including sorted images. Repeated fields in ordinary replacements collapse to their last decoded value. A repeated field within a compound `_id` requires correcting the key first. Older formats can recover IDs and images from branch history. |
+| A followed source | After conflict resolution, one source transaction requires an absent typed key for every insert and byte-for-byte equality with the saved target BSON for every replacement or delete. One mismatch rolls back all writes. | A plan saved by this version, its matching approval digest, and verified, unambiguous images for every selected write. |
 
 #### Applying to the source
 
 Inspect a saved plan with `argon merge list -p myapp --output json`, including
 plans first opened through REST or MCP. CLI JSON shows the ordered images and
-their exact-byte annotations.
+their exact-byte annotations. Pass the chosen plan's `approval_digest` to
+`--approve`. Table output, REST, the console and MCP direct you to CLI JSON.
+A missing approval or a digest for different contents leaves the source
+untouched and the plan pending.
 
 - In the metadata snapshot that claims the plan, `main` has a verified exact
   checkpoint as of its reported
@@ -482,9 +485,8 @@ their exact-byte annotations.
   usable. The comparison reads its before-image from the saved plan.
 - Before claiming, Argon reports all evidence problems by reason, with the
   total and up to five collection/ID pairs per reason. The plan stays pending.
-  Preview a pre-format-3 plan again with this version. For an earlier format-3
-  preview that omitted exact bytes for a lossy value, preview again and inspect
-  `exact_bytes` with `--output json`.
+  For a plan from any older writer, including format 3, preview again with
+  this version. Inspect the new plan and its `approval_digest` in CLI JSON.
 - An image in `sorted_images` means capture supplied unverified values or the
   original history was unavailable at preview. For a target before-image,
   stop the follower and run `argon source resync -p myapp --force`. Resync
@@ -498,7 +500,8 @@ their exact-byte annotations.
 - The encoded plan and room for its claim, outcome and failure text must fit
   in one 16 MiB BSON document. Split larger changes into smaller plans.
 - If the plan has no writes, including when `ours` keeps every conflict,
-  one majority-acknowledged metadata update marks it applied. There is no
+  the same digest check and majority-acknowledged metadata transaction record
+  its approval and mark it applied. There is no
   source transaction, source commit time or claim to settle. The CLI reports
   `written_to_source: false` in JSON.
 - `main` is not written by the write-back. It receives the change through

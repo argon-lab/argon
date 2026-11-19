@@ -159,7 +159,7 @@ func TestWriteBack_ExactBytesInCLI(t *testing.T) {
 	require.NoError(t, err)
 	stored, err := f.services.Merge.GetPlan(ctx, id)
 	require.NoError(t, err)
-	_, err = f.services.WriteBackMerge(ctx, id, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, id, "", f.sourceURI, approvalFor(t, stored))
 	require.NoError(t, err)
 	got, err := col.FindOne(ctx, bson.M{"_id": "sample"}).Raw()
 	require.NoError(t, err)

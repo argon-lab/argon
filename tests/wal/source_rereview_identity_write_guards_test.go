@@ -74,7 +74,7 @@ func TestWriteBack_WeakBindingRefusesSourceWrites(t *testing.T) {
 
 	require.Contains(t, status.WriteBackUnavailableReason, "requires a replica-set ID recorded at import")
 
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", staging)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", staging, approvalFor(t, plan))
 	require.ErrorContains(t, err, "write-back refused")
 	requireWeakBindingRemedy(t, err)
 	storedPlan := f.plan(t, plan)

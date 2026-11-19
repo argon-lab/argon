@@ -66,8 +66,8 @@ func TestSourceExperimentalOptionsRequireOptIn(t *testing.T) {
 	require.ErrorIs(t, s.FollowSource(ctx, "project", FollowSourceOptions{EnableSourceImages: true}), images)
 	require.ErrorIs(t, s.FollowSource(ctx, "project", FollowSourceOptions{AutoResync: true}), autoResync)
 
-	_, err = s.WriteBackMerge(ctx, primitive.NilObjectID, "", "")
+	_, err = s.WriteBackMerge(ctx, primitive.NilObjectID, "", "", "")
 	require.ErrorIs(t, err, writeBack)
-	_, err = s.Merge.ApplyToSource(ctx, primitive.NilObjectID, "", merge.WriteBackTarget{})
+	_, err = s.Merge.ApplyToSource(ctx, primitive.NilObjectID, "", merge.WriteBackTarget{}, "")
 	require.ErrorIs(t, err, writeBack)
 }

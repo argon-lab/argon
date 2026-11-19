@@ -638,7 +638,7 @@ func (r *Router) mergePreview(c *gin.Context) {
 		abortErr(c, http.StatusBadRequest, err)
 		return
 	}
-	c.JSON(http.StatusCreated, plan)
+	c.JSON(http.StatusCreated, walcli.ViewMergePlan(plan, c.Param("project"), plan.FollowedDatabase != ""))
 }
 
 func (r *Router) mergeApply(c *gin.Context) {

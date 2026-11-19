@@ -41,10 +41,10 @@ func TestSource_OnlyPlannedDocumentsChangeWhileFollowingAndWritingBack(t *testin
 	refused := f.preview(t, second.BranchID)
 	_, err = catalog.UpdateOne(ctx, bson.M{"_id": "item-11"}, bson.M{"$set": bson.M{"stock": int32(7)}})
 	require.NoError(t, err)
-	_, err = f.services.WriteBackMerge(ctx, refused.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, refused.ID, "", f.sourceURI, approvalFor(t, refused))
 	require.Error(t, err)
 
-	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	require.Equal(t, 4, result.Applied)
 	f.waitCaughtUp(t)

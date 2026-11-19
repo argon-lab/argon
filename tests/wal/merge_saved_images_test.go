@@ -34,6 +34,7 @@ func TestWriteBack_SavedCLIImages(t *testing.T) {
 
 	type output struct {
 		ID      primitive.ObjectID
+		Digest  string `json:"approval_digest"`
 		Changes []struct {
 			Document json.RawMessage
 			Before   json.RawMessage
@@ -52,7 +53,7 @@ func TestWriteBack_SavedCLIImages(t *testing.T) {
 
 	saved, err := f.services.Client.Database(f.metadataName).Collection("wal_merge_plans").FindOne(ctx, bson.M{"_id": preview.Plan.ID}).Raw()
 	require.NoError(t, err)
-	runMergeCLI(t, f, cli, "merge", "apply", preview.Plan.ID.Hex(), "--write-back", "-o", "json")
+	runMergeCLI(t, f, cli, "merge", "apply", preview.Plan.ID.Hex(), "--write-back", "--approve", preview.Plan.Digest, "-o", "json")
 	changes, err := saved.Lookup("changes").Array().Values()
 	require.NoError(t, err)
 	for i, change := range preview.Plan.Changes {
@@ -128,7 +129,7 @@ func TestWriteBack_MixedKeyImages(t *testing.T) {
 			require.Len(t, merged, 1)
 			require.Equal(t, bson.Raw(raw), merged[0].PostImage)
 			if format == "current" {
-				data, err := plan.CLIJSON()
+				data, err := plan.CLIJSON(true)
 				require.NoError(t, err)
 				var preview struct {
 					Changes []struct {
@@ -180,7 +181,7 @@ func TestWriteBack_StoredConflictImages(t *testing.T) {
 			loaded, err := f.merge.GetPlan(ctx, plan.ID)
 			require.NoError(t, err)
 			for _, p := range []*merge.Plan{plan, loaded} {
-				data, err := p.CLIJSON()
+				data, err := p.CLIJSON(true)
 				require.NoError(t, err)
 				var out struct {
 					Conflicts []struct{ Base, Ours, Theirs json.RawMessage }

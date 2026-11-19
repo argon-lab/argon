@@ -89,7 +89,7 @@ func TestWriteBack_ReviewedPlanReachesTheSource(t *testing.T) {
 		f.waitCaughtUp(t)
 		require.Greater(t, f.main(t).HeadLSN, plan.TargetHead)
 
-		result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+		result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 		require.NoError(t, err)
 		require.Equal(t, 4, result.Applied)
 
@@ -127,7 +127,7 @@ func TestWriteBack_ReviewedPlanReachesTheSource(t *testing.T) {
 		again := f.preview(t, info.BranchID)
 		require.Empty(t, again.Changes)
 		require.Empty(t, again.Conflicts)
-		_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+		_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 		require.ErrorContains(t, err, "not pending")
 		require.NoError(t, stop())
 	})
@@ -171,7 +171,7 @@ func TestWriteBack_ConflictAbortsTheWholeBatch(t *testing.T) {
 		for _, conflict := range conflicts {
 			conflict.cause()
 			before := f.sourceState(t, nil)
-			_, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+			_, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 			var stale *merge.ConflictError
 			require.True(t, errors.As(err, &stale), "%s: want a conflict, got %v", conflict.name, err)
 			require.Contains(t, err.Error(), "nothing was written")
@@ -188,9 +188,9 @@ func TestWriteBack_ConflictAbortsTheWholeBatch(t *testing.T) {
 		reviewed := f.preview(t, info.BranchID)
 		require.Len(t, reviewed.Conflicts, 1)
 		require.Equal(t, wal.DocumentIDString("item-02"), reviewed.Conflicts[0].DocumentID)
-		_, err := f.services.WriteBackMerge(ctx, reviewed.ID, "", f.sourceURI)
+		_, err := f.services.WriteBackMerge(ctx, reviewed.ID, "", f.sourceURI, approvalFor(t, reviewed))
 		require.ErrorContains(t, err, "conflict")
-		result, err := f.services.WriteBackMerge(ctx, reviewed.ID, merge.StrategyOurs, f.sourceURI)
+		result, err := f.services.WriteBackMerge(ctx, reviewed.ID, merge.StrategyOurs, f.sourceURI, approvalFor(t, reviewed))
 		require.NoError(t, err)
 		require.Equal(t, 3, result.Applied)
 		require.Equal(t, 1, result.ConflictsResolved)
@@ -256,7 +256,7 @@ func TestWriteBack_OnlyWhenAskedFor(t *testing.T) {
 	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	// A write-back needs the connection string on the call: nothing stored
 	// can stand in for it.
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", "")
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", "", approvalFor(t, plan))
 	require.ErrorContains(t, err, "connection string is required")
 	unchanged("write-back without a connection string")
 
@@ -277,7 +277,7 @@ func TestWriteBack_OnlyWhenAskedFor(t *testing.T) {
 	require.NoError(t, err)
 	ordinaryPlan, err := f.services.Merge.Preview(ctx, feature.ID)
 	require.NoError(t, err)
-	_, err = f.services.WriteBackMerge(ctx, ordinaryPlan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, ordinaryPlan.ID, "", f.sourceURI, approvalFor(t, ordinaryPlan))
 	require.ErrorContains(t, err, "does not follow an external database")
 	unchanged("write-back of an ordinary project's plan")
 }
@@ -299,7 +299,7 @@ func TestWriteBack_RefusesAnotherDeployment(t *testing.T) {
 	agentEdits(t, sandboxDB)
 	plan := f.preview(t, info.BranchID)
 
-	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", other)
+	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", other, approvalFor(t, plan))
 	require.ErrorContains(t, err, "different deployment")
 	followErr := f.services.FollowSource(ctx, f.project, walcli.FollowSourceOptions{URI: other})
 	require.ErrorContains(t, followErr, "different deployment")
@@ -329,7 +329,7 @@ func TestWriteBack_CommitWithoutRecordIsSettledByFollowing(t *testing.T) {
 
 	// Nothing is following, so only the writing process could have closed
 	// the plan. Put it back to what a crash at that moment leaves behind.
-	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.NoError(t, err)
 	plans := f.services.Client.Database(f.metadataName).Collection("wal_merge_plans")
 	_, err = plans.UpdateOne(ctx, bson.M{"_id": plan.ID}, bson.M{
@@ -339,7 +339,7 @@ func TestWriteBack_CommitWithoutRecordIsSettledByFollowing(t *testing.T) {
 	require.NoError(t, err)
 	written := f.sourceState(t, nil)
 
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 	require.ErrorContains(t, err, "will not be written again")
 	_, err = f.services.Merge.Apply(ctx, plan.ID, "")
 	require.Error(t, err)
@@ -381,7 +381,7 @@ func TestFollowedMain_SandboxMergeUnderProductionTraffic(t *testing.T) {
 
 		_, err := f.services.Merge.Apply(ctx, plan.ID, "")
 		require.ErrorContains(t, err, "follows the external database")
-		result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+		result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
 		require.NoError(t, err, "production writes to other documents do not make the plan stale")
 		require.Equal(t, 4, result.Applied)
 
@@ -394,7 +394,7 @@ func TestFollowedMain_SandboxMergeUnderProductionTraffic(t *testing.T) {
 		secondPlan := f.preview(t, second.BranchID)
 		_, err = f.source.Collection("catalog").UpdateOne(ctx, bson.M{"_id": "item-11"}, bson.M{"$set": bson.M{"stock": int32(7)}})
 		require.NoError(t, err)
-		_, err = f.services.WriteBackMerge(ctx, secondPlan.ID, "", f.sourceURI)
+		_, err = f.services.WriteBackMerge(ctx, secondPlan.ID, "", f.sourceURI, approvalFor(t, secondPlan))
 		var stale *merge.ConflictError
 		require.True(t, errors.As(err, &stale), "want a conflict, got %v", err)
 		var untouched bson.M

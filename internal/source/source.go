@@ -108,8 +108,13 @@ func (r *Registry) Bind(ctx context.Context, binding *Binding) error {
 
 // Get returns a branch's binding, or nil when the branch follows nothing.
 func (r *Registry) Get(ctx context.Context, branchID string) (*Binding, error) {
+	return ReadBinding(ctx, r.bindings.Database(), branchID)
+}
+
+// ReadBinding loads the recorded deployment identity without opening a source connection.
+func ReadBinding(ctx context.Context, metadata *mongo.Database, branchID string) (*Binding, error) {
 	var binding Binding
-	err := r.bindings.FindOne(ctx, bson.M{"_id": branchID}).Decode(&binding)
+	err := metadata.Collection(collectionName).FindOne(ctx, bson.M{"_id": branchID}).Decode(&binding)
 	if err == mongo.ErrNoDocuments {
 		return nil, nil
 	}
@@ -121,11 +126,13 @@ func (r *Registry) Get(ctx context.Context, branchID string) (*Binding, error) {
 
 // FenceWriteBackClaim updates the binding in the metadata claim transaction.
 // A real modification conflicts with a concurrent detach even on a retried plan.
-func FenceWriteBackClaim(ctx context.Context, metadata *mongo.Database, branchID, database string) error {
-	result, err := metadata.Collection(collectionName).UpdateOne(ctx, bson.M{"_id": branchID, "database": database},
+func FenceWriteBackClaim(ctx context.Context, metadata *mongo.Database, branchID, projectID, database, replicaSetID string) error {
+	result, err := metadata.Collection(collectionName).UpdateOne(ctx, bson.M{
+		"_id": branchID, "project_id": projectID, "database": database, "replica_set_id": replicaSetID,
+	},
 		bson.M{"$inc": bson.M{"write_back_claims": int64(1)}})
 	if err == nil && result.MatchedCount != 1 {
-		return errors.New("following was detached")
+		return errors.New("following was detached or its source binding changed; run preview again")
 	}
 	return err
 }

@@ -100,15 +100,9 @@ func TestWriteBackPlanOutput(t *testing.T) {
 		require.NoError(t, err, "%s", body)
 		require.Contains(t, string(body), "ARGON_EXPERIMENTAL_SOURCE=1")
 		require.Contains(t, string(body), "ARGON_SOURCE_URI")
-		for line := range strings.SplitSeq(string(body), "\n") {
-			if args, ok := strings.CutPrefix(line, "Apply with: argon "); ok {
-				require.Contains(t, args, "--write-back")
-				applied, err := run(strings.Fields(args)...)
-				require.NoError(t, err, "%s", applied)
-				return
-			}
-		}
-		t.Fatal("missing apply command")
+		require.Contains(t, string(body), "argon merge list -p "+f.project+" --output json")
+		require.Contains(t, string(body), "--write-back --approve <digest from that output>")
+		require.NotContains(t, string(body), "Apply with: argon")
 	})
 	t.Run("output failure names saved plan", func(t *testing.T) {
 		reader, sink, err := os.Pipe()

@@ -145,9 +145,9 @@ func TestWriteBack_RefusesV270FollowedPlan(t *testing.T) {
 	require.NoError(t, err)
 	bindFixtureSource(t, f, plan)
 	before := f.sourceState(t, nil)
-	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
+	_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, wrongApproval)
 	require.ErrorContains(t, err, "older plan format")
-	require.ErrorContains(t, err, "catalog/parcel")
+	require.ErrorContains(t, err, "preview again with this version")
 	stored := f.plan(t, plan)
 	require.Equal(t, merge.StatusPending, stored.Status)
 	require.Nil(t, stored.WriteBack)
@@ -194,7 +194,7 @@ func TestWriteBack_PlanFrom42efadc(t *testing.T) {
 	p, err := f.services.Merge.GetPlan(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, 2, p.FormatVersion)
-	out, err := p.CLIJSON()
+	out, err := p.CLIJSON(true)
 	require.NoError(t, err)
 	var listed struct {
 		Changes []struct{ Document json.RawMessage }

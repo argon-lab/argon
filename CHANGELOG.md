@@ -20,8 +20,11 @@ entry — a synchronization barrier, not in-proxy capture).
 - Experimental write-back requires a verified, saved before-image for every
   replacement or delete and compares it byte for byte in the source transaction.
   Inserts require an absent key. Inserts and replacements write the saved
-  after-image. Older formats, selected unverified or duplicate-field images,
-  and earlier previews missing required exact bytes are refused before claim.
+  after-image. Selected unverified or duplicate-field images are refused before claim.
+- `merge apply --write-back` requires `--approve <digest>`, including for
+  empty plans. CLI JSON preview and list provide the digest alongside the
+  saved images. The claim verifies the approved contents and records the
+  digest. Plans saved by older writers require a fresh preview.
 - Source detach refuses recent write-back claims and reports older unsettled
   plan IDs for inspection. Source transaction and commit retries share a
   two-minute writer deadline.
@@ -35,6 +38,9 @@ entry — a synchronization barrier, not in-proxy capture).
   retain their stored bytes.
 
 ### Fixed
+
+- Ordinary merges into WAL-backed and checked-out branches collapse repeated
+  BSON field names to one value, keeping raw and materialized reads consistent.
 
 - Ordinary merges preserve verified BSON order for current documents in a
   collection that also contains older WAL keys.

@@ -78,8 +78,8 @@ for document IDs and images, preserving the saved BSON field order.
 literal_dollar_paths identifies literal documents with $-prefixed keys.
 sorted_images names images stored in sorted order when exact BSON was unavailable.
 exact_bytes gives the BSON type and hex bytes at paths where JSON loses information.
-Write-back requires verified before- and after-images. Table output shows the apply
-command for the target. A followed target requires --write-back,
+For a followed target, inspect the lossless JSON images and use approval_digest
+with --write-back --approve. Write-back requires verified before- and after-images,
 ARGON_EXPERIMENTAL_SOURCE=1 and its source connection string (--uri or ARGON_SOURCE_URI).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
@@ -101,14 +101,14 @@ ARGON_EXPERIMENTAL_SOURCE=1 and its source connection string (--uri or ARGON_SOU
 			return err
 		}
 		ctx := cmd.Context()
-		plan, err := services.Merge.PreparePlan(branchID)
+		plan, err := services.Merge.PreparePlan(ctx, branchID)
 		if err != nil {
 			return fmt.Errorf("preview failed: %w", err)
 		}
 		plan.ID = primitive.NewObjectID()
 		var response bytes.Buffer
 		if jsonOutput(cmd) {
-			data, err := plan.CLIJSON()
+			data, err := plan.CLIJSON(plan.FollowedDatabase != "")
 			if err != nil {
 				return err
 			}
@@ -116,10 +116,6 @@ ARGON_EXPERIMENTAL_SOURCE=1 and its source connection string (--uri or ARGON_SOU
 				return err
 			}
 		} else {
-			target, err := services.Branches.GetBranchByIDContext(ctx, plan.TargetBranchID)
-			if err != nil {
-				return err
-			}
 			fmt.Fprintf(&response, "Merging %s → %s\n", plan.SourceBranch, plan.TargetBranch)
 			for _, c := range plan.Changes {
 				action := "put   "
@@ -146,11 +142,15 @@ ARGON_EXPERIMENTAL_SOURCE=1 and its source connection string (--uri or ARGON_SOU
 			printExactBytesWarning(&response, exact)
 			fmt.Fprintf(&response, "\nPlan %s saved (pending).\n", plan.ID.Hex())
 			apply := "argon merge apply " + plan.ID.Hex()
-			if target.IsFollower() {
+			if plan.FollowedDatabase != "" {
+				fmt.Fprintln(&response, walcli.WriteBackReviewAdvice(projectName))
 				fmt.Fprintln(&response, "Write-back requires ARGON_EXPERIMENTAL_SOURCE=1 and the source URI in ARGON_SOURCE_URI or --uri.")
-				apply += " --write-back"
-			}
-			if len(plan.Conflicts) > 0 {
+				fmt.Fprintf(&response, "Then run %s --write-back --approve <digest from that output>", apply)
+				if len(plan.Conflicts) > 0 {
+					fmt.Fprint(&response, " with --strategy theirs or --strategy ours")
+				}
+				fmt.Fprintln(&response, ".")
+			} else if len(plan.Conflicts) > 0 {
 				fmt.Fprintf(&response, "Apply with: %s --strategy theirs\n", apply)
 				fmt.Fprintf(&response, "To keep the target's conflicted documents: %s --strategy ours\n", apply)
 			} else {
@@ -178,13 +178,15 @@ var mergeApplyCmd = &cobra.Command{
 	Short: "Apply a pending merge plan (--write-back is experimental)",
 	Long: `Apply a pending merge plan. The --write-back option is experimental
 and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it and read
-docs/OPERATIONS.md for known issues. A plan with zero writes completes
-in metadata. Write-back requires ordered plan images. Every replacement and delete
+docs/OPERATIONS.md for known issues. Inspect every image with
+"argon merge list -p <project> --output json", then supply that plan's
+approval_digest with --approve. Even a plan with zero writes requires a digest
+to complete in metadata. Every replacement and delete
 checks the saved before-image byte for byte in the source transaction. Every insert
 checks for an absent key. Inserts and replacements write the saved after-image.
-Older formats, unverified images, duplicate fields and older previews missing
-required exact_bytes are refused before the claim. Run preview again with this
-version after resolving the reported cause.
+Older plans, missing or incorrect approval, unverified images and duplicate
+fields are refused before the claim. For an older plan, preview again with this
+version.
 Argon checks capture health in the claim transaction and waits for majority
 acknowledgment. The writer has two minutes from before claim acquisition
 through all source transaction and commit attempts. If a plan stays writing_back,
@@ -200,6 +202,12 @@ again to create a new plan.`,
 			if err := walcli.RequireExperimentalWriteBack(); err != nil {
 				return err
 			}
+			approved, _ := cmd.Flags().GetString("approve")
+			if err := walcli.ValidateApprovalDigest(approved); err != nil {
+				return err
+			}
+		} else if cmd.Flags().Changed("approve") {
+			return errors.New("--approve requires --write-back")
 		}
 		return cobra.ExactArgs(1)(cmd, args)
 	},
@@ -228,6 +236,12 @@ again to create a new plan.`,
 		if err := plan.RequirePending(); err != nil {
 			return err
 		}
+		approved, _ := cmd.Flags().GetString("approve")
+		if writeBack {
+			if err := plan.CheckApproval(approved); err != nil {
+				return err
+			}
+		}
 		if err := services.SyncBranch(cmd.Context(), plan.SourceBranchID); err != nil {
 			return err
 		}
@@ -239,7 +253,7 @@ again to create a new plan.`,
 			if uri == "" {
 				return fmt.Errorf("--write-back needs the source connection string: pass --uri or set %s", walcli.SourceURIEnv)
 			}
-			result, err := services.WriteBackMerge(cmd.Context(), planID, strategy, uri)
+			result, err := services.WriteBackMerge(cmd.Context(), planID, strategy, uri, approved)
 			if err != nil {
 				return fmt.Errorf("write-back failed: %w", err)
 			}
@@ -285,7 +299,8 @@ use canonical Extended JSON v2. New plans show stored BSON field order,
 literal_dollar_paths identifies literal documents with $-prefixed keys, and
 sorted_images names images stored in sorted order when exact BSON was unavailable.
 exact_bytes gives original type and value bytes where JSON loses information.
-Table output reports how many paths need exact_bytes for each plan.
+Pending plans saved by this version for a followed target include approval_digest
+in JSON output. Table output reports how many paths need exact_bytes for each plan.
 An unreadable plan is listed with its ID and error.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
@@ -306,6 +321,10 @@ An unreadable plan is listed with its ID and error.`,
 		if err != nil {
 			return err
 		}
+		followed, err := services.FollowedMergeTargets(cmd.Context(), project.ID)
+		if err != nil {
+			return err
+		}
 		var advice string
 		for _, entry := range entries {
 			if entry.Plan != nil {
@@ -318,7 +337,8 @@ An unreadable plan is listed with its ID and error.`,
 			var plans []any
 			for _, entry := range entries {
 				if entry.Err == nil {
-					data, err := entry.Plan.CLIJSON()
+					p := entry.Plan
+					data, err := p.CLIJSON(followed[p.TargetBranchID] == p.FollowedDatabase)
 					if err == nil {
 						plans = append(plans, data)
 						continue
@@ -353,6 +373,9 @@ An unreadable plan is listed with its ID and error.`,
 				p.ID.Hex(), p.Status, p.SourceBranch+"→"+p.TargetBranch,
 				len(p.Changes), len(p.Conflicts), p.CreatedAt.Format("2006-01-02 15:04:05"))
 			printExactBytesWarning(cmd.OutOrStdout(), count)
+			if followed[p.TargetBranchID] != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), walcli.WriteBackReviewAdvice(projectName))
+			}
 		}
 		if advice != "" {
 			fmt.Printf("\nFor a plan in writing_back: %s\n", advice)
@@ -375,6 +398,18 @@ func init() {
 	mergeListCmd.Flags().StringP("project", "p", "", "Project name (required)")
 	mergeApplyCmd.Flags().String("strategy", "", "Conflict resolution: theirs (take the branch) or ours (keep the target)")
 	mergeApplyCmd.Flags().Bool("write-back", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Write the plan to the external database the target follows, in one transaction that first checks every document against the plan (requires a source bound by replica-set ID)")
+	mergeApplyCmd.Flags().String("approve", "", "With --write-back, supply the plan's approval_digest from lossless JSON output")
+	mergeApplyCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		// A bare --approve reaches the flag parser before Args can give the
+		// instructions for obtaining a digest.
+		if err.Error() == "flag needs an argument: --approve" {
+			if writeBack, _ := cmd.Flags().GetBool("write-back"); writeBack {
+				return walcli.ValidateApprovalDigest("")
+			}
+			return errors.New("--approve requires --write-back")
+		}
+		return err
+	})
 	mergeApplyCmd.Flags().String("uri", "", "With --write-back: source connection string (default $ARGON_SOURCE_URI); never stored")
 
 	mergeCmd.AddCommand(mergePreviewCmd)
