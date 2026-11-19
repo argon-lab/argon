@@ -79,3 +79,21 @@ func (s *BranchService) followerMiss(ctx context.Context, branchID, follows stri
 	}
 	return ErrBranchChanged
 }
+
+// PublishCollectionBaselines is part of the metadata transaction that
+// switches a resync to exact mode. Using an array preserves collection
+// names containing dots and historical positions across multiple repairs.
+func (s *BranchService) PublishCollectionBaselines(ctx context.Context, branchID, follows string, head int64, baselines []wal.CollectionBaseline) error {
+	for i := range baselines {
+		baselines[i].Complete = head
+	}
+	result, err := s.collection.UpdateOne(ctx, followerFilter(branchID, follows, head),
+		bson.M{"$push": bson.M{"collection_baselines": bson.M{"$each": baselines}}})
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount != 1 {
+		return s.followerMiss(ctx, branchID, follows)
+	}
+	return nil
+}

@@ -30,6 +30,9 @@ const (
 	// data itself arrives as ordinary puts/deletes, this entry is the
 	// audit marker carrying the plan metadata.
 	OpMerge OperationType = "merge"
+	// OpResyncCollection starts a fresh source copy. Readers use it as a
+	// baseline only after the resync publishes its consistent checkpoint.
+	OpResyncCollection OperationType = "resync_collection"
 )
 
 // Legacy schema-v1 data operations. v1 update/delete entries stored the
@@ -116,7 +119,7 @@ func (e *Entry) ValidateForAppend() error {
 		if e.BranchID == "" || e.Collection == "" || e.DocumentID == "" {
 			return fmt.Errorf("delete entry requires branch, collection and document ID")
 		}
-	case OpCreateBranch, OpDeleteBranch, OpCreateProject, OpDeleteProject, OpMerge:
+	case OpCreateBranch, OpDeleteBranch, OpCreateProject, OpDeleteProject, OpMerge, OpResyncCollection:
 		// Control entries carry their payload in Metadata.
 	case LegacyOpInsert, LegacyOpUpdate:
 		return fmt.Errorf("operation %q is a legacy schema-v1 operation and can no longer be written", e.Operation)
@@ -135,6 +138,14 @@ type LSNRange struct {
 // Contains reports whether the LSN falls inside the range.
 func (r LSNRange) Contains(lsn int64) bool {
 	return lsn >= r.From && lsn <= r.To
+}
+
+// CollectionBaseline records a complete source copy after an ambiguous delete.
+// Its WAL starts at From and is authoritative from Complete onward.
+type CollectionBaseline struct {
+	Collection string `bson:"collection"`
+	From       int64  `bson:"from"`
+	Complete   int64  `bson:"complete"`
 }
 
 // Branch represents a WAL-based branch. A branch is a pointer into the WAL:
@@ -184,6 +195,8 @@ type Branch struct {
 	// the only place its documents change. It is never checked out, and the
 	// source is never one of Argon's physical databases.
 	Follows string `bson:"follows,omitempty" json:"follows,omitempty"`
+
+	CollectionBaselines []CollectionBaseline `bson:"collection_baselines,omitempty" json:"-"`
 }
 
 // PhysicalDBName is the database a branch materializes into. Branch IDs are
@@ -345,4 +358,16 @@ type Project struct {
 	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
 	UseWAL       bool      `bson:"use_wal" json:"use_wal"`
 	Importing    bool      `bson:"importing,omitempty" json:"importing,omitempty"`
+}
+
+// CollectionStart returns the first WAL entry of a completed collection copy
+// visible at this position. Earlier positions retain their original history.
+func (b *Branch) CollectionStart(collection string, at int64) int64 {
+	for i := len(b.CollectionBaselines) - 1; i >= 0; i-- {
+		copy := b.CollectionBaselines[i]
+		if copy.Collection == collection && copy.Complete <= at && !b.IsDiscardedForRead(copy.Complete, at) && !b.IsDiscardedForRead(copy.From, at) {
+			return copy.From
+		}
+	}
+	return 0
 }

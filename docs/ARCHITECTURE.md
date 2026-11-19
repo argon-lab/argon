@@ -712,7 +712,9 @@ An empty write-back completes in one majority-acknowledged metadata
 transaction. For a nonempty plan, admission checks image provenance and field
 uniqueness. Each raw image key must match the saved key in BSON type and
 bytes. Each selected after-image must start with `_id` and have a nonzero
-value for any other top-level timestamp. The source
+value for any other top-level timestamp. Admission rejects byte-identical
+replacements and capped collections. A replacement must modify exactly one
+row. A capped-collection snapshot error ends retries. The source
 transaction checks typed-key absence for an insert, or compares the live
 document with the plan's verified before-image byte for byte for a replacement
 or delete. Inserts and replacements write the plan's saved after-image. After
@@ -723,7 +725,10 @@ Reclaiming history after preview has no effect on those checks. A collection
 that existed at preflight can still be dropped before an insert. The follower
 delivers committed changes to `main`.
 
-The writer claims the plan with the ID of a dedicated source session.
+The writer claims the plan with the source session ID and the transaction
+number observed before the first attempt. Each retry has a higher number.
+An acknowledged commit records the actual number. An unresolved claim
+retires its session from the client pool.
 The claim checks the checkpoint, updates the follower binding and transitions
 the pending plan in one majority-acknowledged metadata transaction. Detach
 deletes that binding and checks for recent claims in its own transaction.
@@ -736,8 +741,11 @@ acknowledgment to record the outcome.
 The follower looks up claims on the metadata primary. A miss is remembered
 only for the rest of that source transaction, since a claim is acknowledged
 before its transaction starts.
-It recognises events from that session, attributes their entries to the
-merge, appends the `merge` record and marks the plan applied in the same transaction that stores them.
+For an event from a reused session, the follower selects the claim with
+the highest claimed starting number below the event's transaction number and checks
+the recorded commit number when present. Older claims use session identity.
+The follower attributes matching entries to the merge, appends the `merge`
+record and marks the plan applied in the transaction that stores them.
 An acknowledged source commit also lets the writer mark the plan applied.
 The writer returns a claim to pending only when it knows the transaction
 aborted or the commit was never sent. A claim whose outcome remains unknown
@@ -809,8 +817,18 @@ entries removed). Migration is idempotent.
   distinct, including ObjectID versus a same-looking string and ordered
   composite IDs. Legacy image-backed IDs are normalized when read. Some
   older WAL entries indexed an empty subtype-2 binary as four zero payload
-  bytes. Point lookups inspect the stored image when those two keys can
-  share an index entry.
+  bytes. New entries with subtype 2 in the document key store `key_v: 2`.
+  A historical put supplies its post-image and a delete its pre-image.
+  A shared-key delete with no pre-image raises an ambiguous-history error.
+  Current snapshot manifests attest to exact keys. Old snapshots with a
+  shared key in a frame or a visible ambiguous delete cannot cover replay
+  or GC. On upgrade, snapshot initialization inspects unclassified manifests
+  and records which are usable. A manifest still pending when a read needs
+  it is checked then. A certified manifest serves coverage queries without
+  reading its chunks.
+  Resync copies the affected collection into the WAL from a new collection
+  marker. The final checkpoint publishes its first LSN and consistent LSN
+  together. Reads before that checkpoint keep their original ancestry.
 - **Atomic publication:** metadata writer batches, merge data/audit/plan state,
   capture WAL/head/resume token and reset metadata are transactionally
   published. Concurrent writers compare the observed branch head/incarnation.

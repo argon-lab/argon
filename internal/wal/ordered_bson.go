@@ -2,6 +2,8 @@ package wal
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -52,9 +54,17 @@ func UnmarshalValue(raw bson.RawValue, dest any) error {
 	return raw.UnmarshalWithRegistry(orderedRegistry, dest)
 }
 
-var orderedRegistry = newOrderedRegistry()
+var (
+	orderedRegistry = newOrderedRegistry(false)
+	keyRegistry     = newOrderedRegistry(true)
+	errOldBinaryKey = errors.New("BSON document key contains subtype 2")
+)
 
-func newOrderedRegistry() *bsoncodec.Registry {
+// ErrOldBinaryLength means the inner and outer lengths of a subtype-2
+// value describe different payloads.
+var ErrOldBinaryLength = errors.New("inconsistent BSON subtype-2 binary length")
+
+func newOrderedRegistry(detectOldBinaryKey bool) *bsoncodec.Registry {
 	reg := bson.NewRegistry()
 	// The v1 value reader counts the inner int32 length as data for an empty
 	// subtype-2 binary. Read the raw value so its payload always excludes it.
@@ -76,15 +86,33 @@ func newOrderedRegistry() *bsoncodec.Registry {
 		if err := rawDecoder.DecodeValue(ctx, r, reflect.ValueOf(&raw).Elem()); err != nil {
 			return err
 		}
-		subtype, data, ok := raw.BinaryOK()
-		if !ok {
-			// Older WALs can contain the short, lengthless form accepted
-			// by the driver. Limit that decoder to this element's bytes.
-			return binaryDecoder.DecodeValue(ctx, bsonrw.NewBSONValueReader(raw.Type, raw.Value), dst)
+		if len(raw.Value) < 5 || uint64(binary.LittleEndian.Uint32(raw.Value)) != uint64(len(raw.Value)-5) {
+			return fmt.Errorf("invalid BSON binary length")
+		}
+		subtype, data := raw.Value[4], raw.Value[5:]
+		if subtype == bson.TypeBinaryBinaryOld {
+			// A historical lengthless payload can be up to four bytes.
+			// Four zero bytes encode the standard empty payload.
+			if len(data) >= 4 {
+				inner := binary.LittleEndian.Uint32(data)
+				if uint64(inner) == uint64(len(data)-4) {
+					data = data[4:]
+				} else if len(data) > 4 {
+					return fmt.Errorf("%w: inner count %d, payload %d", ErrOldBinaryLength, inner, len(data)-4)
+				}
+			}
+			// Detect the subtype on the first key decode, including nested
+			// fields. Only an affected key needs another decode.
+			if detectOldBinaryKey {
+				return errOldBinaryKey
+			}
 		}
 		dst.Set(reflect.ValueOf(primitive.Binary{Subtype: subtype, Data: data}))
 		return nil
 	}))
+	if detectOldBinaryKey {
+		return reg
+	}
 	// Keep the driver's handling of BSON tags, custom encoders and map keys.
 	// Only the order in which map fields are emitted changes.
 	type mapSample map[string]any

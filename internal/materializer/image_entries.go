@@ -10,7 +10,7 @@ import (
 // typed keys. A snapshot can reconstruct values but cannot attest to BSON
 // field order, so keys whose entries may be missing are left out.
 func (s *Service) DocumentImageEntries(branch *wal.Branch, collection string, keys []string, fromLSN, toLSN int64) (map[string]*wal.Entry, error) {
-	segments, err := s.ancestrySegments(branch, toLSN)
+	segments, err := s.collectionSegments(branch, collection, toLSN)
 	if err != nil {
 		return nil, err
 	}

@@ -292,15 +292,24 @@ func (s *Service) GetCurrentLSN(projectID string) int64 {
 
 // GetDocumentHistory retrieves WAL entries for a specific document
 func (s *Service) GetDocumentHistory(branchID, collection, documentID string, startLSN, endLSN int64) ([]*Entry, error) {
-	entries, err := s.documentHistoryCandidates(branchID, collection, documentID, startLSN, endLSN)
+	entries, _, err := s.DocumentHistoryForRead(branchID, collection, documentID, startLSN, endLSN, nil)
+	return entries, err
+}
+
+// DocumentHistoryForRead returns history in LSN order. The reader applies
+// its visibility rules when choosing an entry. Only an ambiguous delete
+// visible to that reader can prevent the lookup. The boolean identifies
+// a requested key in the historical collision class.
+func (s *Service) DocumentHistoryForRead(branchID, collection, documentID string, startLSN, endLSN int64, visible func(int64) bool) ([]*Entry, bool, error) {
+	entries, affected, err := s.documentHistoryCandidates(branchID, collection, documentID, startLSN, endLSN, visible)
 	if err != nil {
-		return nil, err
+		return nil, affected, err
 	}
 	filtered := entries[:0]
 	for _, entry := range entries {
 		named, err := settleDocumentKey(entry)
 		if err != nil {
-			return nil, err
+			return nil, affected, err
 		}
 		// An entry that names its document counts only for that document.
 		// A legacy delete without an image names none: the query matched it
@@ -311,14 +320,14 @@ func (s *Service) GetDocumentHistory(branchID, collection, documentID string, st
 		}
 		filtered = append(filtered, entry)
 	}
-	return filtered, nil
+	return filtered, affected, nil
 }
 
 // LatestDocumentImageEntry uses the same per-key history query as
-// GetDocumentHistory. Start at the newest visible row: a current put can
-// identify its document even if an older, ambiguous delete cannot.
+// GetDocumentHistory. Once a visible old-binary ambiguity is ruled out,
+// the newest visible image identifies the document.
 func (s *Service) LatestDocumentImageEntry(branchID, collection, documentID string, startLSN, endLSN int64, visible func(int64) bool) (*Entry, error) {
-	entries, err := s.documentHistoryCandidates(branchID, collection, documentID, startLSN, endLSN)
+	entries, _, err := s.documentHistoryCandidates(branchID, collection, documentID, startLSN, endLSN, visible)
 	if err != nil {
 		return nil, err
 	}
@@ -346,13 +355,14 @@ func (s *Service) LatestDocumentImageEntry(branchID, collection, documentID stri
 	return nil, nil
 }
 
-func (s *Service) documentHistoryCandidates(branchID, collection, documentID string, startLSN, endLSN int64) ([]*Entry, error) {
+func (s *Service) documentHistoryCandidates(branchID, collection, documentID string, startLSN, endLSN int64, visible func(int64) bool) ([]*Entry, bool, error) {
 	id, err := DocumentIDValue(documentID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	candidates := []string{documentID, LegacyDocumentIDString(id)}
-	if alias, affected := oldBinaryIndexKey(documentID); affected && alias != documentID {
+	alias, affected := oldBinaryIndexKey(documentID)
+	if affected && alias != documentID {
 		candidates = append(candidates, alias)
 	}
 	filter := bson.M{
@@ -366,7 +376,17 @@ func (s *Service) documentHistoryCandidates(branchID, collection, documentID str
 	}
 
 	opts := options.Find().SetSort(bson.M{"lsn": 1})
-	return s.GetEntries(filter, opts)
+	entries, err := s.GetEntries(filter, opts)
+	if err == nil && affected {
+		for _, e := range entries {
+			if e.Operation == OpDelete && len(e.PreImage) == 0 && e.DocumentID == alias && (visible == nil || visible(e.LSN)) {
+				if err := e.CheckStoredKey(); err != nil {
+					return nil, affected, err
+				}
+			}
+		}
+	}
+	return entries, affected, err
 }
 
 // settleDocumentKey works out which document a stored entry is about. Entries
@@ -382,7 +402,22 @@ func (s *Service) documentHistoryCandidates(branchID, collection, documentID str
 // key reads as more than one ID, which is refused.
 func settleDocumentKey(entry *Entry) (named bool, err error) {
 	if len(entry.PostImage) > 0 || len(entry.PreImage) > 0 {
-		return true, entry.NormalizeDocumentKey()
+		image := entry.PostImage
+		if entry.Operation == OpDelete {
+			image = entry.PreImage
+		}
+		if id, err := DocumentIDFromImage(image); err == nil {
+			entry.DocumentID = DocumentIDString(id)
+		} else {
+			if ambiguous := entry.CheckStoredKey(); ambiguous != nil {
+				return false, errors.Join(ambiguous, err)
+			}
+			if image.Validate() != nil {
+				return false, err
+			}
+		}
+		entry.DocumentKeyVersion = max(1, entry.DocumentKeyVersion)
+		return true, nil
 	}
 	if entry.Operation != OpDelete {
 		return false, nil

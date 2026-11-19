@@ -109,8 +109,8 @@ type WriteBack struct {
 // Argon's own write-back made, so their entries are attributed to the merge
 // and the plan is closed in the same transaction that stores them.
 type WriteBackLedger interface {
-	// Lookup returns the write-back that ran in a source session, or nil.
-	Lookup(ctx context.Context, branchID string, session primitive.Binary) (*WriteBack, error)
+	// Lookup returns the write-back that ran this source transaction, or nil.
+	Lookup(ctx context.Context, branchID string, session primitive.Binary, txnNumber int64) (*WriteBack, error)
 	// Settle marks the plan applied. ctx is the storing transaction.
 	Settle(ctx context.Context, planID string) error
 }
@@ -146,6 +146,8 @@ type FollowOptions struct {
 	// expectedHead is the head handed to replay by the comparison or copy.
 	// A committed replay checkpoint advances it for the next attempt.
 	expectedHead *int64
+	// Publish full source copies only with the completed resync checkpoint.
+	baselines []wal.CollectionBaseline
 }
 
 // Follow applies the source database's changes to a branch until ctx ends,
@@ -265,11 +267,12 @@ type follower struct {
 	unpublished bool
 	run         *running
 
-	writeBacks map[string]*WriteBack
-	// unclaimed is the last source transaction found to have no claim.
-	unclaimed struct {
-		key string
-		txn int64
+	// Change events for a transaction are contiguous. Its first lookup also
+	// covers its other events, including when the transaction has no claim.
+	lastTransaction struct {
+		session string
+		number  int64
+		claim   *WriteBack
 	}
 	lastCommit time.Time
 	lastToken  bson.Raw
@@ -360,7 +363,7 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 	defer session.EndSession(context.Background())
 
 	f := &follower{s: s, branch: branch, src: src, session: session, opts: opts, status: status,
-		writeBacks: make(map[string]*WriteBack), lastCommit: time.Now(), opened: opened,
+		lastCommit: time.Now(), opened: opened,
 		unpublished: untilConsistent && !opts.resync, run: run, unverified: saved.facts.Unverified}
 	if saved.facts.State == FollowerDegraded && !opts.resync {
 		f.recoverAt = now
@@ -615,8 +618,7 @@ func (f *follower) receive(ctx context.Context, raw bson.Raw) error {
 }
 
 // writeBack reports whether an event belongs to a transaction that Argon's
-// write-back ran. Such a transaction uses a session of its own, recorded with
-// the plan before the transaction starts.
+// write-back ran. The driver may reuse a session across many transactions.
 func (f *follower) writeBack(ctx context.Context, event *changeEvent) (*WriteBack, error) {
 	if f.opts.WriteBacks == nil || len(event.LSID) == 0 {
 		return nil, nil
@@ -625,28 +627,15 @@ func (f *follower) writeBack(ctx context.Context, event *changeEvent) (*WriteBac
 	if !ok {
 		return nil, nil
 	}
-	key := string(data)
-	if wb, seen := f.writeBacks[key]; seen {
-		return wb, nil
+	key := string(event.LSID)
+	if f.lastTransaction.session == key && f.lastTransaction.number == event.TxnNumber {
+		return f.lastTransaction.claim, nil
 	}
-	// A claim is acknowledged before its transaction starts, so a miss holds
-	// for the rest of that transaction. A later transaction of the same
-	// pooled session may be claimed and is looked up again.
-	if f.unclaimed.key == key && f.unclaimed.txn == event.TxnNumber {
-		return nil, nil
-	}
-	wb, err := f.opts.WriteBacks.Lookup(ctx, f.branch.ID, primitive.Binary{Subtype: subtype, Data: data})
+	wb, err := f.opts.WriteBacks.Lookup(ctx, f.branch.ID, primitive.Binary{Subtype: subtype, Data: data}, event.TxnNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check a source transaction against pending write-backs: %w", err)
 	}
-	if wb == nil {
-		f.unclaimed.key, f.unclaimed.txn = key, event.TxnNumber
-		return nil, nil
-	}
-	if len(f.writeBacks) > 4096 {
-		clear(f.writeBacks)
-	}
-	f.writeBacks[key] = wb
+	f.lastTransaction.session, f.lastTransaction.number, f.lastTransaction.claim = key, event.TxnNumber, wb
 	return wb, nil
 }
 
@@ -913,6 +902,11 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 			}
 		} else if err := s.branches.FollowerCheckpoint(sc, branch.ID, branch.Follows, branch.HeadLSN); err != nil {
 			return nil, err
+		}
+		if len(f.opts.baselines) > 0 && status.Mode == ModeExact {
+			if err := s.branches.PublishCollectionBaselines(sc, branch.ID, branch.Follows, head, f.opts.baselines); err != nil {
+				return nil, err
+			}
 		}
 		if status.Mode == ModeExact {
 			status.Consistent = &ConsistentPoint{LSN: head, ClusterTime: at, At: capturedAt}

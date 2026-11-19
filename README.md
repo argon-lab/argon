@@ -137,6 +137,16 @@ check applies. The MCP server and REST API do not offer write-back. Argon
 never drops, renames or rewrites a source database. See
 [the operations guide](docs/OPERATIONS.md#following-a-source-database).
 
+Write-back refuses capped collections and byte-identical replacements
+before claiming a plan. Ordinary merge also checks the
+inner length of deprecated BSON binary subtype 2 when decoding stored images.
+
+Older history can contain a delete that could refer to either an empty
+subtype-2 `_id` or one containing four zero bytes. Reads that depend on it
+stop with the branch, collection and key. For a followed branch, stop the
+follower and run `argon source resync -p myapp --force`. On another branch,
+re-import the collection.
+
 If a plan stays `writing_back`, check the affected documents on the source,
 let following catch up, and run `argon merge preview` again for the sandbox.
 

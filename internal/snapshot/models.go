@@ -44,6 +44,14 @@ type Snapshot struct {
 	// effective (high-water) ends and record CurrentVisibilityRules.
 	VisibilityRules int `bson:"visibility_rules,omitempty" json:"visibility_rules,omitempty"`
 
+	// ExactOldBinaryKeys marks snapshots built with distinct empty and
+	// four-zero-byte subtype-2 IDs and checked for ambiguous WAL deletes.
+	ExactOldBinaryKeys bool `bson:"exact_old_binary_keys,omitempty" json:"-"`
+
+	// OldKeysTrusted records a completed check of a manifest written
+	// before ExactOldBinaryKeys. An absent result still requires inspection.
+	OldKeysTrusted *bool `bson:"old_keys_trusted,omitempty" json:"-"`
+
 	ChunkIDs  []string  `bson:"chunk_ids" json:"chunk_ids"`
 	DocCount  int64     `bson:"doc_count" json:"doc_count"`
 	SizeBytes int64     `bson:"size_bytes" json:"size_bytes"`

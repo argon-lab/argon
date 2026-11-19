@@ -40,6 +40,7 @@ func planAuditReserve() (int, error) {
 		"write_back": &WriteBackRecord{
 			ApprovedDigest: strings.Repeat("f", 64),
 			Session:        primitive.Binary{Subtype: 4, Data: make([]byte, 16)},
+			AfterTxn:       new(int64), CommitTxn: new(int64),
 			// MongoDB database names are at most 63 bytes.
 			Database: strings.Repeat("d", 63), Display: strings.Repeat("d", maxDisplayBytes),
 			Strategy: StrategyTheirs, StartedAt: now, CommittedAt: &now, SettledAt: &now,

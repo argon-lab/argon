@@ -2,10 +2,13 @@ package wal
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsoncodec"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -102,27 +105,73 @@ func (e *Entry) NormalizeDocumentKey() error {
 	if e.Operation == OpDelete {
 		image = e.PreImage
 	}
+	e.DocumentKeyVersion = 1
 	if len(image) > 0 {
-		id, err := DocumentIDFromImage(image)
+		id, err := documentIDFromImage(image, keyRegistry)
+		if errors.Is(err, errOldBinaryKey) {
+			id, err = DocumentIDFromImage(image)
+			e.DocumentKeyVersion = exactOldBinaryVersion
+		}
 		if err == nil {
 			e.DocumentID = DocumentIDString(id)
-		} else if image.Validate() != nil {
+			return nil
+		}
+		if image.Validate() != nil {
 			return err
 		}
 	}
-	e.DocumentKeyVersion = 1
+	e.DocumentKeyVersion = storedKeyVersion(e.DocumentID)
 	return nil
+}
+
+// An image-less delete supplies only the stored key. For a canonical scalar
+// envelope its first twelve bytes identify the BSON type and binary subtype,
+// regardless of the size of a string or binary payload.
+func storedKeyVersion(key string) int {
+	encoded, ok := strings.CutPrefix(key, documentKeyPrefix)
+	if !ok {
+		return 1
+	}
+	var header [12]byte
+	n, err := base64.RawURLEncoding.Decode(header[:], []byte(encoded[:min(len(encoded), 16)]))
+	if err != nil || n < 7 {
+		return 1
+	}
+	if header[5] == 'i' && header[6] == 0 {
+		switch bsontype.Type(header[4]) {
+		case bson.TypeBinary:
+			if n < 12 || header[11] != bson.TypeBinaryBinaryOld {
+				return 1
+			}
+		case bson.TypeEmbeddedDocument, bson.TypeArray, bson.TypeCodeWithScope:
+			// The binary can occur anywhere inside the compound value.
+		default:
+			return 1
+		}
+	}
+	value, err := RawDocumentID(key)
+	if err == nil {
+		var id any
+		if err := value.UnmarshalWithRegistry(keyRegistry, &id); errors.Is(err, errOldBinaryKey) {
+			return exactOldBinaryVersion
+		}
+	}
+	return 1
 }
 
 // DocumentIDFromImage preserves embedded-document field order, unlike
 // decoding the enclosing document into bson.M and reading its _id field.
 func DocumentIDFromImage(image bson.Raw) (interface{}, error) {
+	return documentIDFromImage(image, orderedRegistry)
+}
+
+func documentIDFromImage(image bson.Raw, registry *bsoncodec.Registry) (any, error) {
 	value, err := image.LookupErr("_id")
 	if err != nil {
 		return nil, fmt.Errorf("document image has no _id: %w", err)
 	}
 	var id interface{}
-	if err := UnmarshalValue(value, &id); err != nil {
+	if err := value.UnmarshalWithRegistry(registry, &id); err != nil {
 		return nil, err
 	}
 	return id, nil

@@ -30,9 +30,10 @@ type SnapshotSource interface {
 	// discarded-range visibility for a read whose segment upper bound is
 	// readUpperBound. ok is false when no usable snapshot exists.
 	FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (state map[string]bson.M, lsn int64, ok bool, err error)
-	// UsableLSN reports the LSN FindUsable would start from, without
-	// loading the snapshot.
+	// UsableLSN reports the LSN FindUsable would start from without
+	// materializing its documents.
 	UsableLSN(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (lsn int64, ok bool, err error)
+	CheckReplayCoverage(branch *wal.Branch, collection string, from, to int64) error
 	// CollectionsUpTo lists collections with snapshots for the branch in
 	// the LSN window.
 	CollectionsUpTo(branchID string, minLSN, maxLSN int64) ([]string, error)
@@ -83,6 +84,12 @@ const maxAncestryDepth = 10000
 // from the parent chain. Sibling branches never appear in each other's
 // chains, which is what isolates them.
 func (s *Service) ancestrySegments(branch *wal.Branch, targetLSN int64) ([]segment, error) {
+	return s.collectionSegments(branch, "", targetLSN)
+}
+
+// A completed source copy supplies its collection's entire starting state.
+// Stop at that copy while walking the ordinary ancestry chain.
+func (s *Service) collectionSegments(branch *wal.Branch, collection string, targetLSN int64) ([]segment, error) {
 	var reversed []segment
 
 	cur := branch
@@ -93,7 +100,15 @@ func (s *Service) ancestrySegments(branch *wal.Branch, targetLSN int64) ([]segme
 		}
 
 		if limit > cur.BaseLSN {
-			reversed = append(reversed, segment{branch: cur, fromLSN: cur.BaseLSN + 1, toLSN: limit})
+			seg := segment{branch: cur, fromLSN: cur.BaseLSN + 1, toLSN: limit}
+			if len(cur.CollectionBaselines) != 0 {
+				if from := cur.CollectionStart(collection, limit); from != 0 {
+					seg.fromLSN = max(seg.fromLSN, from)
+					reversed = append(reversed, seg)
+					break
+				}
+			}
+			reversed = append(reversed, seg)
 		}
 
 		if cur.ParentID == "" {
@@ -121,6 +136,53 @@ func (s *Service) ancestrySegments(branch *wal.Branch, targetLSN int64) ([]segme
 	return reversed, nil
 }
 
+// CheckOldBinarySnapshot checks for ambiguity even when the old snapshot
+// contains no trace of the deleted key.
+func (s *Service) CheckOldBinarySnapshot(branch *wal.Branch, collection string, snapLSN int64) error {
+	segs, err := s.ancestrySegments(branch, snapLSN)
+	if err != nil {
+		return err
+	}
+	for _, seg := range segs {
+		// An older writer also ignores a completed copy on an ancestor.
+		if seg.branch.CollectionStart(collection, seg.toLSN) != 0 {
+			return wal.ErrOldBinarySnapshotReclaimed
+		}
+		if err := s.wal.CheckOldBinaryDeletes(seg.branch, collection, seg.fromLSN, seg.toLSN); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CheckRejectedSnapshotCoverage checks the WAL only when a snapshot with
+// uncertain old-binary keys was skipped. GC before 2.1.6 could remove its
+// covered entries without recording a floor.
+func (s *Service) CheckRejectedSnapshotCoverage(branch *wal.Branch, collection string, from, at, rejectedLSN, unrecordedLSN int64) error {
+	floor, err := s.wal.ReclaimFloor(branch.ID, collection)
+	if err != nil {
+		return err
+	}
+	end := min(rejectedLSN, max(floor, unrecordedLSN))
+	if end == 0 || !needsReclaimed(segment{branch: branch, toLSN: at}, from, end) {
+		return nil
+	}
+	if err := s.wal.CheckOldBinaryDeletes(branch, collection, from, at); err != nil {
+		return err
+	}
+	return fmt.Errorf("branch %q, collection %q: %w at LSN %d. %w through LSN %d may prevent replay. For a followed branch, stop following and run `argon source resync -p <project> --force`. For another branch, re-import the collection", branch.ID, collection, wal.ErrOldBinarySnapshotReclaimed, rejectedLSN, wal.ErrHistoryReclaimed, end)
+}
+
+// CheckResyncCoverage checks a possible pre-floor GC gap identified while
+// comparing the source. Certified manifests require only their metadata.
+func (s *Service) CheckResyncCoverage(branch *wal.Branch, collection string) error {
+	if s.snapshots == nil {
+		return nil
+	}
+	from := max(branch.BaseLSN+1, branch.CollectionStart(collection, branch.HeadLSN))
+	return s.snapshots.CheckReplayCoverage(branch, collection, from, branch.HeadLSN)
+}
+
 // MaterializeCollectionAtLSN builds the state of one collection as of
 // targetLSN, following the branch's ancestry chain. When a snapshot source
 // is wired in, replay starts from the nearest usable snapshot (searching
@@ -142,7 +204,7 @@ func (s *Service) MaterializeCollectionAtLSN(branch *wal.Branch, collection stri
 }
 
 func (s *Service) materializeCollection(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error) {
-	segments, err := s.ancestrySegments(branch, targetLSN)
+	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
 		return nil, err
 	}
@@ -283,10 +345,11 @@ func (s *Service) ValidateReadable(branch *wal.Branch, targetLSN int64) error {
 	}
 	for collection := range collections {
 		startIdx, startLSN := 0, segments[0].fromLSN
-		if s.snapshots != nil {
-			for i := len(segments) - 1; i >= 0; i-- {
-				seg := segments[i]
-				snapLSN, ok, err := s.snapshots.UsableLSN(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+		for i := len(segments) - 1; i >= 0; i-- {
+			seg := segments[i]
+			baseline := seg.branch.CollectionStart(collection, seg.toLSN)
+			if s.snapshots != nil {
+				snapLSN, ok, err := s.snapshots.UsableLSN(seg.branch, collection, max(seg.fromLSN, baseline), seg.toLSN, seg.toLSN)
 				if err != nil {
 					return fmt.Errorf("failed to look up snapshot for branch %s: %w", seg.branch.ID, err)
 				}
@@ -294,6 +357,10 @@ func (s *Service) ValidateReadable(branch *wal.Branch, targetLSN int64) error {
 					startIdx, startLSN = i, snapLSN+1
 					break
 				}
+			}
+			if baseline != 0 {
+				startIdx, startLSN = i, max(seg.fromLSN, baseline)
+				break
 			}
 		}
 		for i := startIdx; i < len(segments); i++ {
@@ -399,7 +466,7 @@ func (s *Service) MaterializeBranch(branch *wal.Branch) (map[string]map[string]b
 // the document's own history via the (branch, collection, document, lsn)
 // index instead of replaying the whole collection.
 func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, documentID string, targetLSN int64) (bson.M, error) {
-	segments, err := s.ancestrySegments(branch, targetLSN)
+	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
 		return nil, err
 	}
@@ -410,17 +477,32 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 	// been reclaimed; this avoids loading an entire snapshot on every write.
 	for i := len(segments) - 1; i >= 0; i-- {
 		seg := segments[i]
-		entries, err := s.wal.GetDocumentHistory(seg.branch.ID, collection, documentID, seg.fromLSN, seg.toLSN)
+		entries, collision, err := s.wal.DocumentHistoryForRead(seg.branch.ID, collection, documentID, seg.fromLSN, seg.toLSN, func(lsn int64) bool { return !seg.branch.IsDiscardedForRead(lsn, seg.toLSN) })
 		if err != nil {
 			return nil, fmt.Errorf("failed to get document history for branch %s: %w", seg.branch.ID, err)
 		}
+		var latest *wal.Entry
 		for j := len(entries) - 1; j >= 0; j-- {
 			entry := entries[j]
-			if !entry.IsData() || seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
-				continue
+			if entry.IsData() && !seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
+				latest = entry
+				break
 			}
+		}
+		var floor int64
+		if collision && latest != nil {
+			// A newer ambiguous delete may already have been reclaimed,
+			// while this earlier image still awaits deletion.
+			floor, err = s.DocumentImageReclaimFloor(seg.branch.ID, collection)
+		} else if latest == nil {
+			floor, err = s.wal.ReclaimFloor(seg.branch.ID, collection)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if latest != nil && (!collision || latest.LSN > floor) {
 			state := make(map[string]bson.M)
-			if err := s.ApplyEntry(state, entry); err != nil {
+			if err := s.ApplyEntry(state, latest); err != nil {
 				return nil, err
 			}
 			return state[documentID], nil
@@ -431,10 +513,6 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 		// collection deleted entries between that base and the read bound,
 		// one of them might have been this document's — and an older value
 		// would be returned as if it were current.
-		floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
-		if err != nil {
-			return nil, err
-		}
 		if s.snapshots != nil {
 			state, snapLSN, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
 			if err != nil {
@@ -475,7 +553,7 @@ func (s *Service) MaterializeDocumentsAtLSN(branch *wal.Branch, collection strin
 	if len(keys) == 0 {
 		return result, nil
 	}
-	segments, err := s.ancestrySegments(branch, targetLSN)
+	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
 		return nil, err
 	}
@@ -609,15 +687,15 @@ func EntryStateKey(entry *wal.Entry) (key string, ok bool) {
 		if id, err := wal.DocumentIDFromImage(entry.PostImage); err == nil {
 			return wal.DocumentIDString(id), true
 		}
-		return entry.DocumentID, true
+		return entry.DocumentID, entry.CheckStoredKey() == nil
 	case wal.OpDelete:
 		if len(entry.PreImage) > 0 {
 			if id, err := wal.DocumentIDFromImage(entry.PreImage); err == nil {
 				return wal.DocumentIDString(id), true
 			}
-			return entry.DocumentID, true
+			return entry.DocumentID, entry.CheckStoredKey() == nil
 		}
-		if entry.DocumentKeyVersion > 0 {
+		if entry.DocumentKeyVersion > 0 && entry.CheckStoredKey() == nil {
 			return entry.DocumentID, true
 		}
 	}
@@ -643,10 +721,13 @@ func (s *Service) ApplyEntry(state map[string]bson.M, entry *wal.Entry) error {
 		}
 		var doc bson.M
 		if err := wal.UnmarshalDocument(entry.PostImage, &doc); err != nil {
-			return fmt.Errorf("failed to unmarshal post-image: %w", err)
+			return fmt.Errorf("failed to unmarshal post-image for %s/%s: %w", entry.Collection, entry.DocumentID, err)
 		}
 		id, err := wal.DocumentIDFromImage(entry.PostImage)
 		if err != nil {
+			if ambiguous := entry.CheckStoredKey(); ambiguous != nil {
+				return errors.Join(ambiguous, err)
+			}
 			// Early physical WAL producers kept the ID only in the envelope.
 			state[entry.DocumentID] = doc
 			return nil
@@ -660,10 +741,15 @@ func (s *Service) ApplyEntry(state map[string]bson.M, entry *wal.Entry) error {
 		if len(entry.PreImage) > 0 {
 			id, err := wal.DocumentIDFromImage(entry.PreImage)
 			if err != nil {
+				if ambiguous := entry.CheckStoredKey(); ambiguous != nil {
+					return errors.Join(ambiguous, err)
+				}
 				delete(state, entry.DocumentID)
 				return nil
 			}
 			delete(state, wal.DocumentIDString(id))
+		} else if err := entry.CheckStoredKey(); err != nil {
+			return err
 		} else if entry.DocumentKeyVersion > 0 {
 			delete(state, entry.DocumentID)
 		} else {

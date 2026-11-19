@@ -17,6 +17,10 @@ import (
 // and presenting a state that silently lacks the reclaimed writes.
 var ErrHistoryReclaimed = errors.New("history reclaimed by garbage collection")
 
+// ErrOldBinarySnapshotReclaimed means a pre-upgrade snapshot could have
+// collapsed old-binary IDs and its covered history cannot establish the state.
+var ErrOldBinarySnapshotReclaimed = errors.New("pre-upgrade snapshot cannot establish the old-binary document keys")
+
 // reclaimFloorsCollection records, per (branch, collection), the highest
 // LSN at or below which GC may have deleted data entries.
 const reclaimFloorsCollection = "wal_reclaim_floors"
