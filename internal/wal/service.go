@@ -87,6 +87,13 @@ func NewService(db *mongo.Database) (*Service, error) {
 			},
 		},
 		{
+			Keys: bson.D{
+				{Key: "branch_id", Value: 1}, {Key: "collection", Value: 1},
+				{Key: "lsn", Value: 1}, {Key: "key_v", Value: 1},
+			},
+			Options: options.Index().SetName(legacyEditIndex).SetPartialFilterExpression(legacyEditFilter()),
+		},
+		{
 			Keys: bson.M{"timestamp": 1},
 		},
 	}
@@ -440,6 +447,32 @@ var ErrLegacyDocumentKeys = errors.New("history predates typed document keys; re
 
 var dataOperations = []OperationType{OpPut, OpDelete, LegacyOpInsert, LegacyOpUpdate}
 
+const legacyEditIndex = "legacy_edit_keys"
+
+// Current data entries never enter this index. Old envelopes can name an
+// unrelated document, even in a collection that also holds typed keys.
+func legacyEditFilter() bson.M {
+	return bson.M{
+		"operation": bson.M{"$in": dataOperations},
+		"$or":       bson.A{bson.M{"key_v": nil}, bson.M{"key_v": bson.M{"$lt": 1}}},
+	}
+}
+
+// HasLegacyEditKeys checks the complete LSN window with a partial index.
+// Point reads need collection replay only when a legacy key can hide a put.
+func (s *Service) HasLegacyEditKeys(branchID, collection string, start, end int64) (bool, error) {
+	filter := legacyEditFilter()
+	filter["branch_id"] = branchID
+	filter["collection"] = collection
+	filter["lsn"] = bson.M{"$gte": start, "$lte": end}
+	err := s.collection.FindOne(context.Background(), filter,
+		options.FindOne().SetHint(legacyEditIndex).SetProjection(bson.M{"_id": 0, "lsn": 1})).Err()
+	if err == mongo.ErrNoDocuments {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // HasLegacyKeyedEntries reports whether the branch's log may hold, for one
 // collection in [startLSN, endLSN], data entries written before typed
 // document keys. Entries are appended in time order and every current
@@ -628,11 +661,29 @@ func (s *Service) ScanBranchDataEntries(branchID string, startLSN, endLSN int64,
 	if startLSN > endLSN {
 		return nil
 	}
-	ctx := context.Background()
-	cursor, err := s.collection.Find(ctx, bson.M{
+	return s.scanDataEntries(bson.M{
 		"branch_id": branchID,
 		"lsn":       bson.M{"$gte": startLSN, "$lte": endLSN},
-	})
+	}, nil, fn)
+}
+
+// ScanCollectionDataEntries streams the LSN range in replay order, or newest
+// first when recovering the last known image of each snapshot document.
+func (s *Service) ScanCollectionDataEntries(branchID, collection string, start, end int64, newestFirst bool, fn func(*Entry) error) error {
+	filter := bson.M{"branch_id": branchID, "lsn": bson.M{"$gte": start, "$lte": end}}
+	if collection != "" {
+		filter["collection"] = collection
+	}
+	order := 1
+	if newestFirst {
+		order = -1
+	}
+	return s.scanDataEntries(filter, options.Find().SetSort(bson.D{{Key: "lsn", Value: order}}), fn)
+}
+
+func (s *Service) scanDataEntries(filter bson.M, opts *options.FindOptions, fn func(*Entry) error) error {
+	ctx := context.Background()
+	cursor, err := s.collection.Find(ctx, filter, opts)
 	if err != nil {
 		return err
 	}

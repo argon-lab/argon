@@ -190,6 +190,45 @@ func TestWriteBack_ProgrammaticNestedMapOrder(t *testing.T) {
 	}
 }
 
+func TestWriteBack_ProgrammaticPreImageFieldOrder(t *testing.T) {
+	ctx := t.Context()
+	f := newFollowFixture(t, metadataDeploymentURI)
+	id := "pear"
+	doc := bson.D{
+		{Key: "_id", Value: id},
+		{Key: "price", Value: int32(2)},
+		{Key: "name", Value: "pear"},
+		{Key: "dimensions", Value: bson.D{{Key: "width", Value: 4}, {Key: "depth", Value: 1}}},
+	}
+	catalog := f.source.Collection("catalog")
+	_, err := catalog.InsertOne(ctx, doc)
+	require.NoError(t, err)
+	want, err := catalog.FindOne(ctx, bson.M{"_id": id}).Raw()
+	require.NoError(t, err)
+	f.importOnline(t, walcli.OnlineImport{})
+	main := f.main(t)
+	for _, operation := range []string{"put", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			branch, err := f.services.Branches.CreateBranch(main.ProjectID, operation, main.ID)
+			require.NoError(t, err)
+			writer, err := f.services.WriterFor(f.project, branch.Name)
+			require.NoError(t, err)
+			var lsn int64
+			if operation == "put" {
+				lsn, err = writer.Put(ctx, "catalog", bson.M{"_id": id, "price": int32(3)})
+			} else {
+				var deleted bool
+				lsn, deleted, err = writer.Delete(ctx, "catalog", id)
+				require.True(t, deleted)
+			}
+			require.NoError(t, err)
+			entry, err := f.services.WAL.GetEntry(main.ProjectID, lsn)
+			require.NoError(t, err)
+			require.Equal(t, want, entry.PreImage)
+		})
+	}
+}
+
 func TestWriteBack_RequiresVerifiedSandboxImage(t *testing.T) {
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

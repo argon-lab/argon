@@ -12,13 +12,9 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// Package mongoexpr evaluates MongoDB filter and update expressions in
-// process. Live traffic never runs through it — applications query and
-// write checked-out branches on real mongod. It survives for exactly two
-// consumers: the v1→v2 WAL migration, which must resolve legacy expression
-// entries one final time, and canonical BSON comparison/serialization
-// (canonical.go) used by snapshots and diffs. Replay correctness never
-// depends on this code.
+// The v1 WAL migration evaluates legacy filter and update expressions here.
+// Merge and undo use canonical BSON comparison. MongoDB evaluates driver
+// queries and updates on checked-out branches.
 //
 // Filter support: implicit equality, $eq, $ne, $gt, $gte, $lt, $lte, $in,
 // $nin, $exists, $regex, $size, $all, $elemMatch, $and, $or, $nor, $not,
