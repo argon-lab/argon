@@ -81,7 +81,7 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 	}
 	if probe {
 		err = probeCapture(ctx, client)
-		if !add("capture_permissions", "temporary collections, exact images, change stream and transaction verified", err) {
+		if !add("capture_permissions", "temporary collections, exact images, capture boundary, change stream and transaction verified", err) {
 			return
 		}
 	}
@@ -91,6 +91,10 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 	}
 	return
 }
+
+// checkCaptureBoundary is a variable so tests can stand in for a deployment
+// whose hello reply has no operationTime.
+var checkCaptureBoundary = walcli.CheckCaptureBoundary
 
 func probeCapture(ctx context.Context, client *mongo.Client) (probeErr error) {
 	suffix := primitive.NewObjectID().Hex()
@@ -108,6 +112,12 @@ func probeCapture(ctx context.Context, client *mongo.Client) (probeErr error) {
 	}()
 	if err := physical.RunCommand(ctx, bson.D{{Key: "create", Value: "probe"}, {Key: "changeStreamPreAndPostImages", Value: bson.M{"enabled": true}}}).Err(); err != nil {
 		return fmt.Errorf("create collection with exact images: %w", err)
+	}
+	// Checkout stores an operationTime from hello as the point its writes are
+	// captured from; a deployment that does not return one passes every other
+	// check and then fails at the first checkout.
+	if err := checkCaptureBoundary(ctx, physical); err != nil {
+		return fmt.Errorf("capture boundary: %w", err)
 	}
 	stream, err := physical.Watch(ctx, mongo.Pipeline{}, options.ChangeStream().SetFullDocument(options.WhenAvailable).SetFullDocumentBeforeChange(options.WhenAvailable).SetMaxAwaitTime(100*time.Millisecond))
 	if err != nil {

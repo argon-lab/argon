@@ -221,11 +221,12 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		// Argon metadata indexes and checkout of a branch's own physical database.
 		"internal/branch/wal/service.go:NewBranchService CreateMany",
 		"internal/checkout/service.go:Checkout DeleteOne",
-		"internal/checkout/service.go:Checkout RunCommand",
+		"internal/checkout/service.go:Checkout ReadCaptureBoundary",
 		"internal/checkout/service.go:Checkout UpdateOne",
 		"internal/checkout/service.go:Checkout loadCollection",
 		"internal/checkout/service.go:EnablePrePostImages RunCommand",
 		"internal/checkout/service.go:EnablePrePostImages RunCommand",
+		"internal/checkout/service.go:ReadCaptureBoundary RunCommand",
 		"internal/checkout/service.go:dropPhysical Drop",
 		"internal/checkout/service.go:loadCollection EnablePrePostImages",
 		"internal/checkout/service.go:loadCollection InsertMany",
@@ -336,6 +337,8 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/source/source.go:Unbind DeleteOne",
 		"internal/wal/service.go:NewService CreateMany",
 		"internal/wal/service.go:NewService DropOne",
+		// Runs hello, as checkout does, in doctor's own probe database.
+		"pkg/walcli/capture_boundary.go:CheckCaptureBoundary ReadCaptureBoundary",
 		// Connects to and initializes Argon's metadata.
 		"pkg/walcli/services.go:Connect newServices",
 		"pkg/walcli/services.go:NewServicesAt newServices",

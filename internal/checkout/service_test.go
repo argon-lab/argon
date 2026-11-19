@@ -1,7 +1,9 @@
 package checkout
 
 import (
+	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -66,4 +68,30 @@ func TestCaptureBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBoundaryFromReply(t *testing.T) {
+	t.Run("reply without operationTime names it and wraps the sentinel", func(t *testing.T) {
+		_, err := boundaryFromReply(rawReply(t, bson.D{{Key: "ok", Value: 1.0}}))
+		if !errors.Is(err, ErrNoCaptureBoundary) {
+			t.Fatalf("error = %v; want ErrNoCaptureBoundary", err)
+		}
+		for _, want := range []string{"operationTime", "replica set"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not mention %q", err, want)
+			}
+		}
+	})
+	t.Run("reply with operationTime returns the boundary", func(t *testing.T) {
+		got, err := boundaryFromReply(rawReply(t, bson.D{
+			{Key: "ok", Value: 1.0},
+			{Key: "operationTime", Value: primitive.Timestamp{T: 1700000000, I: 7}},
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := (primitive.Timestamp{T: 1700000000, I: 8}); got != want {
+			t.Fatalf("boundary = %v; want %v", got, want)
+		}
+	})
 }

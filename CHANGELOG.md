@@ -48,6 +48,11 @@ entry — a synchronization barrier, not in-proxy capture).
   and runs under one five-second deadline that covers every query it makes.
   Checks completed on demand are saved with the snapshot, so each snapshot
   is checked once.
+- `argon doctor` now runs the `hello` call that checkout uses to take its
+  capture boundary. A deployment whose reply has no `operationTime` fails
+  the `capture_permissions` check with a message naming it, instead of
+  passing doctor and failing at the first `argon checkout`. `argon status`
+  still makes no writes.
 
 ## [2.8.0] - 2026-11-19
 
