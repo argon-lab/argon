@@ -9,10 +9,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// This file implements MongoDB update operator application for the SDK
-// write path. Like the filter matcher, it runs exactly once per operation:
-// the resulting post-image is logged to the WAL, so replay never re-executes
-// any of this.
+// Migration resolves each legacy update expression once and writes the
+// resulting post-image to the WAL.
 //
 // Supported: $set, $unset, $inc, $mul, $min, $max, $rename, $push (with
 // $each), $addToSet (with $each), $pull, $pop, $setOnInsert, $currentDate,

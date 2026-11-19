@@ -168,8 +168,9 @@ func checkoutParentLiveWrites(t *testing.T, secondWatcher bool) {
 	require.NoError(t, services.PrepareCollection(ctx, main.ID, "live"))
 	require.NoError(t, services.PrepareCollection(ctx, main.ID, "bulk"))
 
-	// Enough to copy that the child's load takes a while.
-	const bulkDocs = 20000
+	// Enough to copy that the child's load takes a while. Checkout inserts
+	// stored images without decoding them, so the copy needs this many.
+	const bulkDocs = 60000
 	pad := strings.Repeat("x", 700)
 	for start := 0; start < bulkDocs; start += 1000 {
 		docs := make([]interface{}, 0, 1000)

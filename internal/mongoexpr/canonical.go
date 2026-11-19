@@ -21,7 +21,7 @@ import (
 
 // CanonicalBytes returns a deterministic byte representation of a BSON value.
 func CanonicalBytes(v interface{}) ([]byte, error) {
-	canonical, err := canonicalizeValue(v)
+	canonical, err := Canonicalize(v)
 	if err != nil {
 		return nil, err
 	}
@@ -30,8 +30,7 @@ func CanonicalBytes(v interface{}) ([]byte, error) {
 
 // Canonicalize converts a BSON value into its canonical form: documents
 // become bson.D with recursively sorted keys, so marshalling the result is
-// deterministic. Snapshot serialization depends on this for content-level
-// chunk deduplication.
+// deterministic.
 func Canonicalize(v interface{}) (interface{}, error) {
 	return canonicalizeValue(v)
 }

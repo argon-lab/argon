@@ -232,18 +232,11 @@ func (w *Writer) commit(ctx context.Context, entries []*wal.Entry) ([]int64, err
 	return lsns, nil
 }
 
-// preImage point-looks-up the document's current state, marshalled, or nil.
+// preImage returns the document's current BSON, or nil if it does not exist.
 func (w *Writer) preImage(collection, docID string) (bson.Raw, error) {
-	current, err := w.materializer.MaterializeDocument(w.branch, collection, docID)
+	raw, err := w.materializer.EditDocumentAtLSN(w.branch, collection, docID, w.branch.HeadLSN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to look up pre-image for %s/%s: %w", collection, docID, err)
-	}
-	if current == nil {
-		return nil, nil
-	}
-	raw, err := wal.MarshalDocument(current)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal pre-image for %s/%s: %w", collection, docID, err)
 	}
 	return raw, nil
 }

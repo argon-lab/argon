@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/argon-lab/argon/v2/internal/mongoexpr"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -28,7 +27,7 @@ type frame struct {
 }
 
 // encodeState serializes a collection state into compressed chunks.
-func encodeState(state map[string]bson.M, compressor *wal.Compressor) (chunks [][]byte, docCount int64, err error) {
+func encodeState(state map[string]bson.Raw, compressor *wal.Compressor) (chunks [][]byte, docCount int64, err error) {
 	keys := make([]string, 0, len(state))
 	for k := range state {
 		keys = append(keys, k)
@@ -50,29 +49,7 @@ func encodeState(state map[string]bson.M, compressor *wal.Compressor) (chunks []
 	}
 
 	for _, k := range keys {
-		// Canonicalize before marshalling: documents are Go maps, and
-		// marshalling a map serializes keys in randomized order, which
-		// would give identical states different bytes — and different
-		// chunk hashes — on every run, defeating deduplication.
-		canonical, err := mongoexpr.Canonicalize(state[k])
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to canonicalize document %s: %w", k, err)
-		}
-		// Ordinary fields are canonicalized, but embedded _id documents
-		// have order-sensitive identity in MongoDB and must retain it.
-		if fields, ok := canonical.(bson.D); ok {
-			for i := range fields {
-				if fields[i].Key == "_id" {
-					fields[i].Value = state[k]["_id"]
-				}
-			}
-			canonical = fields
-		}
-		docRaw, err := bson.Marshal(canonical)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to marshal document %s: %w", k, err)
-		}
-		frameRaw, err := bson.Marshal(frame{Key: k, Doc: docRaw})
+		frameRaw, err := bson.Marshal(frame{Key: k, Doc: state[k]})
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to marshal frame for %s: %w", k, err)
 		}

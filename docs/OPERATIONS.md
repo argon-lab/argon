@@ -477,6 +477,30 @@ their exact-byte annotations. Pass the chosen plan's `approval_digest` to
 A missing approval or a digest for different contents leaves the source
 untouched and the plan pending.
 
+In 2.8.0, checkout rebuilt documents from Go maps and could reorder fields
+before the first sandbox edit. Checkout and re-checkout now load the stored
+BSON, including the order inside embedded documents and arrays. With the
+imported image available, a sandbox starts with the source's field order.
+Setting an existing field keeps its position, and pushing onto an array keeps
+the existing elements in order, just as when MongoDB applies the same update
+directly. The saved CLI JSON preview shows the exact field order that an
+approved write-back will write.
+If a 2.8.0 sandbox already captured an edit in a different order,
+re-checkout reproduces that captured order.
+
+Checkout uses a verified WAL post-image with a typed document key, or the
+document's stored snapshot frame. Snapshots created by this version keep the
+BSON used for editing. When the latest WAL entry has an older, untyped key,
+its post-image lacks a usable `_id`, or its capture is marked
+`attached_unverified`, checkout rebuilds the document from decoded values,
+sorting map fields by name at each depth.
+Earlier snapshots also stored ordinary fields in name order. If their
+original order can be recovered from retained WAL or an earlier ordered
+snapshot with an intact history, checkout uses it. Otherwise later edits
+start from the order in the older snapshot.
+MongoDB puts the top-level `_id` first. A subsequent exact capture can thus
+record and write back a document whose fields are in name order.
+
 - In the metadata snapshot that claims the plan, `main` has a verified exact
   checkpoint as of its reported
   source cluster time, and its follower binding and resume position are in

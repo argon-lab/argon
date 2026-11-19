@@ -8,6 +8,7 @@ import (
 
 	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
 	"github.com/argon-lab/argon/v2/internal/wireproxy"
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -15,14 +16,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// startProxy runs a wire proxy on an ephemeral port over the fixture's
-// services and returns its address.
-func startProxy(t *testing.T, f *ingestFixture) string {
+// startProxy serves the proxy on an ephemeral port and returns its address.
+func startProxy(t *testing.T, proxy *wireproxy.Proxy) string {
 	t.Helper()
-	projectService, err := projectwal.NewProjectService(f.metaDB, f.wal, f.branches)
-	require.NoError(t, err)
-
-	proxy := wireproxy.New("localhost:27017", projectService, f.branches)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
@@ -38,12 +34,14 @@ func TestWireProxy_AliasRouting(t *testing.T) {
 	stop := f.startIngester(t)
 	defer stop()
 
-	addr := startProxy(t, f)
+	projectService, err := projectwal.NewProjectService(f.metaDB, f.wal, f.branches)
+	require.NoError(t, err)
+	addr := startProxy(t, wireproxy.New("localhost:27017", projectService, f.branches))
 
 	// The fixture creates branches directly under the project ID
 	// "proxy-e2e" with no project document; alias resolution looks projects
 	// up by name, so register the mapping.
-	_, err := f.metaDB.Collection("wal_projects").InsertOne(ctx, bson.M{
+	_, err = f.metaDB.Collection("wal_projects").InsertOne(ctx, bson.M{
 		"_id": "proxy-e2e", "name": "proxy-e2e", "use_wal": true,
 	})
 	require.NoError(t, err)
@@ -124,4 +122,37 @@ func TestWireProxy_AliasRouting(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "argon proxy")
 	})
+}
+
+func TestWriteBack_WireProxyUpdateFieldOrder(t *testing.T) {
+	ctx := t.Context()
+	f := newFollowFixture(t, metadataDeploymentURI)
+	doc := bson.D{
+		{Key: "_id", Value: "pear"},
+		{Key: "stock", Value: int32(9)},
+		{Key: "price", Value: int32(2)},
+		{Key: "dimensions", Value: bson.D{{Key: "width", Value: 4}, {Key: "depth", Value: 1}}},
+		{Key: "category", Value: "fruit"},
+	}
+	catalog := f.source.Collection("catalog")
+	_, err := catalog.InsertOne(ctx, doc)
+	require.NoError(t, err)
+	f.importOnline(t, walcli.OnlineImport{})
+	info, _ := f.agentSandbox(t, "price")
+	addr := startProxy(t, wireproxy.New("localhost:27017", f.services.Projects, f.services.Branches))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://"+addr).SetDirect(true))
+	require.NoError(t, err)
+	defer func() { _ = client.Disconnect(ctx) }()
+	alias := client.Database(f.project + "~" + info.BranchName).Collection("catalog")
+	update := bson.M{"$inc": bson.M{"price": int32(1)}}
+	result, err := alias.UpdateByID(ctx, "pear", update)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, result.ModifiedCount)
+	_, err = catalog.UpdateByID(ctx, "pear", update)
+	require.NoError(t, err)
+	want, err := catalog.FindOne(ctx, bson.M{"_id": "pear"}).Raw()
+	require.NoError(t, err)
+	got, err := alias.FindOne(ctx, bson.M{"_id": "pear"}).Raw()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }

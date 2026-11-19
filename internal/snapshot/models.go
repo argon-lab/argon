@@ -50,6 +50,11 @@ type Snapshot struct {
 	// four-zero-byte subtype-2 IDs and checked for ambiguous WAL deletes.
 	ExactOldBinaryKeys bool `bson:"exact_old_binary_keys,omitempty" json:"-"`
 
+	// OrderedImages marks frames built directly from the BSON used for edits.
+	// Earlier frames canonicalized decoded values even when the WAL retained
+	// the original field order.
+	OrderedImages bool `bson:"ordered_images,omitempty" json:"-"`
+
 	// OldKeysTrusted keeps the decision readable by earlier versions. Their
 	// boolean alone did not account for subtype-2 evidence after reclaim.
 	OldKeysTrusted *bool `bson:"old_keys_trusted,omitempty" json:"-"`

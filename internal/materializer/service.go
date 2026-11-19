@@ -31,6 +31,8 @@ type SnapshotSource interface {
 	// (branch, collection) whose LSN lies in [minLSN, maxLSN], honoring
 	// discarded-range visibility for a read whose segment upper bound is
 	// readUpperBound. ok is false when no usable snapshot exists.
+	// The returned state belongs to the caller, which applies later WAL
+	// puts and deletes to it in place.
 	FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (state map[string]bson.M, lsn int64, ok bool, err error)
 	// UsableLSN reports the LSN FindUsable would start from without
 	// materializing its documents.
@@ -180,28 +182,40 @@ func (s *Service) CheckResyncCoverage(branch *wal.Branch, collection string) err
 // fails with wal.ErrHistoryReclaimed instead of returning a state that
 // lacks them.
 func (s *Service) MaterializeCollectionAtLSN(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error) {
-	// A GC run that finishes between choosing the snapshot and reading the
-	// entries above it invalidates that choice. One retry picks the newer
-	// snapshot GC relied on; a second failure is a genuine hole.
-	state, err := s.materializeCollection(branch, collection, targetLSN)
+	return replayCollection(s, branch, collection, targetLSN, s.decodedSnapshot, s.ApplyEntry)
+}
+
+func (s *Service) decodedSnapshot(branch *wal.Branch, collection string, from, to int64) (map[string]bson.M, int64, bool, error) {
+	return s.snapshots.FindUsable(branch, collection, from, to, to)
+}
+
+func replayCollection[T any](s *Service, branch *wal.Branch, collection string, targetLSN int64,
+	snapshot func(*wal.Branch, string, int64, int64) (map[string]T, int64, bool, error),
+	apply func(map[string]T, *wal.Entry) error,
+) (map[string]T, error) {
+	// If GC overtook the read, retry once with the snapshot GC relied on.
+	state, err := replayCollectionOnce(s, branch, collection, targetLSN, snapshot, apply)
 	if errors.Is(err, wal.ErrHistoryReclaimed) {
-		state, err = s.materializeCollection(branch, collection, targetLSN)
+		return replayCollectionOnce(s, branch, collection, targetLSN, snapshot, apply)
 	}
 	return state, err
 }
 
-func (s *Service) materializeCollection(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error) {
+func replayCollectionOnce[T any](s *Service, branch *wal.Branch, collection string, targetLSN int64,
+	snapshot func(*wal.Branch, string, int64, int64) (map[string]T, int64, bool, error),
+	apply func(map[string]T, *wal.Entry) error,
+) (map[string]T, error) {
 	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
 		return nil, err
 	}
 
-	state := make(map[string]bson.M)
+	state := make(map[string]T)
 	startIdx := 0
 	if s.snapshots != nil {
 		for i := len(segments) - 1; i >= 0; i-- {
 			seg := segments[i]
-			snapState, snapLSN, ok, err := s.snapshots.FindUsable(seg.branch, collection, seg.fromLSN, seg.toLSN, seg.toLSN)
+			snapState, snapLSN, ok, err := snapshot(seg.branch, collection, seg.fromLSN, seg.toLSN)
 			if err != nil {
 				return nil, fmt.Errorf("failed to look up snapshot for branch %s: %w", seg.branch.ID, err)
 			}
@@ -221,17 +235,17 @@ func (s *Service) materializeCollection(branch *wal.Branch, collection string, t
 		if seg.fromLSN > seg.toLSN {
 			continue // Snapshot sits exactly at the segment's end.
 		}
-		entries, err := s.wal.GetBranchEntries(seg.branch.ID, collection, seg.fromLSN, seg.toLSN)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get entries for branch %s: %w", seg.branch.ID, err)
-		}
-		for _, entry := range entries {
+		err := s.wal.ScanCollectionDataEntries(seg.branch.ID, collection, seg.fromLSN, seg.toLSN, false, func(entry *wal.Entry) error {
 			if seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
-				continue
+				return nil
 			}
-			if err := s.ApplyEntry(state, entry); err != nil {
-				return nil, fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
+			if err := apply(state, entry); err != nil {
+				return fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
 			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to replay collection %s on branch %s: %w", collection, seg.branch.ID, err)
 		}
 	}
 
@@ -727,6 +741,21 @@ func (s *Service) MaterializeDocument(branch *wal.Branch, collection, documentID
 // ApplyEntry applies a WAL entry to a state map. Puts and deletes are
 // idempotent by construction; control operations are no-ops here.
 func (s *Service) ApplyEntry(state map[string]bson.M, entry *wal.Entry) error {
+	return applyEntry(state, entry, decodePut, func(doc bson.M) any { return doc["_id"] })
+}
+
+func decodePut(entry *wal.Entry, id any, hasID bool) (bson.M, error) {
+	var doc bson.M
+	if err := wal.UnmarshalDocument(entry.PostImage, &doc); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal post-image for %s/%s: %w", entry.Collection, entry.DocumentID, err)
+	}
+	if hasID {
+		doc["_id"] = id
+	}
+	return doc, nil
+}
+
+func applyEntry[T any](state map[string]T, entry *wal.Entry, put func(*wal.Entry, any, bool) (T, error), idOf func(T) any) error {
 	if entry.IsLegacy() {
 		return fmt.Errorf("entry LSN %d uses the legacy schema-v1 format (%s) and cannot be replayed deterministically; run the WAL migration", entry.LSN, entry.Operation)
 	}
@@ -736,21 +765,19 @@ func (s *Service) ApplyEntry(state map[string]bson.M, entry *wal.Entry) error {
 		if entry.DocumentID == "" {
 			return fmt.Errorf("put entry LSN %d has no document ID", entry.LSN)
 		}
-		var doc bson.M
-		if err := wal.UnmarshalDocument(entry.PostImage, &doc); err != nil {
-			return fmt.Errorf("failed to unmarshal post-image for %s/%s: %w", entry.Collection, entry.DocumentID, err)
+		id, idErr := wal.DocumentIDFromImage(entry.PostImage)
+		key := entry.DocumentID
+		if idErr == nil {
+			key = wal.DocumentIDString(id)
+		} else if ambiguous := entry.CheckStoredKey(); ambiguous != nil {
+			return errors.Join(ambiguous, idErr)
 		}
-		id, err := wal.DocumentIDFromImage(entry.PostImage)
+		// Early physical WAL producers kept the ID only in the envelope.
+		doc, err := put(entry, id, idErr == nil)
 		if err != nil {
-			if ambiguous := entry.CheckStoredKey(); ambiguous != nil {
-				return errors.Join(ambiguous, err)
-			}
-			// Early physical WAL producers kept the ID only in the envelope.
-			state[entry.DocumentID] = doc
-			return nil
+			return err
 		}
-		doc["_id"] = id
-		state[wal.DocumentIDString(id)] = doc
+		state[key] = doc
 	case wal.OpDelete:
 		if entry.DocumentID == "" {
 			return fmt.Errorf("delete entry LSN %d has no document ID", entry.LSN)
@@ -774,7 +801,7 @@ func (s *Service) ApplyEntry(state map[string]bson.M, entry *wal.Entry) error {
 			// existing state only when unambiguous; never guess and delete both.
 			matched := ""
 			for key, doc := range state {
-				if wal.LegacyDocumentIDString(doc["_id"]) == entry.DocumentID {
+				if wal.LegacyDocumentIDString(idOf(doc)) == entry.DocumentID {
 					if matched != "" {
 						return fmt.Errorf("legacy delete %q has an ambiguous BSON ID and no pre-image", entry.DocumentID)
 					}

@@ -1,6 +1,7 @@
 package snapshot
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -105,13 +106,17 @@ func (s *Service) CreateSnapshot(ctx context.Context, branchID string, lsn int64
 		return nil, fmt.Errorf("snapshot LSN %d outside branch range (%d, %d]", lsn, branch.BaseLSN, branch.HeadLSN)
 	}
 
-	state, err := s.materializer.MaterializeBranchAtLSN(branch, lsn)
+	collections, err := s.materializer.CollectionsAtLSN(branch, lsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to materialize branch at LSN %d: %w", lsn, err)
 	}
 
-	snapshots := make([]*Snapshot, 0, len(state))
-	for collection, docs := range state {
+	snapshots := make([]*Snapshot, 0, len(collections))
+	for _, collection := range collections {
+		docs, err := s.materializer.EditCollectionAtLSN(branch, collection, lsn)
+		if err != nil {
+			return nil, err
+		}
 		snap, err := s.storeCollectionSnapshot(ctx, branch, collection, lsn, docs)
 		if err != nil {
 			return nil, fmt.Errorf("collection %s: %w", collection, err)
@@ -121,7 +126,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, branchID string, lsn int64
 	return snapshots, nil
 }
 
-func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branch, collection string, lsn int64, docs map[string]bson.M) (*Snapshot, error) {
+func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branch, collection string, lsn int64, docs map[string]bson.Raw) (*Snapshot, error) {
 	chunks, docCount, err := encodeState(docs, s.compressor)
 	if err != nil {
 		return nil, err
@@ -158,6 +163,7 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 		RangesApplied:      len(branch.DiscardedRanges),
 		VisibilityRules:    CurrentVisibilityRules,
 		ExactOldBinaryKeys: true,
+		OrderedImages:      true,
 		ChunkIDs:           chunkIDs,
 		DocCount:           docCount,
 		SizeBytes:          sizeBytes,
@@ -178,20 +184,86 @@ func (s *Service) storeCollectionSnapshot(ctx context.Context, branch *wal.Branc
 // Usability honors discarded ranges with the same visibility rule replay
 // applies to individual entries; see usable.
 func (s *Service) FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (map[string]bson.M, int64, bool, error) {
-	return s.newestUsable(branch, collection, minLSN, maxLSN, readUpperBound, true, true)
+	snap, err := s.newestUsable(branch, collection, minLSN, maxLSN, readUpperBound, forReplay)
+	if err != nil || snap == nil {
+		return nil, 0, false, err
+	}
+	state, err := s.load(context.Background(), snap)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return state, snap.LSN, true, nil
+}
+
+// FindUsableFrames reads the BSON held in the newest usable snapshot, optionally
+// for a single document key. OrderedImages distinguishes snapshots built from
+// edit images from older ones built from decoded values.
+func (s *Service) FindUsableFrames(branch *wal.Branch, collection string, from, to int64, key *string) (map[string]bson.Raw, int64, bool, bool, error) {
+	snap, err := s.newestUsable(branch, collection, from, to, to, forReplay)
+	if err != nil || snap == nil {
+		return nil, 0, false, false, err
+	}
+	images := make(map[string]bson.Raw)
+	err = s.visitFrames(snap, func(frameKey string, raw bson.Raw) error {
+		if key == nil || *key == frameKey {
+			images[frameKey] = bytes.Clone(raw)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, false, false, err
+	}
+	return images, snap.LSN, true, snap.OrderedImages, nil
+}
+
+// OrderedSnapshotFrames selects the latest usable ordered snapshot in the LSN
+// interval. A nil walker means that none exists. The walker reads chunks on
+// demand and lends each raw document to the callback until it returns.
+func (s *Service) OrderedSnapshotFrames(branch *wal.Branch, collection string, from, to, readUpperBound int64) (int64, func(func(string, bson.Raw) error) error, error) {
+	snap, err := s.newestUsable(branch, collection, from, to, readUpperBound, forOrderedFrames)
+	if err != nil || snap == nil {
+		return 0, nil, err
+	}
+	return snap.LSN, func(visit func(string, bson.Raw) error) error {
+		return s.visitFrames(snap, visit)
+	}, nil
+}
+
+func (s *Service) visitFrames(snap *Snapshot, visit func(string, bson.Raw) error) error {
+	ctx := context.Background()
+	for _, chunkID := range snap.ChunkIDs {
+		data, err := s.store.Get(ctx, chunkID)
+		if err != nil {
+			return err
+		}
+		err = walkChunk(ctx, data, s.compressor, func(f frame) error {
+			frameKey := f.Key
+			if id, err := wal.DocumentIDFromImage(f.Doc); err == nil {
+				frameKey = wal.DocumentIDString(id)
+			}
+			return visit(frameKey, f.Doc)
+		})
+		if err != nil {
+			return fmt.Errorf("chunk %s: %w", chunkID, err)
+		}
+	}
+	return nil
 }
 
 // UsableLSN implements materializer.SnapshotSource: the LSN FindUsable
 // would start from. Current manifests need no chunk reads.
 func (s *Service) UsableLSN(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (int64, bool, error) {
-	_, lsn, ok, err := s.newestUsable(branch, collection, minLSN, maxLSN, readUpperBound, false, false)
-	return lsn, ok, err
+	snap, err := s.newestUsable(branch, collection, minLSN, maxLSN, readUpperBound, forCoverage)
+	if err != nil || snap == nil {
+		return 0, false, err
+	}
+	return snap.LSN, true, nil
 }
 
 // CheckReplayCoverage checks whether an old-key snapshot can be bypassed
 // during resync. Certified manifests need no document or chunk reads.
 func (s *Service) CheckReplayCoverage(branch *wal.Branch, collection string, from, to int64) error {
-	_, _, _, err := s.newestUsable(branch, collection, from, to, to, false, true)
+	_, err := s.newestUsable(branch, collection, from, to, to, forReplay)
 	return err
 }
 
@@ -226,31 +298,50 @@ func (s *Service) UnrecordedReclaimBound(branchID, collection string) (int64, er
 	return snap.LSN, nil
 }
 
+type snapshotLookup int
+
+const (
+	forCoverage snapshotLookup = iota
+	forReplay
+	forOrderedFrames
+)
+
 // newestUsable checks both reads and GC coverage against the same rules.
-func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64, wantState, checkReplay bool) (map[string]bson.M, int64, bool, error) {
+func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64, lookup snapshotLookup) (*Snapshot, error) {
 	ctx := context.Background()
-	cursor, err := s.manifests.Find(ctx,
-		bson.M{
-			"branch_id":  branch.ID,
-			"collection": collection,
-			"lsn":        bson.M{"$gte": minLSN, "$lte": maxLSN},
-		},
-		options.Find().SetSort(bson.M{"lsn": -1}),
-	)
+	filter := bson.M{
+		"branch_id":  branch.ID,
+		"collection": collection,
+		"lsn":        bson.M{"$gte": minLSN, "$lte": maxLSN},
+	}
+	if lookup == forOrderedFrames {
+		filter["ordered_images"] = true
+	}
+	cursor, err := s.manifests.Find(ctx, filter, options.Find().SetSort(bson.M{"lsn": -1}))
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("failed to query snapshots: %w", err)
+		return nil, fmt.Errorf("failed to query snapshots: %w", err)
 	}
 	defer func() { _ = cursor.Close(ctx) }()
 
-	var selected map[string]bson.M
-	var selectedLSN, rejectedLSN, unrecordedLSN int64
+	var selected *Snapshot
+	var rejectedLSN, unrecordedLSN int64
 	var ancestorGap *wal.ReclaimedOldBinaryError
 	var pass *certificationPass
-	var found bool
 	for cursor.Next(ctx) {
 		var snap Snapshot
 		if err := cursor.Decode(&snap); err != nil {
-			return nil, 0, false, fmt.Errorf("failed to decode snapshot manifest: %w", err)
+			return nil, fmt.Errorf("failed to decode snapshot manifest: %w", err)
+		}
+		if selected != nil {
+			// The index already supplies descending LSN order. A snapshot
+			// built after upgrading can share its LSN with a value-only
+			// snapshot. Prefer its ordered frames when both are usable.
+			if snap.LSN < selected.LSN {
+				break
+			}
+			if !snap.OrderedImages {
+				continue
+			}
 		}
 		if !s.usable(&snap, branch, readUpperBound) {
 			continue
@@ -260,22 +351,18 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 				pass = s.newCertificationPass()
 			}
 			if err := pass.certify(ctx, branch, &snap); err != nil {
-				return nil, 0, false, err
+				return nil, err
 			}
 		}
 		usable := snap.ExactOldBinaryKeys || snap.OldKeyCheck == keysTrusted
-		var state map[string]bson.M
-		if usable && wantState {
-			state, err = s.load(ctx, &snap)
-		}
-		if err != nil {
-			return nil, 0, false, err
-		}
 		if usable {
-			selected, selectedLSN, found = state, snap.LSN, true
-			break
+			selected = &snap
+			if snap.OrderedImages {
+				break
+			}
+			continue
 		}
-		if checkReplay {
+		if lookup != forCoverage {
 			rejectedLSN = max(rejectedLSN, snap.LSN)
 			if gap := snap.OldKeyGap; ancestorGap == nil && gap != nil && gap.BranchID != branch.ID {
 				ancestorGap = gap
@@ -286,23 +373,23 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 		}
 	}
 	if err := cursor.Err(); err != nil {
-		return nil, 0, false, err
+		return nil, err
 	}
 	if rejectedLSN != 0 {
 		from := minLSN
-		if found {
-			from = selectedLSN + 1
+		if selected != nil {
+			from = selected.LSN + 1
 		}
 		if err := s.materializer.CheckRejectedSnapshotCoverage(branch, collection, from, readUpperBound, rejectedLSN, unrecordedLSN); err != nil {
-			return nil, 0, false, err
+			return nil, err
 		}
 	}
-	if !found && ancestorGap != nil {
+	if selected == nil && ancestorGap != nil {
 		if err := s.materializer.CheckAncestorSnapshotCoverage(branch, collection, readUpperBound, ancestorGap); err != nil {
-			return nil, 0, false, err
+			return nil, err
 		}
 	}
-	return selected, selectedLSN, found, nil
+	return selected, nil
 }
 
 // usable reports whether a snapshot holds exactly the history a reader with

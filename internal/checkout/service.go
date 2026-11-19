@@ -170,7 +170,7 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	// state as before; peak memory is the largest collection instead of
 	// the whole branch.
 	for _, collection := range collections {
-		docs, err := s.materializer.MaterializeCollectionAtLSN(branch, collection, branch.HeadLSN)
+		docs, err := s.materializer.EditCollectionAtLSN(branch, collection, branch.HeadLSN)
 		if err != nil {
 			return nil, fmt.Errorf("failed to materialize collection %s: %w", collection, err)
 		}
@@ -224,7 +224,7 @@ func captureBoundary(reply bson.Raw) (primitive.Timestamp, bool) {
 
 // loadCollection bulk-inserts one collection's state and prepares it for
 // change-stream capture.
-func (s *Service) loadCollection(ctx context.Context, physical *mongo.Database, collection string, docs map[string]bson.M) (int64, error) {
+func (s *Service) loadCollection(ctx context.Context, physical *mongo.Database, collection string, docs map[string]bson.Raw) (int64, error) {
 	// Exact images are required; unsupported deployments fail before a URI
 	// is returned rather than silently producing inaccurate history.
 	if err := EnablePrePostImages(ctx, physical, collection); err != nil {

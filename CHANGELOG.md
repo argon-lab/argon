@@ -34,6 +34,11 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Fixed
 
+- Sandbox checkout and re-checkout preserve stored BSON field order,
+  including inside embedded documents and arrays. Editing a field in a
+  sandbox created from an online import now produces the same field order
+  as the same MongoDB update on the source. New snapshots, programmatic
+  write pre-images and undo also retain the available ordered images.
 - The startup check of snapshots written by earlier versions scans each
   WAL prefix once for all snapshots that share it, reads index keys only,
   and runs under one five-second deadline that covers every query it makes.
