@@ -154,7 +154,7 @@ without one, fall back to full replay unchanged.
   bytes, ~4MB pre-compression, zstd); manifests always in `wal_snapshots`.
   Identical content stores once, so snapshots of slowly-changing
   collections share almost all their chunks. New frames store the BSON
-  returned for editing.
+  returned by collection replay for checkout.
 - **Chunk store backends** (`ARGON_SNAPSHOT_STORE`):
   - `mongodb` (default) — chunks in `wal_snapshot_chunks`; zero
     configuration, works everywhere.
@@ -193,18 +193,23 @@ without one, fall back to full replay unchanged.
   children) drops its WAL entries, its manifests and any chunks no other
   manifest references.
 
-### Stored images for editing
+### Stored field order in collection replay
 
-The singular decoded point read or the decoded collection replay determines
-existence and value at the requested position. A stored WAL post-image,
-pre-image or snapshot frame supplies its bytes only if it identifies the
-same document, decodes cleanly, is trusted for that role and matches the
-decoded value under the merge comparison, including `_id`. Repeated data
-fields keep their last value at their first position. The first top-level
-`_id` and JavaScript code scopes retain their BSON identity and order.
-`attached_unverified` applies only to the post-image. A follower's `current`
-image can supply order. Without a matching image, encode the decoded value
-with `_id` first and map fields in name order at each depth.
+Checkout (including re-checkout after restore) and snapshot creation use the
+same collection replay. Decoded values determine which documents exist and
+what they contain at the requested position. A stored WAL post-image or
+snapshot frame supplies its bytes only if it identifies the same document,
+decodes cleanly, is trusted for that role and matches the decoded value under
+the merge comparison, including `_id`. Repeated data fields keep their last
+value at their first position. The first top-level `_id` and JavaScript code
+scopes retain their BSON identity and order.
+A post-image marked `attached_unverified` cannot supply order. A follower's
+`current` image can. Without a matching image, replay encodes the decoded
+value with `_id` first and map fields in name order at each depth.
+
+Programmatic writes look up prior document values with the single-key decoded
+read. Undo uses decoded documents for restoration. Both paths can write fields
+in name order.
 
 ## Agent sandboxes and the MCP server
 

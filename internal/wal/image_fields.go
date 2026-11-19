@@ -1,7 +1,6 @@
 package wal
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"strconv"
@@ -21,7 +20,6 @@ type ImageRole uint8
 
 const (
 	PostImage ImageRole = iota
-	PreImage
 	SnapshotImage
 )
 
@@ -67,9 +65,6 @@ func (d *DecodedImage) TakeValue() bson.M {
 	d.raw = nil
 	return d.value
 }
-
-// KeepSource lets a point lookup retain its frame after the chunk visitor returns.
-func (d *DecodedImage) KeepSource() { d.raw = bytes.Clone(d.raw) }
 
 // TrustedImage checks this stored image and its role. An unchanged image
 // returns the same decoder result. A normalized image gets its own result.

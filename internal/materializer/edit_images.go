@@ -11,10 +11,7 @@ import (
 // EditCollectionAtLSN uses the decoded collection replay, decorating each put
 // or snapshot frame as it is read. Only its BSON representation stays in state.
 func (s *Service) EditCollectionAtLSN(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.Raw, error) {
-	snapshot := func(b *wal.Branch, coll string, from, to int64) (map[string]bson.Raw, int64, bool, error) {
-		return s.editSnapshot(b, coll, from, to, nil)
-	}
-	return replayCollection(s, branch, collection, targetLSN, snapshot, replayValue[bson.Raw]{
+	return replayCollection(s, branch, collection, targetLSN, s.editSnapshot, replayValue[bson.Raw]{
 		store: func(doc *wal.DecodedImage, e *wal.Entry) (bson.Raw, error) {
 			return editImage(doc, doc, wal.PostImage, e)
 		},
@@ -25,44 +22,9 @@ func (s *Service) EditCollectionAtLSN(branch *wal.Branch, collection string, tar
 	})
 }
 
-// EditDocumentAtLSN decorates the singular decoded point read. A retained WAL
-// row that supplied the value also supplies its candidate in the same lookup.
-func (s *Service) EditDocumentAtLSN(branch *wal.Branch, collection, key string, targetLSN int64) (bson.Raw, error) {
-	var origin documentOrigin
-	doc, err := s.readDocumentAtLSN(branch, collection, key, targetLSN, &origin)
-	if err != nil || doc == nil {
-		return nil, err
-	}
-	e := origin.entry
-	if e == nil {
-		image, err := editImage(doc, doc, wal.SnapshotImage, nil)
-		if err != nil || origin.ordered {
-			return image, err
-		}
-		frames := map[string]bson.Raw{key: image}
-		s.recoverSnapshotOrder(origin.branch, collection, origin.snapshotLSN, frames)
-		return frames[key], nil
-	}
-	image, err := editImage(doc, doc, wal.PostImage, e)
-	if err != nil || bytes.Equal(image, e.PostImage) || s.snapshots == nil {
-		return image, err
-	}
-	// A later snapshot may already contain a clean image of these values.
-	frames, _, found, frameErr := s.editSnapshot(origin.branch, collection, e.LSN, origin.toLSN, &key)
-	if frameErr == nil && found {
-		frame, err := wal.DecodeImage(frames[key])
-		if err == nil {
-			if raw, ok := matchingEditImage(doc, frame, wal.SnapshotImage, nil); ok {
-				return raw, nil
-			}
-		}
-	}
-	return image, nil
-}
-
-func (s *Service) editSnapshot(branch *wal.Branch, collection string, from, to int64, key *string) (map[string]bson.Raw, int64, bool, error) {
+func (s *Service) editSnapshot(branch *wal.Branch, collection string, from, to int64) (map[string]bson.Raw, int64, bool, error) {
 	frames := make(map[string]bson.Raw)
-	lsn, found, ordered, err := s.visitSnapshot(branch, collection, from, to, key, func(k string, doc *wal.DecodedImage) error {
+	lsn, found, ordered, err := s.visitSnapshot(branch, collection, from, to, nil, func(k string, doc *wal.DecodedImage) error {
 		image, err := editImage(doc, doc, wal.SnapshotImage, nil)
 		if err == nil {
 			frames[k] = bytes.Clone(image)

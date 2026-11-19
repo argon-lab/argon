@@ -17,7 +17,7 @@ import (
 )
 
 // Compare every historical position, including positions between the branch's
-// own writes and positions below its fork, against each decoded API.
+// own writes and positions below its fork, against decoded collection replay.
 func TestSource_EditImageReadParity(t *testing.T) {
 	for _, seed := range []int64{31, 97} {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
@@ -148,8 +148,7 @@ func checkEditImageHistory(t *testing.T, seed int64) {
 			appendRow(grandchild, key, wal.OpPut, nil, mustMarshalBSON(image(key, shapes[rng.Intn(len(shapes))])), markers[rng.Intn(len(markers))])
 		}
 	}
-	// Check the other role of an image too: the marker on a dirty post-image
-	// leaves this clean pre-image eligible when undo writes it back.
+	// Undo the marked write and include its compensation in collection replay.
 	prior := cleanImage(b)
 	appendRow(grandchild, b, wal.OpPut, nil, prior, "current")
 	change := appendRow(grandchild, b, wal.OpPut, prior, mustMarshalBSON(image(b, "top")), "attached_unverified")
@@ -165,25 +164,23 @@ func checkEditImageHistory(t *testing.T, seed int64) {
 	require.NoError(t, err)
 	compensation, err := h.wal.GetEntry(h.project, grandchild.HeadLSN)
 	require.NoError(t, err)
-	require.Equal(t, prior, compensation.PostImage)
-	images = append(images, editImageRecord{branch: grandchild.ID, key: b, at: grandchild.HeadLSN, raw: prior})
+	require.Equal(t, decodeEditImage(t, prior), decodeEditImage(t, compensation.PostImage))
+	images = append(images, editImageRecord{branch: grandchild.ID, key: b, at: grandchild.HeadLSN, raw: compensation.PostImage})
 
-	// The old envelope never names a document in the materialized state.
-	readKeys := append(keys, "old-envelope")
 	check := func(t *testing.T) {
 		t.Helper()
 		for _, branch := range []*wal.Branch{h.main, early, late, grandchild} {
 			t.Run(branch.Name, func(t *testing.T) {
 				t.Parallel()
 				for pos := int64(0); pos <= branch.HeadLSN; pos++ {
-					checkEditImagePosition(t, h, branch, pos, readKeys, visibleEditImages(branch, pos, parents, images))
+					checkEditImagePosition(t, h, branch, pos, visibleEditImages(branch, pos, parents, images))
 				}
 			})
 		}
 	}
 	t.Run("intact", check)
 	// Simulate an interrupted old GC: an intervening same-value reorder is
-	// gone but the older image remains eligible for the decoded point read.
+	// gone while the older image remains in the WAL.
 	result, err := h.db.Collection("wal_log").DeleteOne(ctx, bson.M{"branch_id": h.main.ID, "lsn": missing})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, result.DeletedCount)
@@ -255,9 +252,6 @@ func TestSource_EditPointAcrossReclaimedParent(t *testing.T) {
 			full, err := h.mat.MaterializeCollectionAtLSN(child, editCollection, at)
 			require.NoError(t, err)
 			require.Equal(t, point, full[key])
-			image, err := h.mat.EditDocumentAtLSN(child, editCollection, key, at)
-			require.NoError(t, err)
-			assert.Equal(t, point, decodeEditImage(t, image))
 			images, err := h.mat.EditCollectionAtLSN(child, editCollection, at)
 			require.NoError(t, err)
 			assert.Equal(t, point, decodeEditImage(t, images[key]))
@@ -304,9 +298,6 @@ func TestSource_EditPointWithRetainedRowBelowFloor(t *testing.T) {
 	require.Equal(t, a, point)
 	_, err = h.mat.MaterializeDocumentsAtLSN(h.main, editCollection, []string{key}, first)
 	require.ErrorIs(t, err, wal.ErrHistoryReclaimed)
-	image, err := h.mat.EditDocumentAtLSN(h.main, editCollection, key, first)
-	require.NoError(t, err)
-	require.Equal(t, point, decodeEditImage(t, image))
 }
 
 // Record the actual inputs separately from the readers. A delete, untrusted
@@ -383,29 +374,21 @@ func (s editImageSources) checkBytes(t *testing.T, doc bson.M, got bson.Raw, lab
 	}
 }
 
-func checkEditImagePosition(t *testing.T, h *historyFixture, branch *wal.Branch, pos int64, keys []string, sources map[string]editImageSources) {
+func checkEditImagePosition(t *testing.T, h *historyFixture, branch *wal.Branch, pos int64, sources map[string]editImageSources) {
 	t.Helper()
 	label := fmt.Sprintf("%s at %d", branch.Name, pos)
 	full, fullErr := h.mat.MaterializeCollectionAtLSN(branch, editCollection, pos)
 	images, err := h.mat.EditCollectionAtLSN(branch, editCollection, pos)
 	require.Equal(t, fullErr == nil, err == nil, "%s collection: decoded %v, ordered %v", label, fullErr, err)
-	if fullErr == nil {
-		require.Len(t, images, len(full), label)
-		for key, doc := range full {
-			raw, ok := images[key]
-			require.True(t, ok, "%s missing key %q", label, key)
-			require.Equal(t, doc, decodeEditImage(t, raw), "%s collection key %q", label, key)
-			sources[key].checkBytes(t, doc, raw, label+" collection "+key)
-		}
+	if fullErr != nil {
+		return
 	}
-	for _, key := range keys {
-		doc, err := h.mat.MaterializeDocumentAtLSN(branch, editCollection, key, pos)
-		image, imageErr := h.mat.EditDocumentAtLSN(branch, editCollection, key, pos)
-		require.Equal(t, err == nil, imageErr == nil, "%s key %q: decoded %v, ordered %v", label, key, err, imageErr)
-		if err == nil {
-			require.Equal(t, doc, decodeEditImage(t, image), "%s key %q", label, key)
-			sources[key].checkBytes(t, doc, image, label+" point "+key)
-		}
+	require.Len(t, images, len(full), label)
+	for key, doc := range full {
+		raw, ok := images[key]
+		require.True(t, ok, "%s missing key %q", label, key)
+		require.Equal(t, doc, decodeEditImage(t, raw), "%s collection key %q", label, key)
+		sources[key].checkBytes(t, doc, raw, label+" collection "+key)
 	}
 }
 

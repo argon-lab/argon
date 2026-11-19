@@ -512,23 +512,6 @@ func (s *Service) MaterializeBranch(branch *wal.Branch) (map[string]map[string]b
 // the document's own history via the (branch, collection, document, lsn)
 // index instead of replaying the whole collection.
 func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, documentID string, targetLSN int64) (bson.M, error) {
-	doc, err := s.readDocumentAtLSN(branch, collection, documentID, targetLSN, nil)
-	if err != nil || doc == nil {
-		return nil, err
-	}
-	return doc.TakeValue(), nil
-}
-
-type documentOrigin struct {
-	segment
-	entry       *wal.Entry
-	snapshotLSN int64
-	ordered     bool
-}
-
-// A reader that needs field order can also request the origin of the decoded
-// answer. Both readers consult exactly the same entries and snapshots.
-func (s *Service) readDocumentAtLSN(branch *wal.Branch, collection, documentID string, targetLSN int64, origin *documentOrigin) (*wal.DecodedImage, error) {
 	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
 		return nil, err
@@ -564,12 +547,9 @@ func (s *Service) readDocumentAtLSN(branch *wal.Branch, collection, documentID s
 			return nil, err
 		}
 		if latest != nil && (!collision || latest.LSN > floor) {
-			state := make(map[string]*wal.DecodedImage)
-			if err := applyEntry(state, latest, pointValue); err != nil {
+			state := make(map[string]bson.M)
+			if err := s.ApplyEntry(state, latest); err != nil {
 				return nil, err
-			}
-			if origin != nil {
-				*origin = documentOrigin{segment: seg, entry: latest}
 			}
 			return state[documentID], nil
 		}
@@ -580,7 +560,7 @@ func (s *Service) readDocumentAtLSN(branch *wal.Branch, collection, documentID s
 		// one of them might have been this document's — and an older value
 		// would be returned as if it were current.
 		if s.snapshots != nil {
-			doc, snapLSN, ok, err := s.snapshotDocument(seg, collection, documentID, origin)
+			doc, snapLSN, ok, err := s.snapshotDocument(seg, collection, documentID)
 			if err != nil {
 				return nil, err
 			}
@@ -598,20 +578,13 @@ func (s *Service) readDocumentAtLSN(branch *wal.Branch, collection, documentID s
 	return nil, nil
 }
 
-// A point lookup still checks every frame for decoding errors, but keeps only
-// the requested document and, for edits, its source bytes.
-func (s *Service) snapshotDocument(seg segment, collection, key string, origin *documentOrigin) (*wal.DecodedImage, int64, bool, error) {
-	var value *wal.DecodedImage
-	lsn, ok, ordered, err := s.visitSnapshot(seg.branch, collection, seg.fromLSN, seg.toLSN, &key, func(_ string, doc *wal.DecodedImage) error {
-		value = doc
-		if origin != nil {
-			doc.KeepSource()
-		}
+// Check every snapshot frame for decoding errors and keep the requested value.
+func (s *Service) snapshotDocument(seg segment, collection, key string) (bson.M, int64, bool, error) {
+	var value bson.M
+	lsn, ok, _, err := s.visitSnapshot(seg.branch, collection, seg.fromLSN, seg.toLSN, &key, func(_ string, doc *wal.DecodedImage) error {
+		value = doc.TakeValue()
 		return nil
 	})
-	if origin != nil {
-		origin.segment, origin.snapshotLSN, origin.ordered = seg, lsn, ordered
-	}
 	return value, lsn, ok, err
 }
 
@@ -825,11 +798,6 @@ type replayValue[T any] struct {
 var decodedValue = replayValue[bson.M]{
 	store: func(doc *wal.DecodedImage, _ *wal.Entry) (bson.M, error) { return doc.TakeValue(), nil },
 	id:    func(doc bson.M) any { return doc["_id"] },
-}
-
-var pointValue = replayValue[*wal.DecodedImage]{
-	store: func(doc *wal.DecodedImage, _ *wal.Entry) (*wal.DecodedImage, error) { return doc, nil },
-	id:    func(doc *wal.DecodedImage) any { return doc.TakeValue()["_id"] },
 }
 
 func applyEntry[T any](state map[string]T, entry *wal.Entry, value replayValue[T]) error {
