@@ -23,6 +23,7 @@ func TestCLISourceCommandsWithoutOptIn(t *testing.T) {
 		{"source", "status", "--project", "p"},
 		{"source", "resync", "--project", "p", "--uri", "invalid"},
 		{"source", "detach", "--project", "p", "--yes"},
+		{"merge", "apply", "000000000000000000000001", "--write-back", "--approve", strings.Repeat("a", 64), "--uri", "invalid"},
 	} {
 		_, stderr, err := invokeCLI(t, "invalid", args...)
 		if err == nil || !strings.Contains(stderr, "failed to connect") || strings.Contains(stderr, env) {
@@ -38,14 +39,13 @@ func TestCLISourceCommandsWithoutOptIn(t *testing.T) {
 		args []string
 		want error
 	}{
-		{[]string{"merge", "apply", "000000000000000000000001", "--write-back", "--uri", "invalid"}, walcli.RequireExperimentalWriteBack()},
-		{[]string{"merge", "apply", "--write-back"}, walcli.RequireExperimentalWriteBack()},
+		{[]string{"merge", "apply", "000000000000000000000001", "--write-back"}, walcli.ValidateApprovalDigest("")},
 		{[]string{"source", "follow", "--auto-resync"}, walcli.RequireExperimentalAutoResync()},
 		{[]string{"source", "follow", "--enable-source-images"}, walcli.RequireExperimentalSourceImages()},
 		{[]string{"import", "database", "--online", "--enable-source-images"}, walcli.RequireExperimentalSourceImages()},
 	} {
 		if tc.want == nil {
-			t.Fatalf("%v: expected an opt-in error", tc.args)
+			t.Fatalf("%v: expected a validation error", tc.args)
 		}
 		stdout, stderr, err := invokeCLI(t, "invalid", tc.args...)
 		if err == nil || stdout != "" || strings.TrimSpace(stderr) != "Error: "+tc.want.Error() {
@@ -61,7 +61,7 @@ func TestCLIExperimentalSourceHelp(t *testing.T) {
 	}{
 		{[]string{"import", "database"}, map[string]bool{"--online": false, "--enable-source-images": true}},
 		{[]string{"source", "follow"}, map[string]bool{"--enable-source-images": true, "--auto-resync": true}},
-		{[]string{"merge", "apply"}, map[string]bool{"--write-back": true}},
+		{[]string{"merge", "apply"}, map[string]bool{"--write-back": false, "--approve": false}},
 	} {
 		stdout, stderr, err := invokeCLI(t, "invalid", append(tc.command, "--help")...)
 		if err != nil {

@@ -18,7 +18,6 @@ import (
 // before the commit is sent. The driver aborts the transaction without ever
 // sending commitTransaction, so nothing can have been written.
 func TestWriteBack_CancelBeforeCommitReturnsThePlanToPending(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})

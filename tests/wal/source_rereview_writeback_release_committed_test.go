@@ -17,7 +17,6 @@ import (
 // A collection drop precedes an unrecorded write-back commit in the stream.
 // Resync brings the changes into main and leaves the claim intact.
 func TestWriteBack_ClaimSurvivesResyncAndFollowing(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -77,7 +76,6 @@ func TestWriteBack_ClaimSurvivesResyncAndFollowing(t *testing.T) {
 
 // An old claim can still belong to a writer whose transaction is in progress.
 func TestWriteBack_FollowingKeepsPausedWritersClaim(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -144,7 +142,6 @@ func TestWriteBack_FollowingKeepsPausedWritersClaim(t *testing.T) {
 }
 
 func TestWriteBack_CommitReportsPlanRecordMismatch(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -173,7 +170,6 @@ func TestWriteBack_CommitReportsPlanRecordMismatch(t *testing.T) {
 }
 
 func TestWriteBack_WriterRecordsCommitAfterFollowingSettles(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
 	f.importOnline(t, walcli.OnlineImport{})

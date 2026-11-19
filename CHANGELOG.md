@@ -13,11 +13,14 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Changed
 
+- As of this release, `merge apply --write-back` no longer requires
+  `ARGON_EXPERIMENTAL_SOURCE=1`. The experimental options `--auto-resync`
+  and `--enable-source-images` remain off by default and still require it.
 - Format-3 merge plans store ordered BSON images. CLI preview and list
   identify literal documents with dollar-prefixed fields, unverified images
   and exact BSON bytes that canonical Extended JSON cannot represent.
   Table output reports how many paths require exact bytes.
-- Experimental write-back requires a verified, saved before-image for every
+- Write-back requires a verified, saved before-image for every
   replacement or delete and compares it byte for byte in the source transaction.
   Inserts require an absent key. Inserts and replacements write the saved
   after-image. After all writes, the transaction reads each key once more
@@ -108,6 +111,14 @@ entry — a synchronization barrier, not in-proxy capture).
 - Documentation now gives the default wait for the last change on an idle
   source as ten to twenty seconds. The reported time to store it includes
   that wait.
+
+### Known limitations
+
+- If a collection on a followed branch used deprecated BSON binary subtype 2
+  for both an empty `_id` and one containing four zero bytes, a read at an old
+  position can omit a surviving row after history written by 2.7.0 has been
+  garbage-collected. Stop the follower and run
+  `argon source resync -p <project> --force` to repair the current state.
 
 ## [2.7.0] - 2026-11-18
 

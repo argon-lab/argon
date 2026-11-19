@@ -67,7 +67,6 @@ func (f *followFixture) requireWriteBackRefused(t *testing.T, ctx context.Contex
 }
 
 func TestSource_TerminalStreamErrorIsUnhealthyAfterStop(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, reproSourceURI(t))
 	cli := buildSourceCLI(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

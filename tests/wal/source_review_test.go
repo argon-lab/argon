@@ -81,7 +81,6 @@ func TestFollow_InexactCatchUpIsAllowedPerRun(t *testing.T) {
 // branch then no longer equals the source at its saved position. The
 // follower says so and stops; it does not carry on from the foreign head.
 func TestFollow_ForeignWriteToMainIsDegraded(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -150,7 +149,6 @@ func TestFollow_ForeignWriteToMainIsDegraded(t *testing.T) {
 
 // Following preserves claims of any age whose transactions it has not seen.
 func TestWriteBack_UnobservedClaimsStayClaimed(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

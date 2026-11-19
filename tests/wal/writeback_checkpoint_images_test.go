@@ -13,7 +13,6 @@ import (
 func TestResync_RecapturesUnverifiedBeforeImage(t *testing.T) {
 	for _, provenance := range []string{"attached unverified", "legacy snapshot"} {
 		t.Run(provenance, func(t *testing.T) {
-			t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 			ctx := t.Context()
 			f := newFollowFixture(t, reproSourceURI(t))
 			catalog := f.source.Collection("catalog")
@@ -124,7 +123,6 @@ func TestWriteBack_BeforeImageAcrossResync(t *testing.T) {
 
 func TestWriteBack_DuplicateBeforeImage(t *testing.T) {
 	ctx := t.Context()
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, reproSourceURI(t))
 	catalog := f.source.Collection("catalog")
 	before := bson.D{{Key: "_id", Value: "parcel"}, {Key: "stock", Value: int32(7)}, {Key: "stock", Value: int32(3)}}

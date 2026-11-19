@@ -13,7 +13,6 @@ import (
 )
 
 func TestWriteBack_StoredDocumentKeys(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := t.Context()
 	f := newFollowFixture(t, reproSourceURI(t))
 	keys := map[string]any{

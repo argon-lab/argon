@@ -16,7 +16,6 @@ import (
 // writing its marker. The original degraded status and write-back refusal
 // survive both attempts to resync.
 func TestResync_FailedPreflightPreservesDegradedState(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

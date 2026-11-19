@@ -331,7 +331,6 @@ func saveEvidenceCell(t *testing.T, storedPlans *mongo.Collection, template *mer
 }
 
 func TestWriteBack_SourceEvidenceTable(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := t.Context()
 	f := newFollowFixture(t, reproSourceURI(t))
 	cells := exactSourceCells(t)

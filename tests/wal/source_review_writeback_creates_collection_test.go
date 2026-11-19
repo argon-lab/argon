@@ -11,7 +11,6 @@ import (
 
 // (b) A sandbox creates a brand-new collection; the plan is written back.
 func TestWriteBack_DoesNotCreateACollection(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)
@@ -37,7 +36,6 @@ func TestWriteBack_DoesNotCreateACollection(t *testing.T) {
 
 // A sandbox forked from degraded main still has a collection production dropped.
 func TestWriteBack_RefusedWhileFollowingIsDegraded(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	f.seedSmall(t)

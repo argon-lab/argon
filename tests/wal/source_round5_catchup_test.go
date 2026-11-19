@@ -65,7 +65,6 @@ func (f *followFixture) stopAfterFirstCheckpoint(t *testing.T, ctx context.Conte
 }
 
 func TestSource_OpenCatchUpRangeIsUnhealthyAfterStop(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	f := newFollowFixture(t, reproSourceURI(t))
 	cli := buildSourceCLI(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

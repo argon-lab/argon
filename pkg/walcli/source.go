@@ -23,14 +23,9 @@ const SourceURIEnv = "ARGON_SOURCE_URI"
 
 // RequireExperimentalSource checks whether the experimental source switch is set.
 //
-// Deprecated: Use the check for the requested capability, such as RequireExperimentalWriteBack.
+// Deprecated: Use RequireExperimentalSourceImages or RequireExperimentalAutoResync.
 func RequireExperimentalSource() error {
-	return RequireExperimentalWriteBack()
-}
-
-// RequireExperimentalWriteBack checks the opt-in before a write-back command opens services.
-func RequireExperimentalWriteBack() error {
-	return source.RequireExperimentalWriteBack()
+	return errors.Join(RequireExperimentalSourceImages(), RequireExperimentalAutoResync())
 }
 
 // RequireExperimentalSourceImages checks the opt-in before an option can alter source collections.
@@ -509,9 +504,6 @@ func ValidateApprovalDigest(approved string) error { return merge.ValidateApprov
 // plan's before-image first. Nothing calls this implicitly.
 func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID, strategy, uri, approved string) (*merge.ApplyResult, error) {
 	if err := merge.ValidateStrategy(strategy); err != nil {
-		return nil, err
-	}
-	if err := source.RequireExperimentalWriteBack(); err != nil {
 		return nil, err
 	}
 	plan, err := s.Merge.GetPlan(ctx, planID)

@@ -15,7 +15,6 @@ import (
 )
 
 func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, reproSourceURI(t))
 	f.seedSmall(t)
@@ -90,7 +89,6 @@ func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
 }
 
 func TestWriteBack_ClaimWithoutAcknowledgmentLeavesSourceUntouched(t *testing.T) {
-	t.Setenv("ARGON_EXPERIMENTAL_SOURCE", "1")
 	ctx := context.Background()
 	f := newFollowFixture(t, reproSourceURI(t))
 	f.seedSmall(t)
