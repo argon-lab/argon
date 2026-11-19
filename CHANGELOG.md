@@ -11,6 +11,16 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.8.0] - 2026-11-19
+
+Write-back to a followed source database is available by default. Applying
+a plan to the source requires the plan's approval digest, compares every
+before-image byte for byte inside the source transaction and reads each
+written document back before commit. Automatic resync and enabling images
+on the source stay experimental behind `ARGON_EXPERIMENTAL_SOURCE=1`.
+Merge plans saved by 2.7.0 need a fresh preview before they can be written
+back. CLI JSON output for merge plans now uses canonical Extended JSON.
+
 ### Changed
 
 - As of this release, `merge apply --write-back` no longer requires
