@@ -73,9 +73,12 @@ var mergePreviewCmd = &cobra.Command{
 	Use:   "preview",
 	Short: "Compute and persist a merge plan (a data pull request)",
 	Long: `Compute and save a merge plan. JSON output uses canonical Extended JSON v2
-for document IDs and images. Table output shows the apply command for the
-target. A followed target requires --write-back, ARGON_EXPERIMENTAL_SOURCE=1
-and its source connection string (--uri or ARGON_SOURCE_URI).`,
+for document IDs and images, preserving the saved BSON field order.
+literal_dollar_paths identifies literal documents with $-prefixed keys.
+sorted_images names images stored in sorted order when exact BSON was unavailable.
+Write-back requires verified replacement images. Table output shows the apply
+command for the target. A followed target requires --write-back,
+ARGON_EXPERIMENTAL_SOURCE=1 and its source connection string (--uri or ARGON_SOURCE_URI).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		branchName, _ := cmd.Flags().GetString("branch")
@@ -96,7 +99,7 @@ and its source connection string (--uri or ARGON_SOURCE_URI).`,
 			return err
 		}
 		ctx := cmd.Context()
-		plan, err := services.Merge.Compute(branchID)
+		plan, err := services.Merge.PreparePlan(branchID)
 		if err != nil {
 			return fmt.Errorf("preview failed: %w", err)
 		}
@@ -127,6 +130,13 @@ and its source connection string (--uri or ARGON_SOURCE_URI).`,
 				fmt.Fprintf(&response, "  CONFLICT %s/%s (both sides changed since the fork)\n", c.Collection, c.DocumentID)
 			}
 			fmt.Fprintf(&response, "%d change(s), %d conflict(s)\n", len(plan.Changes), len(plan.Conflicts))
+			paths, err := plan.LiteralDollarPathCount()
+			if err != nil {
+				return err
+			}
+			if paths > 0 {
+				fmt.Fprintf(&response, "Warning: %d image path(s) contain literal documents with $-prefixed keys. See literal_dollar_paths in JSON output.\n", paths)
+			}
 			fmt.Fprintf(&response, "\nPlan %s saved (pending).\n", plan.ID.Hex())
 			apply := "argon merge apply " + plan.ID.Hex()
 			if target.IsFollower() {
@@ -162,12 +172,13 @@ var mergeApplyCmd = &cobra.Command{
 	Long: `Apply a pending merge plan. The --write-back option is experimental
 and off by default. Set ARGON_EXPERIMENTAL_SOURCE=1 to enable it and read
 docs/OPERATIONS.md for known issues. A plan with zero writes completes
-in metadata. For other plans, Argon checks capture health in the claim
-transaction. The source transaction starts after
-the metadata deployment acknowledges the plan claim with majority write
-concern. If a plan stays writing_back, check the
-source database, let following catch up, then run "argon merge preview" again
-to create a new plan.`,
+in metadata. Format-3 inserts and replacements use the saved BSON order.
+Write-back refuses a replacement listed in sorted_images before claiming the plan.
+Argon checks capture health in the claim transaction and waits for majority
+acknowledgment. The writer has two minutes from before claim acquisition
+through all source transaction and commit attempts. If a plan stays writing_back,
+check the source database, let following catch up, then run "argon merge preview"
+again to create a new plan.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		strategy, _ := cmd.Flags().GetString("strategy")
 		if err := walcli.ValidateMergeStrategy(strategy); err != nil {
@@ -259,7 +270,10 @@ var mergeListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List a project's merge plans",
 	Long: `List a project's merge plans. In JSON output, document IDs and images
-use canonical Extended JSON v2. An unreadable plan is listed with its ID and error.`,
+use canonical Extended JSON v2. New plans show stored BSON field order,
+literal_dollar_paths identifies literal documents with $-prefixed keys, and
+sorted_images names images stored in sorted order when exact BSON was unavailable.
+An unreadable plan is listed with its ID and error.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		if projectName == "" {

@@ -452,53 +452,41 @@ argon merge preview -p myapp -b <sandbox>
 ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
 ```
 
-- The write is one transaction on the source, with snapshot reads and
-  majority writes. Inside it every document in the plan is read and compared
-  with the before-image the plan recorded. The first one that differs aborts
-  the transaction: nothing is written, the plan is pending again, and the
-  error names the document. Let following catch up and preview again; the
-  new plan shows the production change as a conflict to resolve.
-- The plan does not have to match `main`'s head, which moves with every
-  production write. The per-document comparison is the staleness check.
-- Single-document inserts, replacements and deletes are sent, nothing else,
-  and only into collections the source already has. A plan that puts a
-  document into a collection the source lacks is refused before anything is
-  claimed or written: create the collection there, with the options it should
-  have, and preview again. Write-back never upserts. The check is made just
-  before the transaction; a collection dropped in the instant between the two
-  would be created again by an insert.
-- A replacement keeps production's layout. Fields the document already had
-  stay in the order production has them, at every level of nesting, and
-  fields the plan adds follow. Within an array, exact BSON matches are
-  reserved first. Remaining subdocuments take their field order from
-  an unambiguous source match by `_id` or value. Unmatched and ambiguous
-  elements keep the plan's field order. An inserted document has the order
-  the sandbox stored. For new writes through `WriterFor`, Go maps use
-  sorted field names at every depth, including inside arrays. Ordered BSON
-  documents, raw BSON and struct fields retain their supplied order. This
-  also determines the order of compound `_id` fields. Raw WAL reads expose
-  the stored order. A materialized Go map has no iteration-order guarantee.
-  Ordinary merges preserve verified replacement bytes when they are
-  available and encode the saved plan's map fields in sorted order otherwise.
-  Existing WAL entries keep their original bytes and remain readable.
-- The comparison with the before-image is byte for byte when `main` holds the
-  source's own bytes for that document, which it does for everything the
-  import copied or following stored: a document whose fields production
-  reordered after preview is a conflict. Write-back compares values when
-  no exact bytes were recorded for the state in the plan. A failed history
-  read or an exact before-image possibly lost to garbage collection aborts
-  before claiming the plan. If garbage collection reclaimed the image,
-  force a resync to capture the source's bytes again, then preview again.
-- A sandbox after-image marked `attached_unverified` can contain duplicate
-  fields. Preparation refuses marked images and any replacement with
-  duplicate field names before claiming the plan. It also refuses a missing
-  replacement or one that garbage collection may have reclaimed. Run a new preview after the sandbox history is intact.
-- Preview stores the before-images, after-images and conflicts in one plan
-  document. Its encoded size plus room for the claim, outcome and failure
-  text must fit in 16 MiB. Split larger changes into smaller plans.
-- Write-back requires an `exact` capture checkpoint at preflight and again
-  in the metadata snapshot that claims the plan. For a refusal, use the
-  [source status table](#what-argon-source-status-reports-and-what-to-do).
+- One source transaction checks every planned insert, replacement and delete
+  using snapshot reads and majority writes. An insert requires an absent key.
+  A replacement or delete requires the source document to match the plan's
+  before-image byte for byte where exact bytes were recorded. Otherwise Argon
+  compares decoded BSON values, ignoring field order, and refuses a source
+  document with duplicate fields because decoding would lose data. A mismatch
+  aborts the entire transaction with nothing written. Documents outside the
+  plan are outside this check.
+- In the metadata snapshot that claims the plan, `main` has a verified exact
+  checkpoint as of its reported
+  source cluster time, and its follower binding and resume position are in
+  place to record the outcome. A cleanly stopped follower can resume there.
+  Production may already be ahead. The comparison inside the source transaction
+  catches changes to planned documents since that checkpoint. Check
+  [source status](#what-argon-source-status-reports-and-what-to-do) if admission fails.
+- Write-back checks that the collection exists before claiming the plan.
+  It never upserts. A collection dropped between this check and an insert
+  can be recreated by the insert. Collection identity and intervening changes
+  that restore the same document state are outside the comparison.
+- Format 3 stores ordered BSON for each plan image. Preview and list show the
+  order that apply uses. Inserts and replacements use the saved sandbox image,
+  with `_id` first on MongoDB. Reclaiming sandbox history after preview leaves
+  those bytes available. If preview cannot verify an image, it saves its
+  deterministically sorted encoding and names the image in `sorted_images`.
+  Ordinary apply uses those bytes. Write-back refuses a sorted replacement
+  before claiming the plan. A failed target-history read or a before-image
+  possibly reclaimed by garbage collection still stops write-back. A target
+  history image with duplicate fields and no usable exact before-image also
+  requires a fresh, unambiguous capture.
+- Programmatic puts through `WriterFor` sort Go maps at every depth.
+  Ordered documents, raw BSON and structs retain their supplied order,
+  including compound IDs. Older plans recover replacement images from
+  sandbox history and borrow production's layout on write-back replacements.
+- The encoded plan and room for its claim, outcome and failure text must fit
+  in one 16 MiB BSON document. Split larger changes into smaller plans.
 - If the plan has no writes, including when `ours` keeps every conflict,
   one majority-acknowledged metadata update marks it applied. There is no
   source transaction, source commit time or claim to settle. The CLI reports
@@ -516,18 +504,17 @@ ARGON_EXPERIMENTAL_SOURCE=1 argon merge apply <plan-id> --write-back
   The plan stores up to 4096 UTF-8 bytes of error text and up to 1024 bytes
   of the source display address. You cannot reuse an unsettled plan.
   Check the affected documents on the source, let following catch up, then run `argon merge preview` again for the sandbox.
-- The claim takes a snapshot of capture health. It does not lock the branch
-  against detach or keep the follower running through the source commit.
-  A clean stop can leave an exact checkpoint behind production. The source
-  transaction still checks each affected document. After a commit, the writer
-  can mark the plan applied even while following is stopped. On restart, the
-  follower can ingest the transaction and settle its claim with the checkpoint.
-  If a gap skips that event, an unconfirmed claim stays `writing_back`.
-- A concurrent detach can complete after the claim snapshot and the source
-  transaction can still commit. Detached `main` keeps the history it had at
-  detach. Once detached, it has no follower to ingest a later event or settle
-  its claim. If the writer cannot confirm the outcome, `merge list` continues
-  to show `writing_back` and retry is refused. Inspect the source directly.
+- Claim and detach both write the follower binding in a metadata transaction.
+  If detach wins, the claim fails. A `writing_back` claim less than five
+  minutes old blocks detach. The metadata server timestamps each new claim
+  and measures its age. The writer has two minutes from before the claim for
+  the source transaction, including retries and commit. The five-minute
+  window also covers the server's two-minute limit on an in-flight commit.
+  Use the updated writer and detach commands together for this guarantee.
+- After five minutes detach reports each unsettled plan ID. Inspect the
+  source for those plans. They remain `writing_back` and retry stays refused.
+  A follower stop or gap can prevent automatic settlement even while the
+  binding remains in place.
 - A fresh preview against a caught-up `main` omits changes that the earlier
   transaction already made and that the source still holds. It surfaces
   conflicts where both sides changed a document differently. Before writing

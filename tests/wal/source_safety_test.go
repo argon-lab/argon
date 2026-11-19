@@ -303,16 +303,19 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		// Argon's wal_merge_plans and the source write-back transaction.
 		"internal/merge/writeback.go:ApplyToSource UpdateOne",
 		"internal/merge/writeback.go:ApplyToSource UpdateOne",
-		"internal/merge/writeback.go:ApplyToSource WithTransaction",
-		"internal/merge/writeback.go:ApplyToSource writeChanges",
+		"internal/merge/writeback.go:ApplyToSource writeSourceTransaction",
 		"internal/merge/writeback.go:EnsureIndexes CreateOne",
 		"internal/merge/writeback.go:SettleWriteBack UpdateOne",
+		"internal/merge/writeback.go:claimWriteBack FenceWriteBackClaim",
 		"internal/merge/writeback.go:claimWriteBack UpdateOne",
 		"internal/merge/writeback.go:claimWriteBack WithTransaction",
 		// Applies the plan one document at a time in existing source collections.
 		"internal/merge/writeback.go:writeChanges DeleteOne",
 		"internal/merge/writeback.go:writeChanges InsertOne",
 		"internal/merge/writeback.go:writeChanges ReplaceOne",
+		"internal/merge/writeback.go:writeSourceTransaction AbortTransaction",
+		"internal/merge/writeback.go:writeSourceTransaction CommitTransaction",
+		"internal/merge/writeback.go:writeSourceTransaction writeChanges",
 		// Argon metadata indexes.
 		"internal/pin/service.go:NewService CreateMany",
 		"internal/project/wal/service.go:NewProjectService CreateMany",
@@ -321,6 +324,8 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/source/source.go:Bind InsertOne",
 		// Alters the source to enable images when requested.
 		"internal/source/source.go:EnableImages RunCommand",
+		// Serializes the claim with deletion of Argon's source binding.
+		"internal/source/source.go:FenceWriteBackClaim UpdateOne",
 		// Reads hello and replSetGetConfig on the source.
 		"internal/source/source.go:Identify RunCommand",
 		"internal/source/source.go:Identify RunCommand",
@@ -342,6 +347,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"pkg/walcli/services.go:newServices NewService",
 		"pkg/walcli/services.go:newServices NewServiceWithStore",
 		// Opens and follows or resyncs a source, enabling images when requested.
+		"pkg/walcli/source.go:DetachSourceWithResult WithTransaction",
 		"pkg/walcli/source.go:DryRunOnlineImport DryRunOnline",
 		"pkg/walcli/source.go:FollowSource EnableImages",
 		"pkg/walcli/source.go:FollowSource Follow",
@@ -404,7 +410,7 @@ func confinedSourceCalls(root string) (drops, writes []string, err error) {
 		"InsertOne InsertMany UpdateOne UpdateMany UpdateByID ReplaceOne DeleteOne DeleteMany BulkWrite " +
 			"FindOneAndUpdate FindOneAndReplace FindOneAndDelete Drop CreateCollection CreateView " +
 			"CreateOne CreateMany DropOne DropOneWithKey DropWithKey DropAll Rename " +
-			"RunCommand RunCommandCursor Aggregate WithTransaction CommitTransaction",
+			"RunCommand RunCommandCursor Aggregate WithTransaction AbortTransaction CommitTransaction",
 	) {
 		methods[name] = true
 	}

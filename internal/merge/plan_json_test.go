@@ -7,6 +7,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 func TestPlanJSONCompoundKeysAndConflictImages(t *testing.T) {
@@ -43,4 +44,31 @@ func TestPlanJSONCompoundKeysAndConflictImages(t *testing.T) {
 		require.Equal(t, want, string(side.ID))
 		require.JSONEq(t, `{"$numberLong":"8"}`, string(side.Count))
 	}
+}
+
+func TestPlanJSONLiteralDollarPathsByImage(t *testing.T) {
+	doc := bson.M{
+		"n":     int32(1),
+		`a.b\c`: bson.M{"$numberInt": "1"},
+		"array": bson.A{bson.A{bson.M{"$eq": "x", "$other": "y"}}},
+		"code":  primitive.CodeWithScope{Code: "x", Scope: bson.D{{Key: "$numberInt", Value: "1"}}},
+	}
+	plan := &Plan{
+		FormatVersion: 2,
+		Changes:       []Change{{DocumentID: "x", Before: doc, Delete: true}},
+		Conflicts:     []Conflict{{DocumentID: "y", Base: doc, Ours: doc, Theirs: doc}},
+	}
+	data, err := plan.CLIJSON()
+	require.NoError(t, err)
+	type item struct {
+		Paths []string `json:"literal_dollar_paths"`
+	}
+	var result struct{ Changes, Conflicts []item }
+	require.NoError(t, json.Unmarshal(data, &result))
+	require.ElementsMatch(t, []string{`before.a\.b\\c`, "before.array.0.0", "before.code.$scope"}, result.Changes[0].Paths)
+	var want []string
+	for _, side := range []string{"base", "ours", "theirs"} {
+		want = append(want, side+`.a\.b\\c`, side+".array.0.0", side+".code.$scope")
+	}
+	require.ElementsMatch(t, want, result.Conflicts[0].Paths)
 }

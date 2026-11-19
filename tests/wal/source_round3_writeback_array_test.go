@@ -51,6 +51,7 @@ func TestWriteBack_ReservesExactArrayMatchesBeforeFallback(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, before)
 	plan := f.preview(t, info.BranchID)
+	useFormat2(t, f.services.Client.Database(f.metadataName), plan)
 	require.Len(t, plan.Changes, len(cases))
 	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
 	require.NoError(t, err)

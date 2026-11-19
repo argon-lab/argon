@@ -28,7 +28,7 @@ func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
 
 	var lock sync.Mutex
 	var concerns []bson.RawValue
-	var admissions, claims []string
+	var admissions, claims, fences []string
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(metadataDeploymentURI+"/?w=1").SetMonitor(&event.CommandMonitor{
 		Started: func(_ context.Context, e *event.CommandStartedEvent) {
 			lock.Lock()
@@ -40,7 +40,14 @@ func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
 					require.Equal(t, "snapshot", e.Command.Lookup("readConcern", "level").StringValue())
 					admissions = append(admissions, txn)
 				case "update":
-					claims = append(claims, txn)
+					switch e.Command.Lookup("update").StringValue() {
+					case "wal_merge_plans":
+						claims = append(claims, txn)
+						start := e.Command.Lookup("updates", "0", "u", "1", "$set", "write_back.started_at")
+						require.Equal(t, "$$NOW", start.StringValue())
+					case "wal_sources":
+						fences = append(fences, txn)
+					}
 				}
 			}
 			// Transactional claims carry their write concern on commit.
@@ -73,6 +80,7 @@ func TestWriteBack_ClaimTransitionsUseMajority(t *testing.T) {
 	defer lock.Unlock()
 	require.Len(t, admissions, 2)
 	require.Equal(t, admissions, claims, "each claim uses its admission snapshot")
+	require.Equal(t, claims, fences, "each claim writes the binding in the same transaction")
 	require.Len(t, concerns, 4, "claim and applied mark, then claim and return to pending")
 	for _, concern := range concerns {
 		w, ok := concern.StringValueOK()

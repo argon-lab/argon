@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -321,9 +322,10 @@ var sourceDetachCmd = &cobra.Command{
 imported from. Main keeps its history and becomes an ordinary branch: it can
 be merged into, reset and checked out again, and it no longer changes when
 the source does. This cannot be undone; to follow the database again, import
-it into a new project. (To repair a follower that ended as degraded, use
-"argon source resync" instead.) Stop any running "argon source follow" first. The
-source database itself is not touched.`,
+it into a new project. To repair a degraded follower, use "argon source resync".
+Detach refuses while a write-back claim is less than five minutes old. Wait for
+the writer or for the follower to settle the claim. Older unsettled plans stay
+writing_back. Inspect the source for each plan reported after detach.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
 		confirmed, _ := cmd.Flags().GetBool("yes")
@@ -337,13 +339,23 @@ source database itself is not touched.`,
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
-		if err := services.DetachSource(cmd.Context(), projectName); err != nil {
+		ids, err := services.DetachSourceWithResult(cmd.Context(), projectName)
+		if err != nil {
 			return err
 		}
+		const advice = "These plans remain writing_back. You must inspect the source for their outcome."
 		if jsonOutput(cmd) {
-			return writeJSON(cmd, map[string]any{"project": projectName, "detached": true})
+			output := map[string]any{"project": projectName, "detached": true}
+			if len(ids) != 0 {
+				output["unsettled_plans"], output["warning"] = ids, advice
+			}
+			return writeJSON(cmd, output)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Project %q no longer follows its source; main is an ordinary branch.\n", projectName)
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "Project %q no longer follows its source; main is an ordinary branch.\n", projectName)
+		if len(ids) != 0 {
+			fmt.Fprintf(out, "Unsettled plans %s. %s\n", strings.Join(ids, ", "), advice)
+		}
 		return nil
 	},
 }

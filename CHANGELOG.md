@@ -13,6 +13,16 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Changed
 
+- Format-3 merge plans store ordered BSON images. CLI preview, list and both
+  apply paths use those images. JSON identifies sorted fallback images and
+  paths to literal documents with dollar-prefixed fields.
+- A write-back replacement from a format-3 plan writes the reviewed sandbox
+  image. It no longer rearranges fields to match production's layout; plans
+  saved in older formats keep that behaviour.
+- Source detach refuses recent write-back claims and reports older unsettled
+  plan IDs for inspection. Source transaction and commit retries share a
+  two-minute writer deadline.
+
 - CLI JSON output for `merge preview` and `merge list` uses canonical
   Extended JSON v2 for document IDs and images. For example, an int64
   field formerly printed as `"n":1` now prints as `"n":{"$numberLong":"1"}`.
@@ -22,6 +32,13 @@ entry — a synchronization barrier, not in-proxy capture).
   retain their stored bytes.
 
 ### Fixed
+
+- Ordinary merges preserve verified BSON order for current documents in a
+  collection that also contains older WAL keys.
+- CLI merge JSON escapes legacy DBPointer namespaces, including quotes.
+- Value-only before-image comparisons refuse a source document with
+  duplicate fields, preventing a replacement or deletion from losing a
+  production value.
 
 - Saved plans use the stored BSON key for compound IDs on both apply paths.
   Preview gives target-specific apply guidance and identifies plans too

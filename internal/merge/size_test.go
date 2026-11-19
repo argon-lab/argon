@@ -11,7 +11,17 @@ import (
 )
 
 func TestPlanFitsThroughFailedAttempt(t *testing.T) {
-	plan := &Plan{ID: primitive.NewObjectID(), Status: StatusPending, Changes: []Change{{Document: bson.M{"padding": ""}}}}
+	plan := &Plan{
+		ID: primitive.NewObjectID(), FormatVersion: orderedPlanVersion, Status: StatusPending,
+		Changes: []Change{{SortedImages: []string{"document"}}},
+	}
+	setPadding := func(n int) {
+		t.Helper()
+		raw, err := bson.Marshal(bson.D{{Key: "padding", Value: strings.Repeat("x", n)}})
+		require.NoError(t, err)
+		plan.Changes[0].DocumentRaw = raw
+	}
+	setPadding(0)
 	raw, err := bson.Marshal(plan)
 	require.NoError(t, err)
 	plan.WriteBackLastError = strings.Repeat("e", maxLastErrorBytes)
@@ -19,11 +29,11 @@ func TestPlanFitsThroughFailedAttempt(t *testing.T) {
 	require.NoError(t, err)
 	plan.WriteBackLastError = ""
 	space := maxPlanBytes - len(failed)
-	plan.Changes[0].Document["padding"] = strings.Repeat("x", space)
+	setPadding(space)
 	encoded, err := encodePendingPlan(plan)
 	require.NoError(t, err)
 	require.Len(t, encoded, len(raw)+space)
-	plan.Changes[0].Document["padding"] = strings.Repeat("x", space+1)
+	setPadding(space + 1)
 	_, err = encodePendingPlan(plan)
 	require.ErrorContains(t, err, "16 MiB")
 	reason := boundedAuditText(strings.Repeat("é", maxLastErrorBytes), maxLastErrorBytes)

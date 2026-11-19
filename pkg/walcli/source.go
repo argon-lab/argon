@@ -466,20 +466,36 @@ func (s *Services) resyncSource(ctx context.Context, branch *wal.Branch, db *mon
 // DetachSource stops a project from following its source for good. Its main
 // branch keeps the history it has and becomes an ordinary branch.
 func (s *Services) DetachSource(ctx context.Context, projectName string) error {
+	_, err := s.DetachSourceWithResult(ctx, projectName)
+	return err
+}
+
+// DetachSourceWithResult returns the IDs of unsettled plans to inspect at the source.
+func (s *Services) DetachSourceWithResult(ctx context.Context, projectName string) ([]string, error) {
 	_, branch, _, err := s.followedBranch(ctx, projectName)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := s.Ingest.Cancel(ctx, branch.ID); err != nil {
-		return err
+	result, err := s.WAL.WithTransaction(ctx, func(sc mongo.SessionContext) (any, error) {
+		if err := s.Sources.Unbind(sc, branch.ID); err != nil {
+			return nil, err
+		}
+		ids, err := s.Merge.ClaimsForDetach(sc, branch.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.Branches.SetFollows(sc, branch.ID, ""); err != nil {
+			return nil, err
+		}
+		if err := s.Ingest.ClearResumeState(sc, branch.ID); err != nil {
+			return nil, err
+		}
+		return ids, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	if err := s.Branches.SetFollows(ctx, branch.ID, ""); err != nil {
-		return err
-	}
-	if err := s.Sources.Unbind(ctx, branch.ID); err != nil {
-		return err
-	}
-	return s.Ingest.ClearResumeState(ctx, branch.ID)
+	return result.([]string), s.Ingest.CancelSource(ctx, branch.ID)
 }
 
 // ValidateMergeStrategy checks the resolution choice before opening either deployment.

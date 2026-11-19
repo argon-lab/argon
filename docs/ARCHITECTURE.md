@@ -656,31 +656,35 @@ follower, with the marker left in place.
 
 Each plan fits in one BSON document, including space reserved for the
 largest claim, outcome or bounded failure text. Its lossless document ID
-supplies the lookup key and replacement `_id` after reload. Programmatic puts
-sort unordered maps when creating the WAL image and retain ordered BSON
-values. Existing WAL images remain readable in their original order.
+supplies the lookup key and replacement `_id` after reload. Format 3 stores
+ordered BSON in the existing change and conflict fields. Preview selects the
+newest visible verified WAL image at each side's LSN, including inherited
+history. If a collection contains older untyped keys, lookup falls back to
+the history of each planned key. An unavailable or unverified image gets a
+deterministic encoding and its name in `sorted_images`. Both apply paths
+consume the saved replacement bytes. Write-back requires a verified
+replacement. Older plans still recover replacement order from history.
+Programmatic puts sort Go maps and retain the supplied order of BSON documents
+when creating the WAL image.
 
-An empty write-back completes in one majority-acknowledged metadata update.
-For nonempty write-backs, `main` receives the changes through following.
+An empty write-back completes in one majority-acknowledged metadata
+transaction. For nonempty write-backs, `main` receives the changes through
+following. The source transaction requires each insert key to be absent and
+each replacement or delete to match its before-image. Exact before-images
+include field order. The value-only comparison rejects duplicate fields.
+Target-history read failures and possible reclamation of exact before-images
+stop preparation. A collection that existed at preflight can still be
+dropped before an insert.
 
-The write is one source transaction that compares each document with the
-plan's before-image and then inserts, replaces or deletes it, in a collection
-that existed at preflight. A concurrent drop can race a later insert. The
-comparison is on the bytes the followed branch stored for the document when
-it has them, which makes a reordered document a changed one. A history read
-failure or before-image possibly reclaimed by garbage collection stops
-preparation before the plan is claimed. The sandbox must supply a verified
-after-image with intact history and unique field names throughout.
-A replacement preserves the source's field order. It reserves exact array element matches
-first, then matches remaining elements by `_id` or value. Ambiguous and
-unmatched elements keep the plan's order. Because the
-source and the metadata may be different deployments, the plan's status
-cannot commit with the documents. The writer claims the plan first with the
-ID of a dedicated source session. Admission checks the capture checkpoint
-and followed database in the same metadata transaction as the pending-only
-plan update. A later detach or stop can overlap the source transaction.
-The source transaction starts after the metadata deployment acknowledges the
-claim with majority write concern. The writer also requires majority
+The writer claims the plan with the ID of a dedicated source session.
+The claim checks the checkpoint, updates the follower binding and transitions
+the pending plan in one majority-acknowledged metadata transaction. Detach
+deletes that binding and checks for recent claims in its own transaction.
+Concurrent writes to the binding serialize the two operations. A two-minute
+deadline starts before claim acquisition and bounds source attempts and
+commit retries. Detach blocks for five minutes from the metadata server's
+claim timestamp, allowing time for an already-sent commit to finish. It lists
+older unsettled claims for inspection. The writer uses majority
 acknowledgment to record the outcome.
 The follower looks up claims on the metadata primary. A miss is remembered
 only for the rest of that source transaction, since a claim is acknowledged

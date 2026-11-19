@@ -262,6 +262,7 @@ func TestWriteBack_KeepsProductionFieldOrder(t *testing.T) {
 			require.NoError(t, err)
 			f.importOnline(t, walcli.OnlineImport{})
 			plan := f.preview(t, write(t, f))
+			useFormat2(t, f.services.Client.Database(f.metadataName), plan)
 			require.Len(t, plan.Changes, 1)
 			_, err = f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI)
 			require.NoError(t, err)

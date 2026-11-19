@@ -292,23 +292,7 @@ func (s *Service) GetCurrentLSN(projectID string) int64 {
 
 // GetDocumentHistory retrieves WAL entries for a specific document
 func (s *Service) GetDocumentHistory(branchID, collection, documentID string, startLSN, endLSN int64) ([]*Entry, error) {
-	id, err := DocumentIDValue(documentID)
-	if err != nil {
-		return nil, err
-	}
-	legacyKey := LegacyDocumentIDString(id)
-	filter := bson.M{
-		"branch_id":   branchID,
-		"collection":  collection,
-		"document_id": bson.M{"$in": []string{documentID, legacyKey}},
-		"lsn": bson.M{
-			"$gte": startLSN,
-			"$lte": endLSN,
-		},
-	}
-
-	opts := options.Find().SetSort(bson.M{"lsn": 1})
-	entries, err := s.GetEntries(filter, opts)
+	entries, err := s.documentHistoryCandidates(branchID, collection, documentID, startLSN, endLSN)
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +312,58 @@ func (s *Service) GetDocumentHistory(branchID, collection, documentID string, st
 		filtered = append(filtered, entry)
 	}
 	return filtered, nil
+}
+
+// LatestDocumentImageEntry uses the same per-key history query as
+// GetDocumentHistory. Start at the newest visible row: a current put can
+// identify its document even if an older, ambiguous delete cannot.
+func (s *Service) LatestDocumentImageEntry(branchID, collection, documentID string, startLSN, endLSN int64, visible func(int64) bool) (*Entry, error) {
+	entries, err := s.documentHistoryCandidates(branchID, collection, documentID, startLSN, endLSN)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if !entry.IsData() || !visible(entry.LSN) {
+			continue
+		}
+		storedVersion := entry.DocumentKeyVersion
+		named, err := settleDocumentKey(entry)
+		if errors.Is(err, ErrLegacyDocumentKeys) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if named && entry.DocumentID != documentID {
+			continue
+		}
+		if storedVersion < 1 {
+			return nil, nil
+		}
+		return entry, nil
+	}
+	return nil, nil
+}
+
+func (s *Service) documentHistoryCandidates(branchID, collection, documentID string, startLSN, endLSN int64) ([]*Entry, error) {
+	id, err := DocumentIDValue(documentID)
+	if err != nil {
+		return nil, err
+	}
+	legacyKey := LegacyDocumentIDString(id)
+	filter := bson.M{
+		"branch_id":   branchID,
+		"collection":  collection,
+		"document_id": bson.M{"$in": []string{documentID, legacyKey}},
+		"lsn": bson.M{
+			"$gte": startLSN,
+			"$lte": endLSN,
+		},
+	}
+
+	opts := options.Find().SetSort(bson.M{"lsn": 1})
+	return s.GetEntries(filter, opts)
 }
 
 // settleDocumentKey works out which document a stored entry is about. Entries
@@ -350,7 +386,7 @@ func settleDocumentKey(entry *Entry) (named bool, err error) {
 	}
 	if entry.DocumentKeyVersion == 0 {
 		if DocumentIDString(entry.DocumentID) != entry.DocumentID {
-			return false, fmt.Errorf("legacy delete at LSN %d has an ambiguous BSON ID and no pre-image; full collection replay is required", entry.LSN)
+			return false, fmt.Errorf("legacy delete at LSN %d has an ambiguous BSON ID and no pre-image; full collection replay is required: %w", entry.LSN, ErrLegacyDocumentKeys)
 		}
 		return false, nil
 	}

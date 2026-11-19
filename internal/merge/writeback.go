@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/argon-lab/argon/v2/internal/ingest"
@@ -50,6 +52,14 @@ import (
 // StatusWritingBack marks a plan claimed for write-back whose source
 // transaction has not been confirmed in the metadata.
 const StatusWritingBack = "writing_back"
+
+// A writer gets two minutes from before claim acquisition, including all
+// source transaction and commit retries. The five-minute detach window also
+// covers a commit already sent with the two-minute server execution limit.
+const (
+	writeBackDeadline    = 2 * time.Minute
+	writeBackClaimWindow = 5 * time.Minute
+)
 
 const writingBackAdvice = "This plan will not be written again. Check the source database, let following catch up, then run `argon merge preview` again."
 
@@ -117,13 +127,22 @@ func resolveChanges(plan *Plan, strategy string) ([]Change, int, error) {
 		switch strategy {
 		case StrategyTheirs:
 			for _, c := range plan.Conflicts {
-				changes = append(changes, Change{
-					Collection: c.Collection,
-					DocumentID: c.DocumentID,
-					Delete:     c.Theirs == nil,
-					Document:   c.Theirs,
-					Before:     c.Ours,
-				})
+				change := Change{
+					Collection:  c.Collection,
+					DocumentID:  c.DocumentID,
+					Delete:      c.Theirs == nil,
+					Document:    c.Theirs,
+					Before:      c.Ours,
+					DocumentRaw: c.TheirsRaw,
+					BeforeRaw:   c.OursRaw,
+				}
+				if slices.Contains(c.SortedImages, "theirs") {
+					change.SortedImages = append(change.SortedImages, "document")
+				}
+				if slices.Contains(c.SortedImages, "ours") {
+					change.SortedImages = append(change.SortedImages, "before")
+				}
+				changes = append(changes, change)
 				resolved++
 			}
 			sortChanges(changes)
@@ -214,11 +233,18 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		}
 	}
 
+	writerCtx, stopWriter := context.WithTimeout(ctx, writeBackDeadline)
 	session, err := target.Database.Client().StartSession()
 	if err != nil {
+		stopWriter()
 		return nil, err
 	}
-	defer session.EndSession(context.Background())
+	defer func() {
+		// A timed-out commit can leave the v1 session locally in progress.
+		// Abort only before a commit attempt, never during session cleanup.
+		stopWriter()
+		session.EndSession(writerCtx)
+	}()
 	subtype, data, ok := session.ID().Lookup("id").BinaryOK()
 	if !ok {
 		return nil, errors.New("the source session has no identifier to record")
@@ -226,31 +252,17 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	record := &WriteBackRecord{
 		Session:  primitive.Binary{Subtype: subtype, Data: data},
 		Database: branch.Follows, Display: boundedAuditText(target.Display, maxDisplayBytes),
-		Strategy: strategy, Changes: len(changes), StartedAt: time.Now(),
+		Strategy: strategy, Changes: len(changes),
 	}
 	// A metadata election must not undo the claim after the separate
 	// source transaction commits. Require majority acknowledgement for
 	// the claim and both transitions out of it.
 	plans := s.plans.Database().Collection(s.plans.Name(), options.Collection().SetWriteConcern(writeconcern.Majority()))
-	if err := s.claimWriteBack(ctx, plan, databaseName, record, strategy); err != nil {
+	if err := s.claimWriteBack(writerCtx, plan, databaseName, record, strategy); err != nil {
 		return nil, err
 	}
 
-	// reachedCommit separates "the transaction body failed" (nothing can
-	// have been written) from "the commit itself failed" (unknown).
-	reachedCommit := false
-	database := target.Database
-	_, txnErr := session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
-		reachedCommit = false
-		if err := writeChanges(sc, database, writes); err != nil {
-			return nil, err
-		}
-		reachedCommit = true
-		return nil, nil
-	}, options.Transaction().
-		SetReadConcern(readconcern.Snapshot()).
-		SetWriteConcern(writeconcern.Majority()).
-		SetReadPreference(readpref.Primary()))
+	uncertain, txnErr := writeSourceTransaction(writerCtx, session, target.Database, writes)
 
 	// The outcome is recorded even if the caller's context has ended.
 	record2, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
@@ -280,17 +292,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		return result, nil
 	}
 
-	var labeled mongo.LabeledError
-	aborted := !reachedCommit || (errors.As(txnErr, &labeled) && labeled.HasErrorLabel("TransientTransactionError"))
-	// The driver sends the commit on a context of its own. When it returns
-	// the caller's bare context error after the body succeeded, it noticed
-	// the cancellation before committing and aborted instead: no commit was
-	// ever sent.
-	var answered mongo.CommandError
-	if !aborted && ctx.Err() != nil && errors.Is(txnErr, ctx.Err()) && !errors.As(txnErr, &answered) && !errors.As(txnErr, &labeled) {
-		aborted = true
-	}
-	if !aborted {
+	if uncertain {
 		return nil, fmt.Errorf("the source commit for plan %s did not report an outcome (%w). The plan stays %s unless following sees the transaction and marks it applied. %s", plan.ID.Hex(), txnErr, StatusWritingBack, writingBackAdvice)
 	}
 	// Nothing was written. Return the plan to pending so that a transient
@@ -300,11 +302,62 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	if target.Redact != nil {
 		reason = target.Redact(reason)
 	}
-	if _, err := plans.UpdateOne(record2, bson.M{"_id": plan.ID, "status": StatusWritingBack, "write_back.session": record.Session},
-		bson.M{"$set": bson.M{"status": StatusPending, "write_back_last_error": boundedAuditText(reason, maxLastErrorBytes)}, "$unset": bson.M{"write_back": ""}}); err != nil {
+	marked, err := plans.UpdateOne(record2, bson.M{"_id": plan.ID, "status": StatusWritingBack, "write_back.session": record.Session, "$expr": recentWriteBackClaim()},
+		bson.M{"$set": bson.M{"status": StatusPending, "write_back_last_error": boundedAuditText(reason, maxLastErrorBytes)}, "$unset": bson.M{"write_back": ""}})
+	if err != nil {
 		return nil, errors.Join(txnErr, fmt.Errorf("nothing was written, but the plan could not be returned to pending: %w", err))
 	}
+	if marked.MatchedCount != 1 {
+		return nil, errors.Join(txnErr, errors.New("the claim could not be released. Inspect the source and let following settle the claim"))
+	}
 	return nil, txnErr
+}
+
+// The driver's WithTransaction detaches commit from the caller's deadline.
+// Drive the same body/commit retry decisions with one deadline for all attempts.
+// Once a commit has been sent, only a definitive abort can release the claim.
+func writeSourceTransaction(ctx context.Context, session mongo.Session, db *mongo.Database, writes []sourceWrite) (uncertain bool, err error) {
+	maxCommit := writeBackDeadline
+	opts := options.Transaction().SetReadConcern(readconcern.Snapshot()).SetWriteConcern(writeconcern.Majority()).
+		SetReadPreference(readpref.Primary()).SetMaxCommitTime(&maxCommit)
+	for ctx.Err() == nil {
+		if err := session.StartTransaction(opts); err != nil {
+			return false, err
+		}
+		err := writeChanges(mongo.NewSessionContext(ctx, session), db, writes)
+		if err == nil {
+			err = ctx.Err()
+		}
+		commitAttempted := err == nil
+		if !commitAttempted {
+			abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = session.AbortTransaction(abortCtx)
+			cancel()
+		} else {
+			for {
+				err = session.CommitTransaction(ctx)
+				if err == nil {
+					return false, nil
+				}
+				var command mongo.CommandError
+				if !errors.As(err, &command) || !command.HasErrorLabel("UnknownTransactionCommitResult") {
+					break
+				}
+				if command.IsMaxTimeMSExpiredError() || ctx.Err() != nil {
+					return true, err
+				}
+			}
+		}
+		if !transientTransaction(err) {
+			return commitAttempted, err
+		}
+	}
+	return false, ctx.Err()
+}
+
+func transientTransaction(err error) bool {
+	var labeled mongo.LabeledError
+	return errors.As(err, &labeled) && labeled.HasErrorLabel("TransientTransactionError")
 }
 
 func (s *Service) admitWriteBack(ctx context.Context, branchID, databaseName string) (*wal.Branch, error) {
@@ -313,7 +366,7 @@ func (s *Service) admitWriteBack(ctx context.Context, branchID, databaseName str
 		return nil, fmt.Errorf("target branch not found: %w", err)
 	}
 	if !branch.IsFollower() {
-		return nil, fmt.Errorf("branch %s does not follow an external database; apply the plan without write-back", branch.Name)
+		return branch, fmt.Errorf("branch %s does not follow an external database; apply the plan without write-back", branch.Name)
 	}
 	if err := status.Health.WriteBackAdmission(); err != nil {
 		return nil, err
@@ -333,16 +386,24 @@ func (s *Service) claimWriteBack(ctx context.Context, plan *Plan, databaseName s
 	}
 	defer session.EndSession(context.Background())
 	_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (any, error) {
-		if _, err := s.admitWriteBack(sc, plan.TargetBranchID, databaseName); err != nil {
+		branch, err := s.admitWriteBack(sc, plan.TargetBranchID, databaseName)
+		if err != nil {
+			if branch != nil && !branch.IsFollower() {
+				return nil, errors.New("following was detached")
+			}
 			return nil, err
 		}
-		fields := bson.M{"status": StatusWritingBack, "write_back": record}
-		unset := bson.M{"write_back_last_error": ""}
-		if record == nil {
-			fields = bson.M{"status": StatusApplied, "applied_at": time.Now(), "strategy": strategy}
-			unset["write_back"] = ""
+		if err := source.FenceWriteBackClaim(sc, s.plans.Database(), plan.TargetBranchID, databaseName); err != nil {
+			return nil, err
 		}
-		update := bson.M{"$set": fields, "$unset": unset}
+		fields := bson.M{"status": StatusWritingBack, "write_back": bson.M{"$literal": record}, "write_back_last_error": "$$REMOVE"}
+		update := mongo.Pipeline{{{Key: "$set", Value: fields}}}
+		if record == nil {
+			fields["status"], fields["write_back"] = StatusApplied, "$$REMOVE"
+			fields["applied_at"], fields["strategy"] = "$$NOW", bson.M{"$literal": strategy}
+		} else {
+			update = append(update, bson.D{{Key: "$set", Value: bson.M{"write_back.started_at": "$$NOW"}}})
+		}
 		result, err := s.plans.UpdateOne(sc, bson.M{"_id": plan.ID, "status": StatusPending}, update)
 		if err == nil && result.MatchedCount != 1 {
 			err = errors.New("merge plan is no longer pending")
@@ -355,6 +416,43 @@ func (s *Service) claimWriteBack(ctx context.Context, plan *Plan, databaseName s
 	return nil
 }
 
+func recentWriteBackClaim() bson.M {
+	return bson.M{"$gt": bson.A{"$write_back.started_at", bson.M{"$subtract": bson.A{"$$NOW", writeBackClaimWindow.Milliseconds()}}}}
+}
+
+// ClaimsForDetach checks claims in the same metadata transaction that removes
+// the binding. It returns the IDs that will need manual inspection after detach.
+func (s *Service) ClaimsForDetach(ctx context.Context, branchID string) ([]string, error) {
+	cursor, err := s.plans.Find(ctx, bson.M{"target_branch_id": branchID, "status": StatusWritingBack},
+		options.Find().SetProjection(bson.M{"_id": 1, "recent": recentWriteBackClaim()}).SetSort(bson.D{{Key: "_id", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+	var recent, unsettled []string
+	for cursor.Next(ctx) {
+		var row struct {
+			ID     primitive.ObjectID `bson:"_id"`
+			Recent bool               `bson:"recent"`
+		}
+		if err := cursor.Decode(&row); err != nil {
+			return nil, err
+		}
+		if row.Recent {
+			recent = append(recent, row.ID.Hex())
+		} else {
+			unsettled = append(unsettled, row.ID.Hex())
+		}
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+	if len(recent) != 0 {
+		return nil, fmt.Errorf("cannot detach while write-back plans %s are writing_back. Please wait for the writer or for the follower to settle the claim", strings.Join(recent, ", "))
+	}
+	return unsettled, nil
+}
+
 // sourceWrite is one planned change prepared for the source transaction.
 type sourceWrite struct {
 	change Change
@@ -363,9 +461,9 @@ type sourceWrite struct {
 	// was made, byte for byte, when that is known. The comparison then sees
 	// field order too.
 	before bson.Raw
-	// document is the planned replacement. Existing fields can keep their
-	// source order when an existing document is replaced.
-	document bson.D
+	// A current plan supplies raw BSON. An older plan supplies a bson.D
+	// to be ordered against the existing source document on replacement.
+	document any
 }
 
 // sourceWriteFor resolves what the comparison and the write need from the
@@ -393,11 +491,27 @@ func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Chang
 		}
 		// An unverified change-stream image may contain a moved field
 		// twice. It records the decoded values but lacks the exact bytes.
-		if entry != nil && entry.Metadata["capture_images"] != "attached_unverified" {
+		if plan.FormatVersion >= orderedPlanVersion && !slices.Contains(c.SortedImages, "before") {
+			write.before = c.BeforeRaw
+		} else if entry != nil && entry.Metadata["capture_images"] != "attached_unverified" {
+			if plan.FormatVersion >= orderedPlanVersion && ingest.HasDuplicateFields(entry.PostImage) {
+				return sourceWrite{}, fmt.Errorf("write-back before-image for %s/%s contains duplicate fields; run preview again after capturing an unambiguous document", c.Collection, c.DocumentID)
+			}
 			write.before = entry.PostImage
 		}
 	}
 	if c.Delete {
+		return write, nil
+	}
+	if plan.FormatVersion >= orderedPlanVersion {
+		if c.DocumentRaw == nil || slices.Contains(c.SortedImages, "document") {
+			return sourceWrite{}, fmt.Errorf("no verified write-back replacement for %s/%s; run a new preview after the sandbox history is intact", c.Collection, c.DocumentID)
+		}
+		storedID, err := wal.DocumentIDFromImage(c.DocumentRaw)
+		if err != nil || wal.DocumentIDString(storedID) != c.DocumentID {
+			return sourceWrite{}, fmt.Errorf("write-back replacement for %s/%s has a different _id; run preview again", c.Collection, c.DocumentID)
+		}
+		write.document = c.DocumentRaw
 		return write, nil
 	}
 	// The replacement needs the sandbox's field order. A map in the
@@ -416,11 +530,12 @@ func (s *Service) sourceWriteFor(source, target *wal.Branch, plan *Plan, c Chang
 	if !verifiedReplacement(entry) {
 		return sourceWrite{}, fmt.Errorf("no verified write-back replacement for %s/%s; run a new preview after the sandbox history is intact", c.Collection, c.DocumentID)
 	}
-	if err := bson.Unmarshal(entry.PostImage, &write.document); err != nil {
+	var document bson.D
+	if err := bson.Unmarshal(entry.PostImage, &document); err != nil {
 		return sourceWrite{}, err
 	}
 	ordered := bson.D{{Key: "_id", Value: id}}
-	for _, field := range write.document {
+	for _, field := range document {
 		if field.Key != "_id" {
 			ordered = append(ordered, field)
 		}
@@ -495,6 +610,11 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, writes []s
 		default:
 			// Order-insensitive comparison is reserved for states for
 			// which history never recorded exact bytes.
+			// A map would discard all but the last value of a repeated
+			// field and could authorize overwriting a production change.
+			if ingest.HasDuplicateFields(current) {
+				return conflict
+			}
 			var decoded bson.M
 			if err := bson.Unmarshal(current, &decoded); err != nil {
 				return err
@@ -521,11 +641,15 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, writes []s
 				return err
 			}
 		default:
-			var existing bson.D
-			if err := bson.Unmarshal(current, &existing); err != nil {
-				return err
+			document := write.document
+			if legacy, ok := document.(bson.D); ok {
+				var existing bson.D
+				if err := bson.Unmarshal(current, &existing); err != nil {
+					return err
+				}
+				document = orderLike(existing, legacy)
 			}
-			result, err := coll.ReplaceOne(ctx, bson.M{"_id": write.id}, orderLike(existing, write.document))
+			result, err := coll.ReplaceOne(ctx, bson.M{"_id": write.id}, document)
 			if err != nil {
 				return err
 			}
