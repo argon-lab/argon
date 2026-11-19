@@ -173,9 +173,9 @@ without one, fall back to full replay unchanged.
 - **Lookup**: materialization searches the leaf-most ancestry hop first — a
   leaf snapshot covers the entire inherited chain beneath it. Within a hop,
   the newest usable snapshot inside the segment's LSN window wins. At the
-  same LSN, reads prefer ordered frames. If their chunks fail to load, reads
-  try another copy at that LSN, then earlier usable snapshots within the
-  window. The usual WAL coverage checks still apply.
+  same LSN, reads prefer ordered frames. If a chunk fails to load, reads
+  try other usable manifests for the same branch, collection and LSN.
+  If none can supply the snapshot, the read returns the chunk error.
 - **Reset interaction**: reset never touches snapshots. A snapshot at LSN
   `S` is itself a read with upper bound `S`, so it left out a discarded
   range only if the range was already recorded when it was built (the

@@ -47,8 +47,8 @@ entry — a synchronization barrier, not in-proxy capture).
   places `_id` first on checkout.
 - Snapshot creation writes chunks for every collection before publishing
   manifests, so a materialization failure cannot give GC new coverage.
-  Reads can use another copy at the same LSN or an earlier usable snapshot
-  when a chunk fails to load. Once a snapshot loads, older manifest contents
+  If a chunk fails to load, reads can use only another copy of the snapshot
+  at the same LSN. Once a snapshot loads, older manifest contents
   cannot block the read.
 - The startup check of snapshots written by earlier versions scans each
   WAL prefix once for all snapshots that share it, reads index keys only,

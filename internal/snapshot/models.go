@@ -10,12 +10,23 @@ import (
 
 	"github.com/argon-lab/argon/v2/internal/wal"
 
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // CurrentVisibilityRules is recorded on manifests built with effective
 // discarded ranges (wal.Branch.EffectiveDiscardedRanges).
 const CurrentVisibilityRules = 2
+
+// Only a BSON boolean can certify that the stored images preserve order.
+type orderedImageFlag bool
+
+func (f *orderedImageFlag) UnmarshalBSONValue(t bsontype.Type, data []byte) error {
+	ordered, _ := (bson.RawValue{Type: t, Value: data}).BooleanOK()
+	*f = orderedImageFlag(ordered)
+	return nil
+}
 
 // Snapshot is the manifest of one collection snapshot. The document data
 // itself lives in content-addressed chunks (see ChunkStore); the manifest
@@ -53,7 +64,7 @@ type Snapshot struct {
 	// OrderedImages marks frames built directly from the BSON used for edits.
 	// Earlier frames canonicalized decoded values even when the WAL retained
 	// the original field order.
-	OrderedImages bool `bson:"ordered_images,omitempty" json:"-"`
+	OrderedImages orderedImageFlag `bson:"ordered_images,omitempty" json:"-"`
 
 	// OldKeysTrusted keeps the decision readable by earlier versions. Their
 	// boolean alone did not account for subtype-2 evidence after reclaim.

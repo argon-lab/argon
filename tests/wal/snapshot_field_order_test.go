@@ -204,3 +204,81 @@ func TestWriteBack_OlderSnapshotOverOrderedFrame(t *testing.T) {
 		})
 	}
 }
+
+func TestSource_SnapshotFieldOrderAfterPartialReclamation(t *testing.T) {
+	const collection, key = "docs", "q"
+	doc := func(sub bson.D) bson.D {
+		return bson.D{{Key: "_id", Value: key}, {Key: "sub", Value: sub}}
+	}
+	sorted := doc(bson.D{{Key: "a", Value: 1}, {Key: "z", Value: 2}})
+	reversed := doc(bson.D{{Key: "z", Value: 2}, {Key: "a", Value: 1}})
+	for _, tc := range []struct {
+		name     string
+		floor    bool
+		retained bool
+	}{
+		{name: "recorded floor", floor: true},
+		{name: "unrecorded gap"},
+		{name: "retained row at the floor", floor: true, retained: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			h := newHistoryFixture(t, "partial-order")
+			earlier, latest := reversed, sorted
+			if tc.retained {
+				// The retained row's order must be distinguishable from the frame.
+				earlier, latest = sorted, reversed
+			}
+			for i, version := range []bson.D{earlier, latest} {
+				at, err := h.wal.Append(&wal.Entry{ProjectID: h.project, BranchID: h.main.ID,
+					Collection: collection, DocumentID: key, Operation: wal.OpPut, PostImage: mustMarshalBSON(version)})
+				require.NoError(t, err)
+				require.EqualValues(t, i+2, at)
+			}
+			const at int64 = 3
+			require.NoError(t, h.branches.UpdateBranchHead(h.main.ID, at))
+			main := h.reload()
+			old := insertReleasedSnapshot(t, h.db, main, collection, at, key, sorted)
+			if tc.floor {
+				require.NoError(t, h.wal.RecordReclaimFloor(ctx, main.ID, collection, at))
+			}
+			if !tc.retained {
+				result, err := h.db.Collection("wal_log").DeleteOne(ctx, bson.M{"branch_id": main.ID, "lsn": at})
+				require.NoError(t, err)
+				require.EqualValues(t, 1, result.DeletedCount)
+			}
+			created, err := h.snapshots.CreateSnapshot(ctx, main.ID, at)
+			require.NoError(t, err)
+			require.Len(t, created, 1)
+
+			// Leave only the new manifest so the stored frame and the physical
+			// checkout must both reflect the order chosen during the rebuild.
+			_, err = h.db.Collection("wal_snapshots").DeleteOne(ctx, bson.M{"_id": old})
+			require.NoError(t, err)
+			_, err = h.wal.DeleteDataEntriesUpTo(main.ID, collection, at)
+			require.NoError(t, err)
+			lsn, walk, err := h.snapshots.OrderedSnapshotFrames(main, collection, at, at, at)
+			require.NoError(t, err)
+			require.Equal(t, at, lsn)
+			require.NotNil(t, walk)
+			want := mustMarshalBSON(latest)
+			var keys []string
+			require.NoError(t, walk(func(k string, raw bson.Raw) error {
+				keys = append(keys, k)
+				require.Equal(t, want, raw, "stored frame")
+				return nil
+			}))
+			require.Equal(t, []string{key}, keys)
+
+			child, err := h.branches.CreateBranch(h.project, "sandbox", main.ID)
+			require.NoError(t, err)
+			dropPhysical(t, h.db.Client(), child.ID)
+			checkouts := checkout.NewService(h.db.Client(), h.db, h.branches, h.mat)
+			info, err := checkouts.Checkout(ctx, child.ID)
+			require.NoError(t, err)
+			raw, err := h.db.Client().Database(info.PhysicalDB).Collection(collection).FindOne(ctx, bson.M{"_id": key}).Raw()
+			require.NoError(t, err)
+			require.Equal(t, want, raw, "checkout bytes")
+		})
+	}
+}

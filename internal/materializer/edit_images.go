@@ -42,6 +42,12 @@ type orderedFrameSource interface {
 	OrderedSnapshotFrames(branch *wal.Branch, collection string, from, to, readUpperBound int64) (int64, func(func(string, bson.Raw) error) error, error)
 }
 
+type frameOrderCandidate struct {
+	key string
+	lsn int64
+	raw bson.Raw
+}
+
 // Earlier snapshots encoded fields in name order. Try each key's latest
 // retained WAL image or an earlier ordered frame. Missing candidates affect
 // only field order. The selected snapshot has already supplied every value.
@@ -70,6 +76,7 @@ func (s *Service) recoverSnapshotOrder(branch *wal.Branch, collection string, ls
 				start, walk = at+1, visit
 			}
 		}
+		var candidates []frameOrderCandidate
 		err := s.wal.ScanCollectionDataEntries(seg.branch.ID, collection, start, seg.toLSN, true, func(e *wal.Entry) error {
 			if seg.branch.IsDiscardedForRead(e.LSN, seg.toLSN) {
 				return nil
@@ -88,7 +95,9 @@ func (s *Service) recoverSnapshotOrder(branch *wal.Branch, collection string, ls
 			} else if pending[key] {
 				delete(pending, key)
 				if e.Operation == wal.OpPut {
-					recoverEditFrame(frames, key, e.PostImage, wal.PostImage, e)
+					if image := recoveredEditFrame(frames[key], e.PostImage, wal.PostImage, e); image != nil {
+						candidates = append(candidates, frameOrderCandidate{key, e.LSN, image})
+					}
 				}
 			}
 			if len(pending) == 0 {
@@ -96,19 +105,35 @@ func (s *Service) recoverSnapshotOrder(branch *wal.Branch, collection string, ls
 			}
 			return nil
 		})
+		// If the scan stopped, candidates already seen are newer than the
+		// stopping point. Check their intervals without using any older base.
+		needBase := err == nil && (walk != nil || i > 0)
+		from := start
+		if !needBase {
+			if len(candidates) == 0 {
+				return
+			}
+			from = candidates[len(candidates)-1].lsn + 1
+		}
+		floor, err := s.snapshotOrderFloor(seg, collection, from)
 		if err != nil {
 			return
 		}
-		// Once intervening writes have been reclaimed, prefer the selected
-		// frame's own order to a possibly superseded older frame.
-		floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
-		if err != nil || needsReclaimed(seg, start, floor) {
+		for _, c := range candidates {
+			if c.lsn < floor {
+				break
+			}
+			frames[c.key] = c.raw
+		}
+		if !needBase || start <= floor {
 			return
 		}
 		if walk != nil {
 			_ = walk(func(k string, raw bson.Raw) error {
 				if pending[k] {
-					recoverEditFrame(frames, k, raw, wal.SnapshotImage, nil)
+					if image := recoveredEditFrame(frames[k], raw, wal.SnapshotImage, nil); image != nil {
+						frames[k] = image
+					}
 				}
 				return nil
 			})
@@ -117,21 +142,44 @@ func (s *Service) recoverSnapshotOrder(branch *wal.Branch, collection string, ls
 	}
 }
 
-func recoverEditFrame(frames map[string]bson.Raw, key string, candidate bson.Raw, role wal.ImageRole, entry *wal.Entry) {
-	if bytes.Equal(frames[key], candidate) {
-		return
-	}
-	doc, err := wal.DecodeImage(frames[key])
+// Check after scanning the WAL so that GC cannot remove a superseding row
+// between the coverage check and the scan. An absent visible project LSN may
+// be an unused reservation or a reclaimed write. Either leaves order unknown.
+func (s *Service) snapshotOrderFloor(seg segment, collection string, from int64) (int64, error) {
+	floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
 	if err != nil {
-		return
+		return 0, err
+	}
+	floor = lastReclaimableLSN(seg, floor)
+	for to := seg.toLSN; to >= from && to > floor; {
+		gap, err := s.wal.LatestMissingLSN(seg.branch.ProjectID, max(from, floor+1), to)
+		if err != nil || gap == 0 {
+			return floor, err
+		}
+		to = lastReclaimableLSN(seg, gap)
+		if to == gap {
+			return gap, nil
+		}
+	}
+	return floor, nil
+}
+
+func recoveredEditFrame(frame, candidate bson.Raw, role wal.ImageRole, entry *wal.Entry) bson.Raw {
+	if bytes.Equal(frame, candidate) {
+		return nil
+	}
+	doc, err := wal.DecodeImage(frame)
+	if err != nil {
+		return nil
 	}
 	source, err := wal.DecodeImage(candidate)
 	if err != nil {
-		return
+		return nil
 	}
 	// The selected frame already has clean bytes. Recover original order
 	// only when the other image can be used verbatim.
 	if image, ok := matchingEditImage(doc, source, role, entry); ok {
-		frames[key] = bytes.Clone(image)
+		return bytes.Clone(image)
 	}
+	return nil
 }
