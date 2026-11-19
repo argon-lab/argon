@@ -190,7 +190,7 @@ func TestWriteBack_ProgrammaticNestedMapOrder(t *testing.T) {
 	}
 }
 
-func TestWriteBack_ProgrammaticPreImageFieldOrder(t *testing.T) {
+func TestWriteBack_ProgrammaticPreImageValues(t *testing.T) {
 	ctx := t.Context()
 	f := newFollowFixture(t, metadataDeploymentURI)
 	id := "pear"
@@ -224,7 +224,7 @@ func TestWriteBack_ProgrammaticPreImageFieldOrder(t *testing.T) {
 			require.NoError(t, err)
 			entry, err := f.services.WAL.GetEntry(main.ProjectID, lsn)
 			require.NoError(t, err)
-			require.Equal(t, want, entry.PreImage)
+			require.Equal(t, decodeEditImage(t, want), decodeEditImage(t, entry.PreImage))
 		})
 	}
 }

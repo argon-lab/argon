@@ -21,7 +21,7 @@ func TestWriteBack_LiveUndoUsesCleanNativePreImage(t *testing.T) {
 		{Key: "pad", Value: strings.Repeat("x", 80)}, {Key: "n", Value: bson.D{{Key: "m", Value: true}}},
 	})
 	require.NoError(t, err)
-	original := readSourceCase(t, users, id)
+	original := decodeEditImage(t, readSourceCase(t, users, id))
 	session, err := f.client.StartSession()
 	require.NoError(t, err)
 	defer session.EndSession(ctx)
@@ -49,20 +49,21 @@ func TestWriteBack_LiveUndoUsesCleanNativePreImage(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{"new", "back"}, z)
-	require.Equal(t, original, last.PreImage)
+	require.Equal(t, original, decodeEditImage(t, last.PreImage))
 	svc := undo.NewService(f.wal, f.branches, f.client, f.mat)
 	plan, err := svc.BuildPlan(branch, last.LSN, last.LSN, "")
 	require.NoError(t, err)
-	restored, _, err := svc.Apply(ctx, branch, plan)
+	restored, deleted, err := svc.Apply(ctx, branch, plan)
 	require.NoError(t, err)
 	require.Equal(t, 1, restored)
-	require.Equal(t, original, readSourceCase(t, users, id))
+	require.Zero(t, deleted)
+	require.Equal(t, original, decodeEditImage(t, readSourceCase(t, users, id)))
 }
 
-func TestWriteBack_UndoFieldOrder(t *testing.T) {
+func TestWriteBack_UndoRestoresValues(t *testing.T) {
 	for _, mode := range []string{"live", "released", "missing pre-image"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newIngestFixture(t, "undo-field-order")
+			f := newIngestFixture(t, "undo-values")
 			ctx := captureContext(t)
 			const id = "ordered"
 			coll := f.physical.Collection("users")
@@ -72,10 +73,10 @@ func TestWriteBack_UndoFieldOrder(t *testing.T) {
 				{Key: "parts", Value: bson.A{nested, nested}}, {Key: "name", Value: "lamp"},
 			})
 			require.NoError(t, err)
-			original := readSourceCase(t, coll, id)
+			original := decodeEditImage(t, readSourceCase(t, coll, id))
 			_, err = coll.UpdateByID(ctx, id, bson.M{"$set": bson.M{"price": 7}})
 			require.NoError(t, err)
-			updated := readSourceCase(t, coll, id)
+			updated := decodeEditImage(t, readSourceCase(t, coll, id))
 			require.NoError(t, f.ingest.Stop(ctx, f.branchID))
 			branch, err := f.branches.GetBranchByID(f.branchID)
 			require.NoError(t, err)
@@ -83,8 +84,8 @@ func TestWriteBack_UndoFieldOrder(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, history, 2)
 			last := history[1]
-			require.Equal(t, original, last.PreImage)
-			require.Equal(t, updated, last.PostImage)
+			require.Equal(t, original, decodeEditImage(t, last.PreImage))
+			require.Equal(t, updated, decodeEditImage(t, last.PostImage))
 
 			if mode != "live" {
 				require.NoError(t, f.checkout.Release(ctx, branch.ID))
@@ -105,7 +106,7 @@ func TestWriteBack_UndoFieldOrder(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 1, restored)
 			if mode == "live" {
-				require.Equal(t, original, readSourceCase(t, coll, id))
+				require.Equal(t, original, decodeEditImage(t, readSourceCase(t, coll, id)))
 				return
 			}
 			branch, err = f.branches.GetBranchByID(branch.ID)
@@ -113,8 +114,8 @@ func TestWriteBack_UndoFieldOrder(t *testing.T) {
 			entries, err := f.wal.GetBranchEntries(branch.ID, "users", last.LSN+1, branch.HeadLSN)
 			require.NoError(t, err)
 			require.Len(t, entries, 1)
-			require.Equal(t, updated, entries[0].PreImage, "undoing a compensation must recover the replaced bytes")
-			require.Equal(t, original, entries[0].PostImage)
+			require.Equal(t, updated, decodeEditImage(t, entries[0].PreImage), "the compensation must record the replaced values")
+			require.Equal(t, original, decodeEditImage(t, entries[0].PostImage))
 		})
 	}
 
@@ -127,15 +128,13 @@ func TestWriteBack_UndoFieldOrder(t *testing.T) {
 			{Key: "details", Value: bson.A{nested, nested}}, {Key: "name", Value: "spring"},
 		}
 		original := bson.Raw(mustMarshalBSON(fields))
-		fields[1], fields[2] = fields[2], fields[1]
+		fields[2].Value = int32(9)
 		discarded := bson.Raw(mustMarshalBSON(fields))
 		// In 2.8.0 WriterFor decoded the prior row into a map and
 		// marshalled it in name order when recording a delete.
-		var values bson.M
-		require.NoError(t, wal.UnmarshalDocument(original, &values))
+		values := decodeEditImage(t, original)
 		oldPre, err := wal.MarshalDocument(values)
 		require.NoError(t, err)
-		require.NotEqual(t, original, oldPre)
 		lsns, err := h.wal.AppendBatch([]*wal.Entry{
 			{ProjectID: h.project, BranchID: h.main.ID, Collection: "parts", DocumentID: key, Operation: wal.OpPut, PostImage: original},
 			{ProjectID: h.project, BranchID: h.main.ID, Collection: "parts", DocumentID: key, Operation: wal.OpPut, PostImage: discarded, PreImage: original},
@@ -160,6 +159,29 @@ func TestWriteBack_UndoFieldOrder(t *testing.T) {
 		entries, err := h.wal.GetDocumentHistory(branch.ID, "parts", key, deleteLSN+1, h.reload().HeadLSN)
 		require.NoError(t, err)
 		require.Len(t, entries, 1)
-		require.Equal(t, original, entries[0].PostImage)
+		require.Equal(t, values, decodeEditImage(t, entries[0].PostImage))
+	})
+
+	t.Run("edited plan restores BSON null", func(t *testing.T) {
+		h := newHistoryFixture(t, "undo-edited-null")
+		ctx := t.Context()
+		_, err := h.writer.Put(ctx, "docs", bson.M{"_id": "item", "v": bson.M{}})
+		require.NoError(t, err)
+		at, err := h.writer.Put(ctx, "docs", bson.M{"_id": "item", "v": int32(1)})
+		require.NoError(t, err)
+
+		branch := h.reload()
+		svc := undo.NewService(h.wal, h.branches, h.db.Client(), h.mat)
+		plan, err := svc.BuildPlan(branch, at, at, "")
+		require.NoError(t, err)
+		require.Len(t, plan.Compensations, 1)
+		require.Equal(t, bson.M{}, plan.Compensations[0].Restore["v"])
+		plan.Compensations[0].Restore["v"] = bson.M(nil)
+		restored, _, err := svc.Apply(ctx, branch, plan)
+		require.NoError(t, err)
+		require.Equal(t, 1, restored)
+		entry, err := h.wal.GetEntry(h.project, h.reload().HeadLSN)
+		require.NoError(t, err)
+		require.Equal(t, bson.TypeNull, entry.PostImage.Lookup("v").Type)
 	})
 }

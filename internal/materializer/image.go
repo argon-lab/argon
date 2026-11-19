@@ -23,13 +23,13 @@ func EditImage(doc bson.M, raw bson.Raw, role wal.ImageRole, entry *wal.Entry) (
 
 // editImage decorates a decoded value with stored BSON field order.
 //
-// The singular decoded point read or the decoded collection replay determines
-// existence and value at the requested position. A stored WAL post-image,
-// pre-image or snapshot frame supplies its bytes only if it identifies the
-// same document, decodes cleanly, is trusted for that role and matches the
-// decoded value under the merge comparison, including _id. Repeated data
-// fields keep their last value at their first position. The first top-level
-// _id and JavaScript code scopes retain their BSON identity and order.
+// Decoded collection replay determines existence and value at the requested
+// position. A stored WAL post-image or snapshot frame supplies its bytes only
+// if it identifies the same document, decodes cleanly, is trusted for that role
+// and matches the decoded value under the merge comparison, including _id.
+// Repeated data fields keep their last value at their first position.
+// The first top-level _id and JavaScript code scopes retain their BSON identity
+// and order.
 // attached_unverified applies only to the post-image. A follower's current
 // image can supply order. Without a matching image, encode the decoded value
 // with _id first and map fields in name order at each depth.

@@ -488,12 +488,12 @@ approved write-back will write.
 If a 2.8.0 sandbox already captured an edit in a different order,
 re-checkout reproduces that captured order.
 
-Checkout and restore use the document that time travel reads at the requested
-position. A stored WAL image or snapshot frame can supply the order when its
-identity and decoded values match. A follower's `current` row can supply
-order even though it records the source document as it stood at catch-up
-time. A capture marked `attached_unverified` cannot supply post-image order.
-Its clean pre-image can still supply order for undo.
+Checkout, including re-checkout after restore, uses the document that collection
+replay reads at the requested position. A stored WAL image or snapshot frame
+can supply the order when its identity and decoded values match. A follower's
+`current` row can supply order even though it records the source document as
+it stood at catch-up time. A capture marked `attached_unverified` cannot
+supply post-image order.
 
 Without a usable image, or when the candidate differs in identity or value,
 map fields are sorted by name at each depth, with the top-level `_id` first.
@@ -501,7 +501,7 @@ A repeated data field keeps its last value at its first position, including
 in documents inside arrays. The first top-level `_id` supplies identity.
 Compound IDs and JavaScript code scopes retain their original fields.
 
-New snapshots keep the BSON used for editing. Earlier snapshots sorted map
+New snapshots keep the BSON used for checkout. Earlier snapshots sorted map
 fields by name. A clean retained WAL image or earlier ordered frame can
 restore their order when its decoded value matches the snapshot.
 
@@ -594,6 +594,16 @@ restore their order when its decoded value matches the snapshot.
   the plan applied, the error reports the committed transaction and plan ID.
 - Undoing a write-back means writing another plan back. `argon undo` does not
   apply to a branch that follows a source.
+
+On an editable branch, programmatic writes can record pre-image fields in
+name order, and undo can restore fields in name order, as in 2.8.0.
+
+- If a document's only prior WAL row is stored under a key the single-key read
+  misses, a programmatic write records no pre-image and undo deletes the
+  document. [#154](https://github.com/argon-lab/argon/issues/154)
+- If a snapshot covers a reclaimed WAL row but an older row remains, a
+  programmatic write can record the older row as its pre-image and undo
+  restores that older value. [#155](https://github.com/argon-lab/argon/issues/155)
 
 ### What Argon can never do to a source
 

@@ -38,13 +38,11 @@ entry — a synchronization barrier, not in-proxy capture).
   sandbox's capture cannot run. That sandbox is listed with `capture_error`
   and no connection string, and the console marks it so it can be discarded
   there.
-- Checkout, re-checkout, restore, snapshots, programmatic write pre-images
-  and undo keep stored BSON field order when the image is trusted and matches
-  the decoded document, including inside arrays. This includes a follower's
-  last inexact read and a clean pre-image captured alongside an unverified
-  post-image. Repeated data fields keep their last value at their first
-  position. When no image qualifies, map fields use name order with `_id`
-  first. Historical forks use the same values for editing and time travel.
+- Checkout, re-checkout (including after restore) and snapshots preserve stored
+  BSON field order, including inside arrays, when a trusted image matches the
+  decoded document. A follower's last inexact read can supply that order.
+  Repeated data fields keep their last value at their first position. When no
+  image qualifies, map fields use name order with `_id` first.
 - The startup check of snapshots written by earlier versions scans each
   WAL prefix once for all snapshots that share it, reads index keys only,
   and runs under one five-second deadline that covers every query it makes.
@@ -55,6 +53,17 @@ entry — a synchronization barrier, not in-proxy capture).
   the `capture_permissions` check with a message naming it, instead of
   passing doctor and failing at the first `argon checkout`. `argon status`
   still makes no writes.
+
+### Known limitations
+
+- As in 2.8.0, programmatic writes can record pre-image fields in name order,
+  and undo can restore fields in name order.
+- If a document's only prior WAL row is stored under a key the single-key read
+  misses, a programmatic write records no pre-image and undo deletes the
+  document. [#154](https://github.com/argon-lab/argon/issues/154)
+- If a snapshot covers a reclaimed WAL row but an older row remains, a
+  programmatic write can record the older row as its pre-image and undo
+  restores that older value. [#155](https://github.com/argon-lab/argon/issues/155)
 
 ## [2.8.0] - 2026-11-19
 

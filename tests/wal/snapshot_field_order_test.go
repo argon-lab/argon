@@ -123,7 +123,7 @@ func TestWriteBack_SnapshotFieldOrder(t *testing.T) {
 			history, err := h.wal.GetDocumentHistory(branch.ID, collection, key, lsn, lsn)
 			require.NoError(t, err)
 			require.Len(t, history, 1)
-			require.Equal(t, expected, history[0].PreImage, "point-read bytes")
+			require.Equal(t, decodeEditImage(t, version), decodeEditImage(t, history[0].PreImage), "delete pre-image values")
 		})
 	}
 }

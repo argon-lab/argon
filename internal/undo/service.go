@@ -11,7 +11,6 @@
 package undo
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -54,9 +53,6 @@ type Compensation struct {
 	// exist before the range (the compensation is a delete).
 	Restore bson.M `json:"restore"`
 	Before  bson.M `json:"before"`
-
-	restoreRaw bson.Raw
-	beforeRaw  bson.Raw
 }
 
 // Conflict marks a document changed after the selected range, or by another
@@ -165,15 +161,29 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 		if conflicted[key] {
 			continue
 		}
-		c := Compensation{Collection: key.collection, DocumentID: key.id}
 		switch {
 		case len(entry.PreImage) > 0:
-			c.restoreRaw = entry.PreImage
-			c.ID, err = wal.DocumentIDFromImage(entry.PreImage)
+			var pre bson.M
+			if err := wal.UnmarshalDocument(entry.PreImage, &pre); err != nil {
+				return nil, fmt.Errorf("failed to decode pre-image for %s/%s: %w", key.collection, key.id, err)
+			}
+			id, err := wal.DocumentIDFromImage(entry.PreImage)
+			if err != nil {
+				return nil, err
+			}
+			pre["_id"] = id
+			plan.Compensations = append(plan.Compensations, Compensation{
+				Collection: key.collection,
+				DocumentID: key.id,
+				ID:         id,
+				Restore:    pre,
+			})
 		case entry.Operation == wal.OpPut && safeCreation(entry):
 			// Older metadata writers did not always include pre-images. Recover
 			// the preceding state instead of guessing that every put is an insert.
-			c.restoreRaw, err = s.priorImage(branch, entry, key.id)
+			priorBranch := *branch
+			priorBranch.HeadLSN = entry.LSN - 1
+			prior, err := s.mat.MaterializeDocument(&priorBranch, key.collection, key.id)
 			if err != nil {
 				plan.Unrecoverable = append(plan.Unrecoverable, fmt.Sprintf("%s/%s", key.collection, key.id))
 				continue
@@ -182,39 +192,29 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 			if err := wal.UnmarshalDocument(entry.PostImage, &post); err != nil {
 				return nil, fmt.Errorf("failed to decode post-image for %s/%s: %w", key.collection, key.id, err)
 			}
-			c.ID, err = wal.DocumentIDFromImage(entry.PostImage)
+			id, err := wal.DocumentIDFromImage(entry.PostImage)
+			if err != nil {
+				return nil, err
+			}
+			plan.Compensations = append(plan.Compensations, Compensation{
+				Collection: key.collection,
+				DocumentID: key.id,
+				ID:         id,
+				Restore:    prior,
+			})
 		default:
 			// A delete without a pre-image cannot be restored.
 			plan.Unrecoverable = append(plan.Unrecoverable,
 				fmt.Sprintf("%s/%s", key.collection, key.id))
-			continue
 		}
-		if err != nil {
-			return nil, err
-		}
-		if c.restoreRaw != nil {
-			if err := wal.UnmarshalDocument(c.restoreRaw, &c.Restore); err != nil {
-				return nil, fmt.Errorf("failed to decode restoration for %s/%s: %w", key.collection, key.id, err)
-			}
-			c.Restore["_id"] = c.ID
-			if len(entry.PreImage) > 0 {
-				c.restoreRaw, err = s.restorationImage(branch, entry, c)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-		c.beforeRaw, err = s.mat.EditDocumentAtLSN(branch, c.Collection, c.DocumentID, branch.HeadLSN)
+	}
+	for i := range plan.Compensations {
+		c := &plan.Compensations[i]
+		current, err := s.mat.MaterializeDocument(branch, c.Collection, c.DocumentID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load current state for undo: %w", err)
 		}
-		if c.beforeRaw != nil {
-			if err := wal.UnmarshalDocument(c.beforeRaw, &c.Before); err != nil {
-				return nil, err
-			}
-			c.Before["_id"] = c.ID
-		}
-		plan.Compensations = append(plan.Compensations, c)
+		c.Before = current
 	}
 
 	// Deterministic order for application and display.
@@ -227,39 +227,6 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 	})
 	sort.Strings(plan.Unrecoverable)
 	return plan, nil
-}
-
-// Earlier programmatic writers saved a name-sorted view of the preceding
-// state. Recover its order only if the prior image accounts for every value
-// in that recorded pre-image. A native capture supplies its own pre-image.
-func (s *Service) restorationImage(branch *wal.Branch, entry *wal.Entry, c Compensation) (bson.Raw, error) {
-	image, err := materializer.EditImage(c.Restore, entry.PreImage, wal.PreImage, entry)
-	if err != nil || !bytes.Equal(image, entry.PreImage) || len(entry.Metadata) != 0 || entry.TxnID != "" {
-		return image, err
-	}
-	sorted, err := wal.MarshalDocument(c.Restore)
-	if err != nil || !bytes.Equal(image, sorted) {
-		return image, err
-	}
-	prior, err := s.priorImage(branch, entry, c.DocumentID)
-	if err != nil || prior == nil {
-		return image, nil
-	}
-	return materializer.EditImage(c.Restore, prior, wal.PreImage, entry)
-}
-
-func (s *Service) priorImage(branch *wal.Branch, entry *wal.Entry, key string) (bson.Raw, error) {
-	at := entry.LSN - 1
-	// The first write after a reset can be adjacent to the discarded history.
-	// Step back to the position visible when this entry was written.
-	ranges := branch.EffectiveDiscardedRanges()
-	for i := len(ranges) - 1; i >= 0; i-- {
-		r := ranges[i]
-		if r.To < entry.LSN && r.Contains(at) {
-			at = r.From - 1
-		}
-	}
-	return s.mat.EditDocumentAtLSN(branch, entry.Collection, key, at)
 }
 
 // A missing pre-image is only evidence of insertion on a writer path that
@@ -287,19 +254,6 @@ func (s *Service) Apply(ctx context.Context, branch *wal.Branch, plan *Plan) (re
 	}
 	if branch.HeadLSN != plan.HeadLSN {
 		return 0, 0, fmt.Errorf("undo plan is stale; branch head changed")
-	}
-	// The decoded compensation is authoritative even for a plan reconstructed
-	// or edited by a caller. These candidates were vetted at capture or replay.
-	for i := range plan.Compensations {
-		c := &plan.Compensations[i]
-		c.restoreRaw, err = materializer.EditImage(c.Restore, c.restoreRaw, wal.PreImage, nil)
-		if err != nil {
-			return 0, 0, err
-		}
-		c.beforeRaw, err = materializer.EditImage(c.Before, c.beforeRaw, wal.PreImage, nil)
-		if err != nil {
-			return 0, 0, err
-		}
 	}
 	if branch.IsLive() {
 		return s.applyPhysical(ctx, branch, plan)
@@ -345,7 +299,7 @@ func (s *Service) applyPhysical(ctx context.Context, branch *wal.Branch, plan *P
 			}
 			if _, err := coll.ReplaceOne(sc,
 				bson.M{"_id": c.ID},
-				c.restoreRaw,
+				c.Restore,
 				options.Replace().SetUpsert(true),
 			); err != nil {
 				return nil, fmt.Errorf("failed to restore %s/%s: %w", c.Collection, c.DocumentID, err)
@@ -370,14 +324,24 @@ func (s *Service) applyWAL(ctx context.Context, branch *wal.Branch, plan *Plan) 
 			DocumentID: c.DocumentID,
 			Actor:      "undo",
 			Metadata:   map[string]interface{}{"previous_exists": c.Before != nil},
-			PreImage:   c.beforeRaw,
+		}
+		if c.Before != nil {
+			pre, err := bson.Marshal(c.Before)
+			if err != nil {
+				return 0, 0, err
+			}
+			entry.PreImage = pre
 		}
 		if c.Restore == nil {
 			entry.Operation = wal.OpDelete
 			deleted++
 		} else {
 			entry.Operation = wal.OpPut
-			entry.PostImage = c.restoreRaw
+			post, err := bson.Marshal(c.Restore)
+			if err != nil {
+				return 0, 0, fmt.Errorf("failed to encode restoration for %s/%s: %w", c.Collection, c.DocumentID, err)
+			}
+			entry.PostImage = post
 			restored++
 		}
 		entries = append(entries, entry)
