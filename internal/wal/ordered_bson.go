@@ -2,6 +2,7 @@ package wal
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
 	"slices"
 	"sort"
@@ -60,10 +61,17 @@ func newOrderedRegistry() *bsoncodec.Registry {
 	binaryType := reflect.TypeFor[primitive.Binary]()
 	binaryDecoder, _ := reg.LookupDecoder(binaryType)
 	rawDecoder, _ := reg.LookupDecoder(reflect.TypeFor[bson.RawValue]())
-	reg.RegisterTypeDecoder(binaryType, bsoncodec.ValueDecoderFunc(func(ctx bsoncodec.DecodeContext, r bsonrw.ValueReader, dst reflect.Value) error {
+	reg.RegisterTypeDecoder(binaryType, bsoncodec.ValueDecoderFunc(func(ctx bsoncodec.DecodeContext, r bsonrw.ValueReader, dst reflect.Value) (err error) {
 		if r.Type() != bson.TypeBinary {
 			return binaryDecoder.DecodeValue(ctx, r, dst)
 		}
+		// Copying the raw value panics in the driver on a negative length.
+		// Bytes from a socket can carry one; report them as invalid BSON.
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("invalid BSON binary value: %v", p)
+			}
+		}()
 		var raw bson.RawValue
 		if err := rawDecoder.DecodeValue(ctx, r, reflect.ValueOf(&raw).Elem()); err != nil {
 			return err
