@@ -34,6 +34,10 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Fixed
 
+- Listing a project's sandboxes over REST no longer fails with 503 when one
+  sandbox's capture cannot run. That sandbox is listed with `capture_error`
+  and no connection string, and the console marks it so it can be discarded
+  there.
 - Checkout, re-checkout (including after restore) and snapshots preserve stored
   BSON field order, including inside arrays, when a trusted, canonical image
   matches the decoded document. A follower's last inexact read can supply that

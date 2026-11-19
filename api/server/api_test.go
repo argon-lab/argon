@@ -499,6 +499,75 @@ func TestAPI_RestartReattachesIngesters(t *testing.T) {
 	}
 }
 
+// One sandbox whose capture cannot run must not hide the others: the list
+// answers, marks that sandbox with its capture error and withholds its
+// connection string, and it can still be discarded from there.
+func TestAPI_SandboxListKeepsADegradedSandbox(t *testing.T) {
+	dbName := fmt.Sprintf("argon_api_degraded_test_%d", time.Now().UnixNano())
+	services, err := walcli.NewServicesAt("mongodb://localhost:27017", dbName)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = services.Client.Database(dbName).Drop(context.Background())
+	})
+	router := NewRouter(services)
+	t.Cleanup(router.Shutdown)
+
+	code, _ := do(t, router, "POST", "/api/v1/projects", map[string]string{"name": "degraded"})
+	require.Equal(t, http.StatusCreated, code)
+	writer, err := services.WriterFor("degraded", "main")
+	require.NoError(t, err)
+	_, err = writer.Put(context.Background(), "tickets", bson.M{"_id": "T-1"})
+	require.NoError(t, err)
+
+	physical := map[string]string{}
+	for _, name := range []string{"broken", "healthy"} {
+		code, resp := do(t, router, "POST", "/api/v1/projects/degraded/sandboxes",
+			map[string]interface{}{"name": name, "ttl_minutes": 30})
+		require.Equal(t, http.StatusCreated, code, "%v", resp)
+		physical[name] = dbFromURI(resp["connection_string"].(string))
+	}
+	t.Cleanup(func() {
+		for _, db := range physical {
+			_ = services.Client.Database(db).Drop(context.Background())
+		}
+	})
+
+	// A drop is not captured, so the branch's capture becomes degraded.
+	require.NoError(t, services.Client.Database(physical["broken"]).Collection("tickets").Drop(context.Background()))
+	brokenID := func() string {
+		branch, err := services.Branches.GetBranch(mustProjectID(t, services, "degraded"), "broken")
+		require.NoError(t, err)
+		return branch.ID
+	}()
+	require.Eventually(t, func() bool {
+		for _, status := range services.Ingest.Statuses() {
+			if status.BranchID == brokenID {
+				return status.State == "degraded"
+			}
+		}
+		return false
+	}, 20*time.Second, 100*time.Millisecond, "capture of the broken sandbox never degraded")
+
+	code, resp := do(t, router, "GET", "/api/v1/projects/degraded/sandboxes", nil)
+	require.Equal(t, http.StatusOK, code, "%v", resp)
+	boxes := map[string]map[string]interface{}{}
+	for _, item := range resp["sandboxes"].([]interface{}) {
+		box := item.(map[string]interface{})
+		boxes[box["branch"].(map[string]interface{})["name"].(string)] = box
+	}
+	require.Len(t, boxes, 2)
+	assert.Contains(t, boxes["broken"]["capture_error"], "not captured")
+	assert.NotContains(t, boxes["broken"], "connection_string")
+	assert.NotEmpty(t, boxes["healthy"]["connection_string"])
+	assert.NotContains(t, boxes["healthy"], "capture_error")
+
+	code, resp = do(t, router, "DELETE", "/api/v1/projects/degraded/sandboxes/broken", nil)
+	require.Equal(t, http.StatusOK, code, "%v", resp)
+	code, resp = do(t, router, "GET", "/api/v1/projects/degraded/sandboxes", nil)
+	require.Equal(t, http.StatusOK, code, "%v", resp)
+	require.Len(t, resp["sandboxes"], 1)
+}
+
 func mustProjectID(t *testing.T, services *walcli.Services, name string) string {
 	t.Helper()
 	p, err := services.Projects.GetProjectByName(name)

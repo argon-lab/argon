@@ -104,7 +104,12 @@ export type CaptureStatus = {
 
 export type DemoSession = { project: string; expires_at: string };
 
-export type Sandbox = { branch: Branch; connection_string?: string };
+export type Sandbox = {
+  branch: Branch;
+  connection_string?: string;
+  // Set when the sandbox's capture cannot run; it has no connection string then.
+  capture_error?: string;
+};
 
 export type Pin = {
   id?: string;
