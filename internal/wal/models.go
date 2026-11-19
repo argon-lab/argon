@@ -85,6 +85,17 @@ type Entry struct {
 	Metadata map[string]interface{} `bson:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
+// HasOrderedEditImage reports whether a keyed image can supply field order
+// for editing. Approximate follower reads may describe a later state. An
+// unverified stream image can repeat a moved field.
+func (e *Entry) HasOrderedEditImage() bool {
+	switch e.Metadata["capture_images"] {
+	case "attached_unverified", "current":
+		return false
+	}
+	return e.DocumentKeyVersion > 0
+}
+
 // IsLegacy reports whether the entry predates the physical-log schema and
 // therefore cannot be replayed deterministically. Note that v1 and v2 both
 // use the operation name "delete"; the schema version disambiguates (v1
