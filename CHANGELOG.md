@@ -11,6 +11,18 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.8.1] - 2026-11-19
+
+A sandbox now holds each document with the field order it has in the
+source, so writing back a one-field change no longer reorders the other
+fields of that document ([#150](https://github.com/argon-lab/argon/issues/150)).
+This applies to a database imported online and followed by this version:
+checkout and snapshots reuse the stored bytes when they are trusted and
+canonical, and otherwise encode the decoded document as 2.8.0 did.
+Programmatic writes and undo are unchanged from 2.8.0. The release also
+carries the stricter handling of pre-2.8.0 snapshots after garbage
+collection, two sandbox fixes and a `doctor` check.
+
 ### Changed
 
 - A read that depends on a snapshot written before 2.8.0 is refused when
@@ -70,6 +82,10 @@ entry — a synchronization barrier, not in-proxy capture).
 
 - As in 2.8.0, programmatic writes can record pre-image fields in name order,
   and undo can restore fields in name order.
+- Field order is kept only while the history that holds it is retained. After
+  garbage collection has reclaimed a collection's WAL, a snapshot rebuilt at
+  or below the reclaimed position stores fields in name order, as 2.8.0 does.
+  Values are not affected.
 - If a document's only prior WAL row is stored under a key the single-key read
   misses, a programmatic write records no pre-image and undo deletes the
   document. [#154](https://github.com/argon-lab/argon/issues/154)
