@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -200,68 +201,11 @@ func documentKey(collection string, raw bson.Raw) string {
 // moves a field: the field appears at its old position with its old value and
 // again at the end with the new one, while the stored document has it once.
 func HasDuplicateFields(document bson.Raw) bool {
-	return hasDuplicateFields(document, false)
+	return wal.HasDuplicateImageFields(document, false)
 }
 
 // HasDuplicateKeys includes the stored keys of BSON arrays, which a decoded
 // array exposes only as positions.
 func HasDuplicateKeys(document bson.Raw) bool {
-	return hasDuplicateFields(document, true)
-}
-
-func hasDuplicateFields(document bson.Raw, includeArrayKeys bool) bool {
-	elements, err := document.Elements()
-	if err != nil {
-		return false
-	}
-	var seen map[string]struct{}
-	for i, element := range elements {
-		key := element.Key()
-		// Most documents are small: compare directly before paying for a map.
-		if seen == nil {
-			for _, earlier := range elements[:i] {
-				if earlier.Key() == key {
-					return true
-				}
-			}
-			if i >= 16 {
-				seen = make(map[string]struct{}, len(elements))
-				for _, earlier := range elements[:i+1] {
-					seen[earlier.Key()] = struct{}{}
-				}
-			}
-		} else {
-			if _, dup := seen[key]; dup {
-				return true
-			}
-			seen[key] = struct{}{}
-		}
-		if valueHasDuplicateFields(element.Value(), includeArrayKeys) {
-			return true
-		}
-	}
-	return false
-}
-
-func valueHasDuplicateFields(value bson.RawValue, includeArrayKeys bool) bool {
-	switch value.Type {
-	case bson.TypeEmbeddedDocument:
-		return hasDuplicateFields(value.Document(), includeArrayKeys)
-	case bson.TypeArray:
-		if includeArrayKeys {
-			return hasDuplicateFields(value.Array(), true)
-		}
-		items, err := value.Array().Values()
-		if err == nil {
-			for _, item := range items {
-				if valueHasDuplicateFields(item, false) {
-					return true
-				}
-			}
-		}
-	case bson.TypeCodeWithScope:
-		_, scope, ok := value.CodeWithScopeOK()
-		return ok && hasDuplicateFields(scope, includeArrayKeys)
-	}
-	return false
+	return wal.HasDuplicateImageFields(document, true)
 }

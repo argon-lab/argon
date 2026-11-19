@@ -182,7 +182,9 @@ func (s *Service) CheckResyncCoverage(branch *wal.Branch, collection string) err
 // fails with wal.ErrHistoryReclaimed instead of returning a state that
 // lacks them.
 func (s *Service) MaterializeCollectionAtLSN(branch *wal.Branch, collection string, targetLSN int64) (map[string]bson.M, error) {
-	return replayCollection(s, branch, collection, targetLSN, s.decodedSnapshot, s.ApplyEntry)
+	return replayCollection(s, branch, collection, targetLSN, s.decodedSnapshot, func(state map[string]bson.M, seg segment) error {
+		return scanSegment(s, collection, state, seg, s.ApplyEntry)
+	})
 }
 
 func (s *Service) decodedSnapshot(branch *wal.Branch, collection string, from, to int64) (map[string]bson.M, int64, bool, error) {
@@ -191,19 +193,19 @@ func (s *Service) decodedSnapshot(branch *wal.Branch, collection string, from, t
 
 func replayCollection[T any](s *Service, branch *wal.Branch, collection string, targetLSN int64,
 	snapshot func(*wal.Branch, string, int64, int64) (map[string]T, int64, bool, error),
-	apply func(map[string]T, *wal.Entry) error,
+	replay func(map[string]T, segment) error,
 ) (map[string]T, error) {
 	// If GC overtook the read, retry once with the snapshot GC relied on.
-	state, err := replayCollectionOnce(s, branch, collection, targetLSN, snapshot, apply)
+	state, err := replayCollectionOnce(s, branch, collection, targetLSN, snapshot, replay)
 	if errors.Is(err, wal.ErrHistoryReclaimed) {
-		return replayCollectionOnce(s, branch, collection, targetLSN, snapshot, apply)
+		return replayCollectionOnce(s, branch, collection, targetLSN, snapshot, replay)
 	}
 	return state, err
 }
 
 func replayCollectionOnce[T any](s *Service, branch *wal.Branch, collection string, targetLSN int64,
 	snapshot func(*wal.Branch, string, int64, int64) (map[string]T, int64, bool, error),
-	apply func(map[string]T, *wal.Entry) error,
+	replay func(map[string]T, segment) error,
 ) (map[string]T, error) {
 	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
@@ -235,16 +237,7 @@ func replayCollectionOnce[T any](s *Service, branch *wal.Branch, collection stri
 		if seg.fromLSN > seg.toLSN {
 			continue // Snapshot sits exactly at the segment's end.
 		}
-		err := s.wal.ScanCollectionDataEntries(seg.branch.ID, collection, seg.fromLSN, seg.toLSN, false, func(entry *wal.Entry) error {
-			if seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
-				return nil
-			}
-			if err := apply(state, entry); err != nil {
-				return fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
-			}
-			return nil
-		})
-		if err != nil {
+		if err := replay(state, seg); err != nil {
 			return nil, fmt.Errorf("failed to replay collection %s on branch %s: %w", collection, seg.branch.ID, err)
 		}
 	}
@@ -256,6 +249,18 @@ func replayCollectionOnce[T any](s *Service, branch *wal.Branch, collection stri
 		return nil, err
 	}
 	return state, nil
+}
+
+func scanSegment[T any](s *Service, collection string, state map[string]T, seg segment, apply func(map[string]T, *wal.Entry) error) error {
+	return s.wal.ScanCollectionDataEntries(seg.branch.ID, collection, seg.fromLSN, seg.toLSN, false, func(entry *wal.Entry) error {
+		if seg.branch.IsDiscardedForRead(entry.LSN, seg.toLSN) {
+			return nil
+		}
+		if err := apply(state, entry); err != nil {
+			return fmt.Errorf("failed to apply entry LSN %d: %w", entry.LSN, err)
+		}
+		return nil
+	})
 }
 
 // requireUnreclaimed verifies that garbage collection has not deleted
@@ -284,34 +289,27 @@ func (s *Service) requireUnreclaimed(replayed []segment, collection string, targ
 // reclaimed entries of abandoned history are no loss to a reader that
 // would not have applied them.
 func needsReclaimed(seg segment, from, floor int64) bool {
-	upTo := floor
-	if seg.toLSN < upTo {
-		upTo = seg.toLSN
-	}
-	if upTo < from {
+	if min(seg.toLSN, floor) < from {
 		return false
 	}
-	var skipped []wal.LSNRange
-	for _, r := range seg.branch.EffectiveDiscardedRanges() {
-		if seg.toLSN > r.To {
-			skipped = append(skipped, r)
+	return lastReclaimableLSN(seg, floor) >= from
+}
+
+// The latest visible slot that GC could have removed. Effective range ends
+// increase in reset order, so walking backwards also handles overlapping resets.
+func lastReclaimableLSN(seg segment, floor int64) int64 {
+	last := min(seg.toLSN, floor)
+	ranges := seg.branch.EffectiveDiscardedRanges()
+	for i := len(ranges) - 1; i >= 0; i-- {
+		r := ranges[i]
+		if last > r.To {
+			break
+		}
+		if seg.toLSN > r.To && r.Contains(last) {
+			last = r.From - 1
 		}
 	}
-	sort.Slice(skipped, func(i, j int) bool { return skipped[i].From < skipped[j].From })
-	next := from // lowest LSN not yet known to be skipped
-	for _, r := range skipped {
-		if r.To < next {
-			continue
-		}
-		if r.From > next {
-			return true
-		}
-		next = r.To + 1
-		if next > upTo {
-			return false
-		}
-	}
-	return true
+	return last
 }
 
 func reclaimedError(branch *wal.Branch, collection string, floor, targetLSN int64) error {

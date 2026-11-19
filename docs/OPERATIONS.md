@@ -488,16 +488,24 @@ approved write-back will write.
 If a 2.8.0 sandbox already captured an edit in a different order,
 re-checkout reproduces that captured order.
 
-Checkout uses a verified WAL post-image with a typed document key, or the
-document's stored snapshot frame. Snapshots created by this version keep the
-BSON used for editing. When the latest WAL entry has an older, untyped key,
-its post-image lacks a usable `_id`, or its capture is marked
-`attached_unverified`, checkout rebuilds the document from decoded values,
-sorting map fields by name at each depth.
-Earlier snapshots also stored ordinary fields in name order. If their
-original order can be recovered from retained WAL or an earlier ordered
-snapshot with an intact history, checkout uses it. Otherwise later edits
-start from the order in the older snapshot.
+Checkout uses a verified, typed WAL post-image or a snapshot frame when it
+establishes the document's state at the requested position. If an older
+capture repeats a data field, checkout keeps its last value at the field's
+first position, including in documents inside arrays. As in decoded replay,
+the first top-level `_id` supplies the BSON identity. Compound IDs and
+JavaScript code scopes retain their original fields.
+
+An untyped WAL entry, an image without a usable `_id`, or a capture marked
+`attached_unverified` or `current` supplies decoded values with map fields
+sorted by name at each depth. The same fallback applies when a historical
+read succeeds but a later write to the key could have been reclaimed.
+A snapshot from before 2.1.6 bounds possible deletions on its own branch.
+An intact write at the exact fork position can still supply its field order.
+
+New snapshots keep the BSON used for editing. Earlier snapshots sorted
+ordinary fields by name. Checkout recovers their order from a retained WAL image or an earlier
+ordered snapshot when the values match and the intervening history is intact. A
+candidate with repeated data fields leaves the older frame's order in place.
 MongoDB puts the top-level `_id` first. A subsequent exact capture can thus
 record and write back a document whose fields are in name order.
 

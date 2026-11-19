@@ -39,6 +39,10 @@ entry — a synchronization barrier, not in-proxy capture).
   sandbox created from an online import now produces the same field order
   as the same MongoDB update on the source. New snapshots, programmatic
   write pre-images and undo also retain the available ordered images.
+  A field repeated in an older capture keeps its last value. Historical
+  forks remain editable when a later snapshot predates 2.1.6. If the
+  retained history establishes only the values, editing uses those values
+  with map fields in name order.
 - The startup check of snapshots written by earlier versions scans each
   WAL prefix once for all snapshots that share it, reads index keys only,
   and runs under one five-second deadline that covers every query it makes.

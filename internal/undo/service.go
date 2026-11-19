@@ -233,8 +233,12 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 // state. Recover its order only if the prior image accounts for every value
 // in that recorded pre-image. A native capture supplies its own pre-image.
 func (s *Service) restorationImage(branch *wal.Branch, entry *wal.Entry, c Compensation) (bson.Raw, error) {
-	if entry.DocumentKeyVersion < 1 {
+	if !entry.HasOrderedEditImage() {
 		return wal.MarshalDocument(c.Restore)
+	}
+	image, rebuilt, err := wal.NormalizeEditImage(entry.PreImage)
+	if err != nil || rebuilt {
+		return image, err
 	}
 	if len(entry.Metadata) != 0 || entry.TxnID != "" {
 		return entry.PreImage, nil
