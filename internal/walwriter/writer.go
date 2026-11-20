@@ -113,33 +113,29 @@ func (w *Writer) putMany(ctx context.Context, collection string, docs []bson.M) 
 	}
 
 	entries := make([]*wal.Entry, 0, len(docs))
-	previous := make(map[string]bson.Raw)
+	previousPosts := make(map[string]bson.Raw)
 	for i, doc := range docs {
 		post, id, err := normalizeDoc(doc)
 		if err != nil {
 			return nil, fmt.Errorf("document %d: %w", i, err)
 		}
 		docID := wal.DocumentIDString(id)
+		pre, err := w.preImage(collection, docID, previousPosts[docID])
+		if err != nil {
+			return nil, err
+		}
 
-		entry := &wal.Entry{
+		entries = append(entries, &wal.Entry{
 			ProjectID:  w.branch.ProjectID,
 			BranchID:   w.branch.ID,
 			Operation:  wal.OpPut,
 			Collection: collection,
 			DocumentID: docID,
+			PreImage:   pre,
 			PostImage:  post,
 			Actor:      w.actor,
-		}
-		pre, seen := previous[docID]
-		if !seen {
-			pre, err = w.preImage(collection, docID)
-			if err != nil {
-				return nil, err
-			}
-		}
-		entry.PreImage = pre
-		previous[docID] = post
-		entries = append(entries, entry)
+		})
+		previousPosts[docID] = post
 	}
 
 	return w.commit(ctx, entries)
@@ -182,7 +178,7 @@ func (w *Writer) delete(ctx context.Context, collection string, id interface{}) 
 	}
 	docID := wal.DocumentIDString(id)
 
-	pre, err := w.preImage(collection, docID)
+	pre, err := w.preImage(collection, docID, nil)
 	if err != nil {
 		return 0, false, err
 	}
@@ -232,11 +228,22 @@ func (w *Writer) commit(ctx context.Context, entries []*wal.Entry) ([]int64, err
 	return lsns, nil
 }
 
-// preImage point-looks-up the document's current state, marshalled, or nil.
-func (w *Writer) preImage(collection, docID string) (bson.Raw, error) {
-	current, err := w.materializer.MaterializeDocument(w.branch, collection, docID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to look up pre-image for %s/%s: %w", collection, docID, err)
+// preImage marshals the value a reader sees after the previous put in the
+// batch, or at the branch head if this is the first write to the document.
+func (w *Writer) preImage(collection, docID string, previousPost bson.Raw) (bson.Raw, error) {
+	var current bson.M
+	if previousPost != nil {
+		decoded, err := wal.DecodeImage(previousPost)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode previous post-image for %s/%s: %w", collection, docID, err)
+		}
+		current = decoded.TakeValue()
+	} else {
+		var err error
+		current, err = w.materializer.MaterializeDocument(w.branch, collection, docID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up pre-image for %s/%s: %w", collection, docID, err)
+		}
 	}
 	if current == nil {
 		return nil, nil

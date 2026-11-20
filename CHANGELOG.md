@@ -26,6 +26,10 @@ entry — a synchronization barrier, not in-proxy capture).
 - Sandbox edits can now be written back when a JavaScript code scope contains
   nested documents. Merge preview previously reported a conflict even when
   only the sandbox had changed.
+- When `PutMany` writes the same document more than once, each later write
+  now records the previous value as a reader sees it. A repeated nested field
+  appears once in the pre-image, with its last value.
+  [#160](https://github.com/argon-lab/argon/issues/160)
 
 ### Known limitations
 
