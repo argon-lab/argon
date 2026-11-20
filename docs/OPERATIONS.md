@@ -610,8 +610,13 @@ name order, and undo can restore fields in name order, as in 2.8.0.
 - When garbage collection records a cutoff for a collection with this version,
   it also records the cutoff on the branch. If GC removed a newer row but
   left an older row at or below that cutoff, a write uses the covering snapshot
-  for its pre-image. Undo restores the snapshot value. If the document was
-  absent from the snapshot, undoing a later insert removes it.
+  for its pre-image if the snapshot was written by 2.8.1 or later. If branch
+  permissions or document size prevent a gate update, GC still records the
+  floor and deletes the covered rows. Rows above the previous gate keep
+  2.8.1 behavior. A gated read returns an error if it cannot read the floor
+  or load an eligible snapshot at the selected LSN. Undo restores the snapshot
+  value. If the document was absent from the snapshot, undoing a later
+  insert removes it.
   [#155](https://github.com/argon-lab/argon/issues/155)
 - A later GC run by an older version can reclaim more history outside this
   protection. Where GC never recorded a floor, a write can still record the
