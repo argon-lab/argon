@@ -16,6 +16,62 @@ import (
 	"go.mongodb.org/mongo-driver/event"
 )
 
+func TestPutManyPreImageMatchesReplay(t *testing.T) {
+	ctx := t.Context()
+	h := newHistoryFixture(t, "batch-preimage")
+	first := bson.M{"_id": "q", "v": bson.D{{Key: "z", Value: 1}, {Key: "a", Value: 2}, {Key: "z", Value: 3}}}
+	_, err := h.writer.Put(ctx, "single", first)
+	require.NoError(t, err)
+	afterFirst, err := h.mat.MaterializeDocument(h.reload(), "single", "q")
+	require.NoError(t, err)
+	require.Equal(t, bson.M{"_id": "q", "v": bson.M{"a": int32(2), "z": int32(3)}}, afterFirst)
+
+	lsns, err := h.writer.PutMany(ctx, "batch", []bson.M{first, {"_id": "q", "v": 4}})
+	require.NoError(t, err)
+	require.Len(t, lsns, 2)
+	firstEntry, err := h.wal.GetEntry(h.project, lsns[0])
+	require.NoError(t, err)
+	input, err := wal.MarshalDocument(first)
+	require.NoError(t, err)
+	require.Equal(t, input, firstEntry.PostImage, "the first post-image retains both z fields")
+
+	t.Run("replacement pre-image", func(t *testing.T) {
+		secondEntry, err := h.wal.GetEntry(h.project, lsns[1])
+		require.NoError(t, err)
+		want, err := wal.MarshalDocument(afterFirst)
+		require.NoError(t, err)
+		require.Equal(t, want, secondEntry.PreImage)
+	})
+
+	t.Run("undo replacement", func(t *testing.T) {
+		branch := h.reload()
+		undos := undo.NewService(h.wal, h.branches, h.db.Client(), h.mat)
+		plan, err := undos.BuildPlan(branch, lsns[1], lsns[1], "")
+		require.NoError(t, err)
+		restored, deleted, err := undos.Apply(ctx, branch, plan)
+		require.NoError(t, err)
+		require.Equal(t, 1, restored)
+		require.Zero(t, deleted)
+		afterUndo, err := h.mat.MaterializeDocument(h.reload(), "batch", "q")
+		require.NoError(t, err)
+		require.Equal(t, afterFirst, afterUndo)
+	})
+}
+
+func TestPutManyPlainPreImage(t *testing.T) {
+	h := newHistoryFixture(t, "batch-plain-preimage")
+	id := bson.D{{Key: "z", Value: 1}, {Key: "a", Value: 2}}
+	first := bson.M{"_id": id, "v": bson.M{"x": 1, "y": 2}}
+	lsns, err := h.writer.PutMany(t.Context(), "items", []bson.M{first, {"_id": id, "v": 3}})
+	require.NoError(t, err)
+	require.Len(t, lsns, 2)
+	entry, err := h.wal.GetEntry(h.project, lsns[1])
+	require.NoError(t, err)
+	want, err := wal.MarshalDocument(first)
+	require.NoError(t, err)
+	require.Equal(t, want, entry.PreImage)
+}
+
 func TestSource_WriterUndoLegacyDocumentKey(t *testing.T) {
 	const collection = "items"
 	compoundID := bson.D{{Key: "z", Value: int32(1)}, {Key: "a", Value: int32(2)}}

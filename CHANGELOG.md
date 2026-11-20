@@ -23,6 +23,10 @@ entry — a synchronization barrier, not in-proxy capture).
   in the covering snapshot. In 2.8.1 and earlier, a programmatic write could
   record the older row as its pre-image and undo would restore it.
   [#155](https://github.com/argon-lab/argon/issues/155)
+- When `PutMany` writes the same document more than once, each later write
+  now records the previous value as a reader sees it. A repeated nested field
+  appears once in the pre-image, with its last value.
+  [#160](https://github.com/argon-lab/argon/issues/160)
 
 ### Known limitations
 
