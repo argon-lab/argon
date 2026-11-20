@@ -218,7 +218,7 @@ func (s *Service) storeCollectionChunks(ctx context.Context, branch *wal.Branch,
 // applies to individual entries; see usable.
 func (s *Service) FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (map[string]bson.M, int64, bool, error) {
 	var state map[string]bson.M
-	snap, err := s.loadUsable(branch, collection, minLSN, maxLSN, readUpperBound, func(snap *Snapshot) (retry bool, err error) {
+	snap, err := s.loadUsable(branch, collection, minLSN, maxLSN, readUpperBound, forReplay, func(snap *Snapshot) (retry bool, err error) {
 		state, err = s.load(context.Background(), snap)
 		return true, err
 	})
@@ -232,7 +232,7 @@ func (s *Service) FindUsable(branch *wal.Branch, collection string, minLSN, maxL
 // together. A failed chunk can follow frames already visited, so reset
 // discards that candidate's partial state before starting another one.
 func (s *Service) VisitUsableFrames(branch *wal.Branch, collection string, from, to int64, reset func(), visit func(string, *wal.DecodedImage) error) (int64, bool, bool, error) {
-	snap, err := s.loadUsable(branch, collection, from, to, to, func(snap *Snapshot) (bool, error) {
+	snap, err := s.loadUsable(branch, collection, from, to, to, forReplay, func(snap *Snapshot) (bool, error) {
 		reset()
 		var visitErr error
 		err := s.visitFrames(snap, func(f frame) error {
@@ -251,12 +251,32 @@ func (s *Service) VisitUsableFrames(branch *wal.Branch, collection string, from,
 	return snap.LSN, true, bool(snap.OrderedImages), nil
 }
 
+// RetainedRowSnapshot checks every frame of the selected manifest, even
+// after a match. Only another eligible copy at its LSN can recover a read error.
+func (s *Service) RetainedRowSnapshot(branch *wal.Branch, collection, key string, from, to int64) (bson.M, bool, error) {
+	var value bson.M
+	snap, err := s.loadUsable(branch, collection, from, to, to, forRetainedRow, func(snap *Snapshot) (bool, error) {
+		value = nil
+		return true, s.visitFrames(snap, func(f frame) error {
+			k, doc, err := f.decoded()
+			if err == nil && k == key {
+				value = doc.TakeValue()
+			}
+			return err
+		})
+	})
+	if err != nil || snap == nil {
+		return nil, false, err
+	}
+	return value, true, nil
+}
+
 // A failed chunk can only be replaced by a copy of the same snapshot position.
-func (s *Service) loadUsable(branch *wal.Branch, collection string, from, to, upper int64, load func(*Snapshot) (retry bool, err error)) (*Snapshot, error) {
+func (s *Service) loadUsable(branch *wal.Branch, collection string, from, to, upper int64, lookup snapshotLookup, load func(*Snapshot) (retry bool, err error)) (*Snapshot, error) {
 	var failed []primitive.ObjectID
 	var firstErr error
 	for {
-		snap, err := s.newestUsable(branch, collection, from, to, upper, forReplay, failed...)
+		snap, err := s.newestUsable(branch, collection, from, to, upper, lookup, failed...)
 		if err != nil || snap == nil {
 			if firstErr != nil {
 				return nil, firstErr
@@ -366,6 +386,7 @@ const (
 	forCoverage snapshotLookup = iota
 	forReplay
 	forOrderedFrames
+	forRetainedRow
 )
 
 // newestUsable checks both reads and GC coverage against the same rules.
@@ -379,7 +400,7 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 	if len(failed) != 0 {
 		filter["_id"] = bson.M{"$nin": failed}
 	}
-	if lookup == forOrderedFrames {
+	if lookup == forOrderedFrames || lookup == forRetainedRow {
 		filter["ordered_images"] = true
 	}
 	cursor, err := s.manifests.Find(ctx, filter, options.Find().SetSort(bson.M{"lsn": -1}))
@@ -395,6 +416,16 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 	var ancestorGap *wal.ReclaimedOldBinaryError
 	var pass *certificationPass
 	for cursor.Next(ctx) {
+		if lookup == forRetainedRow {
+			name, named := cursor.Current.Lookup("collection").StringValueOK()
+			id, identified := cursor.Current.Lookup("branch_id").StringValueOK()
+			// Every ordered writer also marked its keys exact. Incomplete
+			// writer markers cannot displace an intact row.
+			exact, _ := cursor.Current.Lookup("exact_old_binary_keys").BooleanOK()
+			if name != collection || id != branch.ID || !named || !identified || !exact {
+				continue
+			}
+		}
 		// Only a tie can replace an unreadable manifest or improve a
 		// usable sorted one. Inspect the index key and marker first.
 		var lsn int64
@@ -408,7 +439,7 @@ func (s *Service) newestUsable(branch *wal.Branch, collection string, minLSN, ma
 			break
 		}
 		tieLSN = lsn
-		if selected != nil || lookup == forOrderedFrames {
+		if selected != nil || lookup == forOrderedFrames || lookup == forRetainedRow {
 			if ordered, _ := cursor.Current.Lookup("ordered_images").BooleanOK(); !ordered {
 				continue
 			}

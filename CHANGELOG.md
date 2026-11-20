@@ -23,7 +23,9 @@ entry — a synchronization barrier, not in-proxy capture).
 - Once this version of garbage collection records a cutoff for a collection,
   a programmatic write uses the covering snapshot for its pre-image when a
   newer WAL row was reclaimed and an older row remains at or below the cutoff.
-  Undo restores the snapshot value. A later GC run by an older version can
+  Only snapshots written by 2.8.1 or later qualify. Undo restores the snapshot
+  value. If GC cannot update the branch gate, it still records the floor and
+  reclaims rows. Rows above the previous gate keep 2.8.1 behavior. A later GC run by an older version can
   reclaim more history outside this protection. History without a recorded
   floor remains subject to [#168](https://github.com/argon-lab/argon/issues/168).
   The first programmatic write to a document whose latest row is at or below

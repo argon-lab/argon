@@ -252,6 +252,11 @@ func TestSource_DecodedPointReadParity(t *testing.T) {
 				t.Skip("A legacy row can be indexed under another key: https://github.com/argon-lab/argon/issues/154")
 				check(t)
 			})
+			// Build ordered siblings while the historical WAL is intact.
+			for _, at := range []int64{h.legacySnapshot, h.reclaimThrough} {
+				_, err := h.snapshots.CreateSnapshot(t.Context(), h.main.ID, at)
+				require.NoError(t, err)
+			}
 			// Remove the value-changing put at the newer snapshot and the
 			// delete at the 2.1.5 snapshot. Both have older surviving puts.
 			h.removeRows(t, h.missing, h.legacySnapshot, h.reclaimThrough)

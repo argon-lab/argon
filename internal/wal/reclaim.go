@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -35,6 +36,31 @@ func reclaimGateKey(collection string) string {
 	return "c" + base64.RawURLEncoding.EncodeToString([]byte(collection))
 }
 
+type reclaimGates map[string]int64
+
+// Gates are optional hints. Discard the whole map if any member is malformed.
+func (g *reclaimGates) UnmarshalBSONValue(t bsontype.Type, data []byte) error {
+	*g = nil
+	doc, ok := (bson.RawValue{Type: t, Value: data}).DocumentOK()
+	if !ok {
+		return nil
+	}
+	elems, err := doc.Elements()
+	if err != nil {
+		return err
+	}
+	gates := make(reclaimGates, len(elems))
+	for _, elem := range elems {
+		n, ok := elem.Value().Int64OK()
+		if !ok {
+			return nil
+		}
+		gates[elem.Key()] = n
+	}
+	*g = gates
+	return nil
+}
+
 // ReclaimGate is the greatest cutoff published on this branch record for a collection.
 // Older garbage collectors can advance the floor without advancing the gate,
 // and can forget a deleted branch's floors without clearing its gates.
@@ -54,25 +80,68 @@ func (s *Service) RecordReclaimFloor(ctx context.Context, branchID, collection s
 	if lsn <= 0 {
 		return nil
 	}
-	// Publish both maxima together so a concurrent ForgetReclaimFloors cannot
-	// leave a branch gate above its authoritative floor.
-	_, err := s.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
-		if _, err := s.db.Collection(reclaimFloorsCollection).UpdateOne(sc,
-			bson.M{"_id": reclaimFloorID(branchID, collection)},
-			bson.M{"$max": bson.M{"lsn": lsn}},
-			options.Update().SetUpsert(true),
-		); err != nil {
+	floor := s.db.Collection(reclaimFloorsCollection)
+	filter := bson.M{"_id": reclaimFloorID(branchID, collection)}
+	maximum := bson.M{"lsn": lsn}
+	writeFloor := func(ctx context.Context) (*mongo.UpdateResult, error) {
+		return floor.UpdateOne(ctx, filter, bson.M{"$max": maximum}, options.Update().SetUpsert(true))
+	}
+
+	// An oversized key cannot fit even on an empty branch. Inside a caller's
+	// transaction, a refused optional write would abort their other work.
+	var err error
+	if base64.RawURLEncoding.EncodedLen(len(collection)) >= 16<<20 || inFloorTransaction(ctx) {
+		_, err = writeFloor(ctx)
+	} else {
+		_, err = s.withFloorTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+			recorded, err := writeFloor(sc)
+			if err != nil {
+				return nil, err
+			}
+			gate, err := s.db.Collection("wal_branches").UpdateOne(sc,
+				bson.M{"_id": branchID, "is_deleted": false,
+					"$expr": bson.M{"$in": bson.A{bson.M{"$type": "$reclaim_gates"}, bson.A{"missing", "object"}}}},
+				bson.M{"$max": bson.M{"reclaim_gates." + reclaimGateKey(collection): lsn}},
+			)
+			if err != nil {
+				return nil, err
+			}
+			if gate.ModifiedCount == 0 || recorded.UpsertedCount != 0 || recorded.ModifiedCount != 0 {
+				return nil, nil
+			}
+
+			// The floor already covered this LSN. A newly published gate
+			// still needs a real write to conflict with a concurrent Forget.
+			_, err = floor.UpdateOne(sc, filter, bson.M{"$currentDate": bson.M{"gate_updated": bson.M{"$type": "timestamp"}}})
 			return nil, err
+		})
+		if err != nil && ctx.Err() == nil {
+			// The gate is optional. Whatever stopped the paired write, the
+			// aborted transaction raised nothing, so record the floor alone,
+			// as releases without a gate did. Only that write can fail GC.
+			_, err = writeFloor(ctx)
 		}
-		return s.db.Collection("wal_branches").UpdateOne(sc,
-			bson.M{"_id": branchID, "is_deleted": false},
-			bson.M{"$max": bson.M{"reclaim_gates." + reclaimGateKey(collection): lsn}},
-		)
-	})
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to record reclaim floor for %s: %w", collection, err)
 	}
 	return nil
+}
+
+func inFloorTransaction(ctx context.Context) bool {
+	session, ok := mongo.SessionFromContext(ctx).(mongo.XSession) //nolint:staticcheck
+	return ok && session.ClientSession().TransactionRunning()
+}
+
+func (s *Service) withFloorTransaction(ctx context.Context, fn func(mongo.SessionContext) (interface{}, error)) (interface{}, error) {
+	if session := mongo.SessionFromContext(ctx); session != nil {
+		if inFloorTransaction(ctx) {
+			return fn(mongo.NewSessionContext(ctx, session))
+		}
+		return session.WithTransaction(ctx, fn)
+	}
+	return s.WithTransaction(ctx, fn)
 }
 
 // ReclaimFloor returns the highest LSN at or below which data entries of a
@@ -158,7 +227,7 @@ func (s *Service) ReclaimFloors(branchID string) (map[string]int64, error) {
 // ForgetReclaimFloors drops a branch's floors. Only for a branch whose
 // entire history is being deleted: nothing can read it afterwards.
 func (s *Service) ForgetReclaimFloors(ctx context.Context, branchID string) error {
-	_, err := s.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+	_, err := s.withFloorTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
 		if _, err := s.db.Collection("wal_branches").UpdateOne(sc,
 			bson.M{"_id": branchID}, bson.M{"$unset": bson.M{"reclaim_gates": ""}},
 		); err != nil {
