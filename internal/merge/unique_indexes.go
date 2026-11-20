@@ -53,7 +53,7 @@ func (r *UniqueCheckResult) readIndexes(ctx context.Context, coll *mongo.Collect
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 	var indexes []uniqueIndex
 	for cursor.Next(ctx) {
 		var spec struct {
@@ -159,7 +159,7 @@ func (r *UniqueCheckResult) checkCollection(ctx context.Context, coll *mongo.Col
 	if err != nil {
 		return err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 	for cursor.Next(ctx) {
 		if err := r.checkSourceDocument(coll.Name(), cursor.Current, indexes, modified); err != nil {
 			return err
