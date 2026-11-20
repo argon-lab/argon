@@ -242,19 +242,25 @@ func (h *editImageHistory) removeThroughFloor(t *testing.T) {
 // Check every queried key, including the stored envelope spellings and keys
 // that only appear on a sibling or later in history.
 func TestSource_DecodedPointReadParity(t *testing.T) {
-	t.Skip("the single-document read does not yet agree with collection replay: https://github.com/argon-lab/argon/issues/154 https://github.com/argon-lab/argon/issues/155 https://github.com/argon-lab/argon/issues/168")
 	for _, seed := range []int64{31, 97} {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
 			t.Parallel()
 			h := newEditImageHistory(t, seed)
 			h.addLegacyPointRows(t)
 			check := func(t *testing.T) { h.checkPointStage(t, false) }
-			t.Run("intact", check)
+			t.Run("intact", func(t *testing.T) {
+				t.Skip("A legacy row can be indexed under another key: https://github.com/argon-lab/argon/issues/154")
+				check(t)
+			})
 			// Remove the value-changing put at the newer snapshot and the
 			// delete at the 2.1.5 snapshot. Both have older surviving puts.
 			h.removeRows(t, h.missing, h.legacySnapshot, h.reclaimThrough)
-			t.Run("unrecorded reclamation", func(t *testing.T) { h.checkPointStage(t, true) })
+			t.Run("unrecorded reclamation", func(t *testing.T) {
+				t.Skip("Legacy keys and missing rows without a floor: https://github.com/argon-lab/argon/issues/154 https://github.com/argon-lab/argon/issues/168")
+				h.checkPointStage(t, true)
+			})
 			require.NoError(t, h.wal.RecordReclaimFloor(t.Context(), h.main.ID, editCollection, h.reclaimThrough))
+			h.readBranches[0] = h.reload()
 			t.Run("floor with retained rows", check)
 			h.removeThroughFloor(t)
 			t.Run("recorded reclamation", check)
@@ -420,7 +426,6 @@ func (h *editImageHistory) checkPointBranch(t *testing.T, branch *wal.Branch, un
 // A typed row can still establish a key when an unrelated historical delete
 // prevents replay of the collection, including on a segment with untyped data.
 func TestSource_DecodedPointWithUnrelatedAmbiguousDelete(t *testing.T) {
-	t.Skip("the single-document read does not yet agree with collection replay: https://github.com/argon-lab/argon/issues/154 https://github.com/argon-lab/argon/issues/155 https://github.com/argon-lab/argon/issues/168")
 	h := newHistoryFixture(t, "unrelated-ambiguous-delete")
 	want := bson.M{"_id": "stable", "value": "retained"}
 	_, err := h.writer.Put(t.Context(), editCollection, want)
@@ -444,7 +449,6 @@ func TestSource_DecodedPointWithUnrelatedAmbiguousDelete(t *testing.T) {
 }
 
 func TestSource_DecodedPointSeparateSnapshotDatabase(t *testing.T) {
-	t.Skip("the single-document read does not yet agree with collection replay: https://github.com/argon-lab/argon/issues/154 https://github.com/argon-lab/argon/issues/155 https://github.com/argon-lab/argon/issues/168")
 	for _, name := range []string{"manifests and chunks", "chunks only"} {
 		t.Run(name, func(t *testing.T) {
 			h := newHistoryFixture(t, "point-split")
@@ -494,7 +498,6 @@ func TestSource_DecodedPointSeparateSnapshotDatabase(t *testing.T) {
 }
 
 func TestSource_DecodedPointAcrossSnapshotChunks(t *testing.T) {
-	t.Skip("the single-document read does not yet agree with collection replay: https://github.com/argon-lab/argon/issues/154 https://github.com/argon-lab/argon/issues/155 https://github.com/argon-lab/argon/issues/168")
 	h := newHistoryFixture(t, "point-chunks")
 	ctx := t.Context()
 	store := snapshot.NewMongoChunkStore(h.db)

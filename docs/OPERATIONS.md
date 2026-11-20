@@ -607,9 +607,16 @@ name order, and undo can restore fields in name order, as in 2.8.0.
 - If a document's only prior WAL row is stored under a key the single-key read
   misses, a programmatic write records no pre-image and undo deletes the
   document. [#154](https://github.com/argon-lab/argon/issues/154)
-- If a snapshot covers a reclaimed WAL row but an older row remains, a
-  programmatic write can record the older row as its pre-image and undo
-  restores that older value. [#155](https://github.com/argon-lab/argon/issues/155)
+- When garbage collection records a cutoff for a collection with this version,
+  it also records the cutoff on the branch. If GC removed a newer row but
+  left an older row at or below that cutoff, a write uses the covering snapshot
+  for its pre-image. Undo restores the snapshot value. If the document was
+  absent from the snapshot, undoing a later insert removes it.
+  [#155](https://github.com/argon-lab/argon/issues/155)
+- A later GC run by an older version can reclaim more history outside this
+  protection. Where GC never recorded a floor, a write can still record the
+  older row as its pre-image and undo restores it.
+  [#168](https://github.com/argon-lab/argon/issues/168)
 
 ### What Argon can never do to a source
 

@@ -226,8 +226,8 @@ func (s *Service) gcBranch(ctx context.Context, branch *wal.Branch, liveChildren
 		if dryRun {
 			continue
 		}
-		// The floor goes down first. Readers that would need the deleted
-		// entries are refused from here on instead of replaying past them.
+		// Publish the collection floor and its branch gate before deleting
+		// any rows, including when a later deletion only partly succeeds.
 		if err := s.wal.RecordReclaimFloor(ctx, branch.ID, collection, cutoff); err != nil {
 			return nil, err
 		}
