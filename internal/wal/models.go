@@ -203,10 +203,6 @@ type Branch struct {
 	Follows string `bson:"follows,omitempty" json:"follows,omitempty"`
 
 	CollectionBaselines []CollectionBaseline `bson:"collection_baselines,omitempty" json:"-"`
-
-	// ReclaimGates bounds which retained rows need a lookup in wal_reclaim_floors.
-	// ReclaimGate looks up a collection by its encoded name.
-	ReclaimGates reclaimGates `bson:"reclaim_gates,omitempty" json:"-"`
 }
 
 // PhysicalDBName is the database a branch materializes into. Branch IDs are

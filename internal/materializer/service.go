@@ -34,8 +34,6 @@ type SnapshotSource interface {
 	// The returned state belongs to the caller, which applies later WAL
 	// puts and deletes to it in place.
 	FindUsable(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (state map[string]bson.M, lsn int64, ok bool, err error)
-	// RetainedRowSnapshot reads a document from a covering ordered manifest.
-	RetainedRowSnapshot(branch *wal.Branch, collection, key string, from, to int64) (bson.M, bool, error)
 	// UsableLSN reports the LSN FindUsable would start from without
 	// materializing its documents.
 	UsableLSN(branch *wal.Branch, collection string, minLSN, maxLSN, readUpperBound int64) (lsn int64, ok bool, err error)
@@ -560,24 +558,6 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 			state := make(map[string]bson.M)
 			if err := s.ApplyEntry(state, latest); err != nil {
 				return nil, err
-			}
-			if !collision && seg.branch.ReclaimGate(collection) >= latest.LSN {
-				floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
-				if err != nil {
-					return nil, err
-				}
-				if latest.LSN <= floor && s.snapshots != nil {
-					from := max(latest.LSN, lastReclaimableLSN(seg, floor))
-					doc, ok, err := s.snapshots.RetainedRowSnapshot(seg.branch, collection, documentID, from, seg.toLSN)
-					if err != nil {
-						return nil, err
-					}
-					if ok {
-						// The snapshot includes the entire prefix. A missing key
-						// there supersedes the retained row just as a newer put does.
-						return doc, nil
-					}
-				}
 			}
 			return state[documentID], nil
 		}
