@@ -11,6 +11,19 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.9.0] - 2026-11-20
+
+Adds `argon merge check`, which reports unique-index collisions with the
+followed source before a write-back. A sandbox edit inside a document whose
+JavaScript code scope holds nested documents can now be written back, and a
+batch that writes the same document twice records the right pre-image for
+the second write. Undo on some old histories still has the limits listed
+below ([#154](https://github.com/argon-lab/argon/issues/154),
+[#155](https://github.com/argon-lab/argon/issues/155),
+[#168](https://github.com/argon-lab/argon/issues/168)); a fix for #155 was
+tried and withdrawn before release because snapshots built on older
+releases can hold wrong contents.
+
 ### Added
 
 - `argon merge check <plan-id>` reports unique-index collisions with the
