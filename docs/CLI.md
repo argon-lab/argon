@@ -97,6 +97,7 @@ argon source follow -p P [--uri U] [--allow-inexact] [--enable-source-images] [-
 argon source status -p P [-o json]
 argon source resync -p P [--uri U] [--force] [-o json]
 argon source detach -p P --yes
+argon merge check <plan-id> [--uri U] [--strategy theirs|ours] [-o json]
 argon merge apply <plan-id> --write-back --approve <digest> [--uri U] [--strategy theirs|ours]
 ```
 
@@ -108,8 +109,8 @@ must match the identity recorded at import. If the import could read the
 replica-set ID, each connection must prove the same ID. Otherwise following
 and resync match on the set name and at least one member host.
 
-`--write-back` and `--enable-source-images` require a replica-set ID recorded
-at import. Separate deployments can report the same set name and member
+`merge check`, `--write-back` and `--enable-source-images` require a replica-set
+ID recorded at import. Separate deployments can report the same set name and member
 hosts. For a project bound by name and hosts, detach it with
 `argon source detach -p P --yes`, then import the source online into a new
 project as a user allowed to run `replSetGetConfig`, such as one with the
@@ -232,6 +233,7 @@ that moment, so the same applies when that moment was later discarded.
 ```
 argon diff          -p P -b B                  what merging B would change
 argon merge preview -p P -b B                  persist a reviewable plan
+argon merge check <plan-id> [--uri U] [--strategy theirs|ours] [-o json]
 argon merge apply <plan-id> [--strategy theirs|ours] [--write-back --approve <digest>]
 argon merge list    -p P
 ```
@@ -300,6 +302,24 @@ When listing older plans, CLI JSON shows the field order actually stored in
 each image and the typed lookup key separately. Unreadable plans appear by ID.
 Preview reports the encoded size if the plan and its outcome fields exceed
 MongoDB's 16 MiB document limit.
+
+Before approving a write-back, run `argon merge check <plan-id>` with the
+source URI in `--uri` or `ARGON_SOURCE_URI`. For a plan with conflicts, pass
+the same `--strategy` you intend to apply. The command reads the pending plan
+and scans indexed fields in affected source collections. It reports duplicate
+keys among proposed inserts and replacements and keys held by another source
+document, allowing for keys the plan deletes or replaces. The check leaves
+the plan pending and its approval digest intact.
+
+A collision returns a nonzero exit status. Table output and `--output json`
+give the collection, index, key and both document IDs. The JSON field `in_plan`
+identifies a collision between proposed documents. When several plan documents
+share a key, each additional document names the first as its collision partner.
+The check excludes the `_id` index. The `not_checked` list gives reasons for
+skipping partial indexes, indexes with a collation, special index types such as
+hashed, text, wildcard and geospatial, and documents with arrays on a key path.
+Skips alone return zero. The report describes the proposed final state. Write
+order and concurrent changes to the source can still affect apply.
 
 For a followed parent, inspect `merge preview --output json` or
 `merge list -p <project> --output json`. Each eligible pending plan includes

@@ -121,7 +121,9 @@ canonical Extended JSON, identify literal documents with dollar-prefixed
 fields and show exact bytes wherever JSON loses a BSON distinction. For a
 pending plan targeting a followed database, inspect this output and pass its
 `approval_digest` to `--approve`. To inspect a saved plan, run
-`argon merge list -p myapp --output json`. Plans saved by older versions
+`argon merge list -p myapp --output json`. Before approving, run
+`argon merge check <plan-id>` to report unique-index collisions against the
+source and within the plan. Plans saved by older versions
 require a fresh preview. Write-back
 requires a verified, saved before-image for every replacement or delete and
 a verified after-image for every insert or replacement. An empty plan

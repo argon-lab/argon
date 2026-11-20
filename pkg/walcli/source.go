@@ -520,14 +520,8 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 	if err != nil {
 		return nil, err
 	}
-	if binding == nil {
-		return nil, errors.New("this plan's target branch does not follow an external database; apply it without --write-back")
-	}
-	if err := binding.RequireReplicaSetID(); err != nil {
-		return nil, fmt.Errorf("write-back refused: %w", err)
-	}
-	if binding.ProjectID != plan.ProjectID || binding.Database != plan.FollowedDatabase || binding.ReplicaSetID != plan.FollowedReplicaSetID {
-		return nil, errors.New("the source binding has changed since preview; preview again with this version")
+	if err := verifyPlanSource(plan, binding); err != nil {
+		return nil, err
 	}
 	branch, status, err := s.Ingest.CaptureStatusFor(ctx, plan.TargetBranchID)
 	if err != nil {
@@ -549,6 +543,19 @@ func (s *Services) WriteBackMerge(ctx context.Context, planID primitive.ObjectID
 		Redact: func(text string) string { return source.Redact(text, uri) },
 	}, approved)
 	return result, source.RedactError(err, uri)
+}
+
+func verifyPlanSource(plan *merge.Plan, binding *source.Binding) error {
+	if binding == nil {
+		return errors.New("this plan's target branch does not follow an external database; apply it without --write-back")
+	}
+	if err := binding.RequireReplicaSetID(); err != nil {
+		return fmt.Errorf("write-back refused: %w", err)
+	}
+	if binding.ProjectID != plan.ProjectID || binding.Database != plan.FollowedDatabase || binding.ReplicaSetID != plan.FollowedReplicaSetID {
+		return errors.New("the source binding has changed since preview; preview again with this version")
+	}
+	return nil
 }
 
 // writeBackLedger lets the follower attribute and settle write-backs.

@@ -11,6 +11,13 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Added
+
+- `argon merge check <plan-id>` reports unique-index collisions with the
+  followed source and between documents in a saved plan before write-back.
+  Table and JSON output identify skipped indexes and key paths.
+  [#170](https://github.com/argon-lab/argon/issues/170)
+
 ### Fixed
 
 - Sandbox edits can now be written back when a JavaScript code scope contains

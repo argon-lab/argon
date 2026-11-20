@@ -28,7 +28,7 @@ func init() {
 		projectsCreateCmd, projectsListCmd, branchesCreateCmd, branchesListCmd, branchesDeleteCmd,
 		sandboxCreateCmd, sandboxListCmd, sandboxDiscardCmd, sandboxKeepCmd, sandboxSweepCmd,
 		pinCreateCmd, pinListCmd, pinDeleteCmd, pinBranchCmd, pinSandboxCmd,
-		diffCmd, mergePreviewCmd, mergeApplyCmd, mergeListCmd, undoCmd,
+		diffCmd, mergePreviewCmd, mergeCheckCmd, mergeApplyCmd, mergeListCmd, undoCmd,
 		checkoutCmd, connectCmd, releaseCmd, statusCmd, doctorCmd,
 		timeTravelInfoCmd, timeTravelQueryCmd, snapshotCreateCmd, snapshotListCmd,
 		gcCmd, restorePreviewCmd, restoreResetCmd, restoreBranchCmd,
