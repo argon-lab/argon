@@ -26,6 +26,9 @@ entry — a synchronization barrier, not in-proxy capture).
   Undo restores the snapshot value. A later GC run by an older version can
   reclaim more history outside this protection. History without a recorded
   floor remains subject to [#168](https://github.com/argon-lab/argon/issues/168).
+  The first programmatic write to a document whose latest row is at or below
+  its collection's cutoff reads the snapshot and takes roughly five times as
+  long, once per document; other writes are unaffected.
   [#155](https://github.com/argon-lab/argon/issues/155)
 
 ### Known limitations
