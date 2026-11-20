@@ -33,6 +33,31 @@ func TestSortedImageWithCodeScope(t *testing.T) {
 	require.Equal(t, []string{"theirs"}, sorted)
 }
 
+func TestStoredImageWithNestedCodeScope(t *testing.T) {
+	nested := bson.D{{Key: "z", Value: 1}, {Key: "a", Value: 2}, {Key: "m", Value: 3}}
+	scope := bson.D{
+		{Key: "row", Value: nested},
+		{Key: "items", Value: bson.A{nested, nested, nested}},
+		{Key: "row", Value: nested},
+	}
+	stored, err := wal.MarshalDocument(bson.D{
+		{Key: "_id", Value: "one"},
+		{Key: "scripts", Value: bson.A{primitive.CodeWithScope{Code: "row.z", Scope: scope}}},
+	})
+	require.NoError(t, err)
+	var doc bson.M
+	require.NoError(t, wal.UnmarshalDocument(stored, &doc))
+	entry := &wal.Entry{Operation: wal.OpPut, PostImage: stored}
+	for i := range 200 {
+		var raw bson.Raw
+		var sorted []string
+		image := imageRequest{key: "one", name: "document", doc: doc, raw: &raw, sorted: &sorted}
+		require.NoError(t, image.store(entry, true, true))
+		require.Empty(t, sorted, "iteration %d", i)
+		require.Equal(t, stored, raw, "iteration %d", i)
+	}
+}
+
 func TestOrdinaryImageRetainsFieldPositions(t *testing.T) {
 	original := bson.D{
 		{Key: "_id", Value: "order"}, {Key: "z", Value: int32(1)},

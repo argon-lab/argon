@@ -23,6 +23,9 @@ entry — a synchronization barrier, not in-proxy capture).
   in the covering snapshot. In 2.8.1 and earlier, a programmatic write could
   record the older row as its pre-image and undo would restore it.
   [#155](https://github.com/argon-lab/argon/issues/155)
+- Sandbox edits can now be written back when a JavaScript code scope contains
+  nested documents. Merge preview previously reported a conflict even when
+  only the sandbox had changed.
 
 ### Known limitations
 

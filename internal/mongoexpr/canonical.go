@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -28,9 +29,8 @@ func CanonicalBytes(v interface{}) ([]byte, error) {
 	return bson.Marshal(bson.D{{Key: "v", Value: canonical}})
 }
 
-// Canonicalize converts a BSON value into its canonical form: documents
-// become bson.D with recursively sorted keys, so marshalling the result is
-// deterministic.
+// Canonicalize sorts document keys recursively for comparison. Inside a
+// JavaScript code scope, ordered BSON fields and repeated names are significant.
 func Canonicalize(v interface{}) (interface{}, error) {
 	return canonicalizeValue(v)
 }
@@ -65,6 +65,15 @@ func canonicalizeValue(v interface{}) (interface{}, error) {
 		return canonicalizeSlice(val)
 	case primitive.A:
 		return canonicalizeSlice(val)
+	case primitive.CodeWithScope:
+		// A decoded scope is a bson.D that can contain Go maps. The ordered
+		// encoder sorts those maps and retains every field in the bson.D.
+		scope, err := wal.MarshalDocument(val.Scope)
+		if err != nil {
+			return nil, fmt.Errorf("code scope: %w", err)
+		}
+		val.Scope = scope
+		return val, nil
 	default:
 		return v, nil
 	}
