@@ -515,75 +515,20 @@ func (s *Service) MaterializeBranch(branch *wal.Branch) (map[string]map[string]b
 	return s.MaterializeBranchAtLSN(branch, branch.HeadLSN)
 }
 
-// MaterializeDocumentAtLSN reconstructs one document, or nil if it is absent.
-// A retained indexed row answers directly above the recorded reclaim floor.
-// Untyped envelopes can name a different document, so they require replay.
+// MaterializeDocumentAtLSN reconstructs one document as of targetLSN, or nil
+// if it does not exist at that point. This is a point lookup: it reads only
+// the document's own history via the (branch, collection, document, lsn)
+// index instead of replaying the whole collection.
 func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, documentID string, targetLSN int64) (bson.M, error) {
 	segments, err := s.collectionSegments(branch, collection, targetLSN)
 	if err != nil {
 		return nil, err
 	}
-	for i := len(segments) - 1; i >= 0; i-- {
-		seg := segments[i]
-		point, err := s.wal.ReadDocumentPointSegment(seg.branch, collection, documentID, seg.fromLSN, seg.toLSN)
-		if err != nil || point.Legacy {
-			// Untyped envelopes can name an unrelated document. Image-less
-			// deletes can depend on other documents at the same position.
-			// A snapshot may also cover a damaged or ambiguous indexed row.
-			return s.replayDocument(branch, segments, collection, documentID, targetLSN)
-		}
-		latest := point.Latest
-		floor := point.Floor
-		if point.Collision && latest != nil && s.snapshots != nil {
-			// A shared binary key may have lost an ambiguous delete to a
-			// release that did not record its reclaim floor.
-			old, err := s.snapshots.UnrecordedReclaimBound(seg.branch.ID, collection)
-			if err != nil {
-				return nil, err
-			}
-			floor = max(floor, old)
-		}
-		if s.snapshots != nil && (latest == nil || latest.LSN <= floor) {
-			doc, at, ok, err := s.snapshotDocument(seg, collection, documentID)
-			if err == nil && ok && !needsReclaimed(seg, at+1, floor) {
-				return doc, nil
-			}
-			if err != nil && (latest == nil || point.Collision) {
-				return nil, err
-			}
-		}
-		if latest != nil && (!point.Collision || latest.LSN > floor) {
-			// When no snapshot covers the gap, retain the historical point
-			// answer for an ordinary key even if collection replay fails.
-			return s.documentEntryValue(documentID, latest)
-		}
-		if needsReclaimed(seg, seg.fromLSN, floor) {
-			return nil, reclaimedError(seg.branch, collection, floor, targetLSN)
-		}
-	}
-	return nil, nil
-}
 
-func (s *Service) documentEntryValue(key string, entry *wal.Entry) (bson.M, error) {
-	state := make(map[string]bson.M, 1)
-	if err := s.ApplyEntry(state, entry); err != nil {
-		return nil, err
-	}
-	return state[key], nil
-}
-
-func (s *Service) replayDocument(branch *wal.Branch, segments []segment, collection, key string, targetLSN int64) (bson.M, error) {
-	state, err := s.MaterializeCollectionAtLSN(branch, collection, targetLSN)
-	if err == nil {
-		return state[key], nil
-	}
-	return s.retainedDocument(segments, collection, key, targetLSN)
-}
-
-// retainedDocument answers an individual key when collection replay failed.
-// In particular, a published floor can precede the deletion of a readable
-// ordinary row, while shared old-binary keys need the stronger floor check.
-func (s *Service) retainedDocument(segments []segment, collection, documentID string, targetLSN int64) (bson.M, error) {
+	// Every physical event is a full document state, so the last visible
+	// event on the nearest ancestry segment answers a point read directly.
+	// Consult that segment's snapshot only when its document history has
+	// been reclaimed; this avoids loading an entire snapshot on every write.
 	for i := len(segments) - 1; i >= 0; i-- {
 		seg := segments[i]
 		entries, collision, err := s.wal.DocumentHistoryForRead(seg.branch.ID, collection, documentID, seg.fromLSN, seg.toLSN, func(lsn int64) bool { return !seg.branch.IsDiscardedForRead(lsn, seg.toLSN) })
@@ -610,8 +555,18 @@ func (s *Service) retainedDocument(segments []segment, collection, documentID st
 			return nil, err
 		}
 		if latest != nil && (!collision || latest.LSN > floor) {
-			return s.documentEntryValue(documentID, latest)
+			state := make(map[string]bson.M)
+			if err := s.ApplyEntry(state, latest); err != nil {
+				return nil, err
+			}
+			return state[documentID], nil
 		}
+		// No entry of this segment answers, so the answer lies below: in
+		// this segment's snapshot, or further down the chain. That is only
+		// sound if the document really has no later entry here. Had garbage
+		// collection deleted entries between that base and the read bound,
+		// one of them might have been this document's — and an older value
+		// would be returned as if it were current.
 		if s.snapshots != nil {
 			doc, snapLSN, ok, err := s.snapshotDocument(seg, collection, documentID)
 			if err != nil {

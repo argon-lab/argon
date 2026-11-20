@@ -13,16 +13,6 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Fixed
 
-- Programmatic puts and deletes now find the previous value when an untyped
-  WAL key names a different document or when the 2.0.1 importer indexed a
-  compound `_id` in a different field order. In 2.8.1 and earlier, undo
-  could delete the document or restore a parent's older value.
-  [#154](https://github.com/argon-lab/argon/issues/154)
-- When garbage collection removes a newer revision but leaves an older row
-  at or below the reclaim floor, a single-document read now uses the revision
-  in the covering snapshot. In 2.8.1 and earlier, a programmatic write could
-  record the older row as its pre-image and undo would restore it.
-  [#155](https://github.com/argon-lab/argon/issues/155)
 - Sandbox edits can now be written back when a JavaScript code scope contains
   nested documents. Merge preview previously reported a conflict even when
   only the sandbox had changed.
@@ -33,10 +23,14 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Known limitations
 
-- When a newer row was removed from the WAL without a recorded reclaim floor
-  and a snapshot covers its position, a single-document read still returns
-  the older retained row, so a programmatic write can record it as its
-  pre-image and undo can restore it. 2.8.1 and earlier behave the same.
+- A programmatic write on a document whose only earlier row is stored under
+  a key the single-document read does not find records no pre-image, and
+  undo deletes the document.
+  [#154](https://github.com/argon-lab/argon/issues/154)
+- When garbage collection removed a newer row but an older row of the same
+  document remains, a programmatic write can record the older row as its
+  pre-image and undo restores it, with or without a recorded reclaim floor.
+  [#155](https://github.com/argon-lab/argon/issues/155),
   [#168](https://github.com/argon-lab/argon/issues/168)
 
 ## [2.8.1] - 2026-11-19
