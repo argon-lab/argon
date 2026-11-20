@@ -135,6 +135,8 @@ type Service struct {
 	plans        *mongo.Collection
 }
 
+const plansCollection = "wal_merge_plans"
+
 // NewService creates a merge service. The client reaches physical branch
 // databases for live-target application.
 func NewService(db *mongo.Database, walService *wal.Service, branches *branchwal.BranchService, mat *materializer.Service, client *mongo.Client) *Service {
@@ -143,7 +145,7 @@ func NewService(db *mongo.Database, walService *wal.Service, branches *branchwal
 		branches:     branches,
 		materializer: mat,
 		client:       client,
-		plans:        db.Collection("wal_merge_plans"),
+		plans:        db.Collection(plansCollection),
 	}
 }
 
@@ -508,8 +510,13 @@ func (s *Service) SavePlan(ctx context.Context, proposal *Plan) error {
 
 // GetPlan loads a persisted plan.
 func (s *Service) GetPlan(ctx context.Context, planID primitive.ObjectID) (*Plan, error) {
+	return ReadPlan(ctx, s.plans.Database(), planID)
+}
+
+// ReadPlan reads a saved plan without initializing metadata services or indexes.
+func ReadPlan(ctx context.Context, metadata *mongo.Database, planID primitive.ObjectID) (*Plan, error) {
 	var plan Plan
-	if err := s.plans.FindOne(ctx, bson.M{"_id": planID}).Decode(&plan); err != nil {
+	if err := metadata.Collection(plansCollection).FindOne(ctx, bson.M{"_id": planID}).Decode(&plan); err != nil {
 		return nil, fmt.Errorf("merge plan not found: %w", err)
 	}
 	return &plan, nil

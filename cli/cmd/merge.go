@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"text/tabwriter"
 
 	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/spf13/cobra"
@@ -168,6 +169,61 @@ and the source connection string (--uri or ARGON_SOURCE_URI).`,
 		// Include the ID even when the last error is from closing capture.
 		if err := errors.Join(writeErr, closeCommandServices()); err != nil {
 			return fmt.Errorf("plan %s was saved: %w", plan.ID.Hex(), err)
+		}
+		return nil
+	},
+}
+
+var mergeCheckCmd = &cobra.Command{
+	Use:   "check <plan-id>",
+	Short: "Check a saved plan against the followed source's unique indexes",
+	Long: `Check the proposed final document keys before approving a write-back.
+The report lists collisions with source documents or other plan documents,
+and identifies unique indexes or key paths the check could not evaluate.
+A collision gives a nonzero exit status. The check only reads the saved
+plan and the source. Use the intended apply strategy for a plan with conflicts.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := primitive.ObjectIDFromHex(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid plan ID %q", args[0])
+		}
+		strategy, _ := cmd.Flags().GetString("strategy")
+		flagURI, _ := cmd.Flags().GetString("uri")
+		report, err := walcli.CheckMergeUnique(cmd.Context(), id, strategy, walcli.SourceURI(flagURI))
+		if err != nil {
+			return err
+		}
+		if jsonOutput(cmd) {
+			if err := writeJSON(cmd, report); err != nil {
+				return err
+			}
+		} else {
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+			if len(report.Collisions) > 0 {
+				fmt.Fprintln(w, "COLLECTION\tINDEX\tKEY\tPLAN DOCUMENT ID\tCOLLIDING DOCUMENT ID")
+			}
+			for _, c := range report.Collisions {
+				other := string(c.OtherID)
+				if c.InPlan {
+					other += " (in plan)"
+				}
+				fmt.Fprintf(w, "%q\t%q\t%s\t%s\t%s\n", c.Collection, c.Index, c.Key, c.PlanID, other)
+			}
+			fmt.Fprintf(w, "%d unique-index collision(s) found.\n", len(report.Collisions))
+			if len(report.NotChecked) > 0 {
+				fmt.Fprintln(w, "\nNot checked")
+				fmt.Fprintln(w, "COLLECTION\tINDEX\tREASON")
+				for _, skip := range report.NotChecked {
+					fmt.Fprintf(w, "%q\t%q\t%s\n", skip.Collection, skip.Index, skip.Reason)
+				}
+			}
+			if err := w.Flush(); err != nil {
+				return err
+			}
+		}
+		if len(report.Collisions) > 0 {
+			return fmt.Errorf("plan %s has %d unique-index collision(s)", id.Hex(), len(report.Collisions))
 		}
 		return nil
 	},
@@ -396,6 +452,8 @@ func init() {
 		c.Flags().StringP("branch", "b", "", "Source branch to merge into its parent (required)")
 	}
 	mergeListCmd.Flags().StringP("project", "p", "", "Project name (required)")
+	mergeCheckCmd.Flags().String("strategy", "", "Conflict resolution to check: theirs (take the branch) or ours (keep the target)")
+	mergeCheckCmd.Flags().String("uri", "", "Source connection string (default $ARGON_SOURCE_URI)")
 	mergeApplyCmd.Flags().String("strategy", "", "Conflict resolution: theirs (take the branch) or ours (keep the target)")
 	mergeApplyCmd.Flags().Bool("write-back", false, "Write to the followed database and verify each stored image or deletion before commit (requires a source bound by replica-set ID)")
 	mergeApplyCmd.Flags().String("approve", "", "With --write-back, supply the plan's approval_digest from lossless JSON output")
@@ -413,6 +471,7 @@ func init() {
 	mergeApplyCmd.Flags().String("uri", "", "With --write-back: source connection string (default $ARGON_SOURCE_URI); never stored")
 
 	mergeCmd.AddCommand(mergePreviewCmd)
+	mergeCmd.AddCommand(mergeCheckCmd)
 	mergeCmd.AddCommand(mergeApplyCmd)
 	mergeCmd.AddCommand(mergeListCmd)
 	rootCmd.AddCommand(diffCmd)
