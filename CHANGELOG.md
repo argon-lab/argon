@@ -11,6 +11,19 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Fixed
+
+- Programmatic puts and deletes now find the previous value when an untyped
+  WAL key names a different document or when the 2.0.1 importer indexed a
+  compound `_id` in a different field order. In 2.8.1 and earlier, undo
+  could delete the document or restore a parent's older value.
+  [#154](https://github.com/argon-lab/argon/issues/154)
+- When garbage collection removes a newer revision but leaves an older row
+  at or below the reclaim floor, a single-document read now uses the revision
+  in the covering snapshot. In 2.8.1 and earlier, a programmatic write could
+  record the older row as its pre-image and undo would restore it.
+  [#155](https://github.com/argon-lab/argon/issues/155)
+
 ## [2.8.1] - 2026-11-19
 
 A sandbox now holds each document with the field order it has in the
