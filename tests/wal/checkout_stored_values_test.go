@@ -138,3 +138,37 @@ func TestWriteBack_SandboxCodeScope(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, plan.Changes[0].DocumentRaw, got)
 }
+
+func TestWriteBack_NestedCodeScopeDocuments(t *testing.T) {
+	ctx := t.Context()
+	f := newFollowFixture(t, metadataDeploymentURI)
+	source := f.source.Collection("docs")
+	var fields bson.D
+	for i, key := range "jihgfedcba" {
+		fields = append(fields, bson.E{Key: string(key), Value: int32(i)})
+	}
+	script := primitive.CodeWithScope{Code: "item.a", Scope: bson.D{
+		{Key: "item", Value: fields}, {Key: "copies", Value: bson.A{fields, fields, fields}},
+	}}
+	doc := func(z int32) bson.D {
+		return bson.D{{Key: "_id", Value: "q"}, {Key: "z", Value: z}, {Key: "script", Value: script}, {Key: "a", Value: int32(0)}}
+	}
+	_, err := source.InsertOne(ctx, doc(1))
+	require.NoError(t, err)
+	f.importOnline(t, walcli.OnlineImport{})
+	stop := f.follow(t, f.services, walcli.FollowSourceOptions{})
+	info, sandbox := f.agentSandbox(t, "nested-scope")
+	updated, err := sandbox.Collection("docs").UpdateByID(ctx, "q", bson.M{"$set": bson.M{"z": int32(9)}})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, updated.ModifiedCount)
+
+	plan := f.preview(t, info.BranchID)
+	require.Len(t, plan.Changes, 1)
+	require.Empty(t, plan.Conflicts)
+	require.Empty(t, plan.Changes[0].SortedImages)
+	result, err := f.services.WriteBackMerge(ctx, plan.ID, "", f.sourceURI, approvalFor(t, plan))
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Applied)
+	require.Equal(t, mustMarshalBSON(doc(9)), readSourceCase(t, source, "q"))
+	require.NoError(t, stop())
+}
