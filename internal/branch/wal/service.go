@@ -555,9 +555,6 @@ func (s *BranchService) CreateBranchWithData(branch *wal.Branch) error {
 
 	// Set default values
 	branch.IsDeleted = false
-	// A new branch owns no reclaimed history, even when its metadata was
-	// copied from a branch with published floors.
-	branch.ReclaimGates = nil
 	if branch.CreatedAt.IsZero() {
 		branch.CreatedAt = time.Now()
 	}
