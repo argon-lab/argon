@@ -20,6 +20,13 @@ entry — a synchronization barrier, not in-proxy capture).
   now records the previous value as a reader sees it. A repeated nested field
   appears once in the pre-image, with its last value.
   [#160](https://github.com/argon-lab/argon/issues/160)
+- Once this version of garbage collection records a cutoff for a collection,
+  a programmatic write uses the covering snapshot for its pre-image when a
+  newer WAL row was reclaimed and an older row remains at or below the cutoff.
+  Undo restores the snapshot value. A later GC run by an older version can
+  reclaim more history outside this protection. History without a recorded
+  floor remains subject to [#168](https://github.com/argon-lab/argon/issues/168).
+  [#155](https://github.com/argon-lab/argon/issues/155)
 
 ### Known limitations
 
@@ -27,10 +34,9 @@ entry — a synchronization barrier, not in-proxy capture).
   a key the single-document read does not find records no pre-image, and
   undo deletes the document.
   [#154](https://github.com/argon-lab/argon/issues/154)
-- When garbage collection removed a newer row but an older row of the same
-  document remains, a programmatic write can record the older row as its
-  pre-image and undo restores it, with or without a recorded reclaim floor.
-  [#155](https://github.com/argon-lab/argon/issues/155),
+- When garbage collection removed a newer row without recording a reclaim
+  floor, a programmatic write can still record an older retained row as its
+  pre-image, and undo restores that older value.
   [#168](https://github.com/argon-lab/argon/issues/168)
 
 ## [2.8.1] - 2026-11-19

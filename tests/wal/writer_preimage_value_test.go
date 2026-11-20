@@ -138,7 +138,6 @@ func TestSource_WriterUndoLegacyDocumentKey(t *testing.T) {
 }
 
 func TestSource_WriterUndoSnapshotOverRetainedRow(t *testing.T) {
-	t.Skip("The writer can record an older retained row despite a covering snapshot: https://github.com/argon-lab/argon/issues/155")
 	const collection, id = "items", "q"
 	ctx := t.Context()
 	h := newHistoryFixture(t, "snapshot-preimage")
@@ -160,7 +159,7 @@ func TestSource_WriterUndoSnapshotOverRetainedRow(t *testing.T) {
 	branch := h.reload()
 	singular, err := h.mat.MaterializeDocument(branch, collection, id)
 	require.NoError(t, err)
-	require.Equal(t, a, singular)
+	require.Equal(t, b, singular)
 	state, err := h.mat.MaterializeCollection(branch, collection)
 	require.NoError(t, err)
 	require.Equal(t, b, state[id], "snapshot covers the missing revision")

@@ -559,6 +559,23 @@ func (s *Service) MaterializeDocumentAtLSN(branch *wal.Branch, collection, docum
 			if err := s.ApplyEntry(state, latest); err != nil {
 				return nil, err
 			}
+			if !collision && seg.branch.ReclaimGate(collection) >= latest.LSN {
+				floor, err := s.wal.ReclaimFloor(seg.branch.ID, collection)
+				if err != nil {
+					return nil, err
+				}
+				if latest.LSN <= floor && s.snapshots != nil {
+					doc, snapLSN, ok, err := s.snapshotDocument(seg, collection, documentID)
+					if err != nil {
+						return nil, err
+					}
+					if ok && snapLSN >= latest.LSN && !needsReclaimed(seg, snapLSN+1, floor) {
+						// The snapshot includes the entire prefix. A missing key
+						// there supersedes the retained row just as a newer put does.
+						return doc, nil
+					}
+				}
+			}
 			return state[documentID], nil
 		}
 		// No entry of this segment answers, so the answer lies below: in
