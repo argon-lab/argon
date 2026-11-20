@@ -24,6 +24,14 @@ entry — a synchronization barrier, not in-proxy capture).
   record the older row as its pre-image and undo would restore it.
   [#155](https://github.com/argon-lab/argon/issues/155)
 
+### Known limitations
+
+- When a newer row was removed from the WAL without a recorded reclaim floor
+  and a snapshot covers its position, a single-document read still returns
+  the older retained row, so a programmatic write can record it as its
+  pre-image and undo can restore it. 2.8.1 and earlier behave the same.
+  [#168](https://github.com/argon-lab/argon/issues/168)
+
 ## [2.8.1] - 2026-11-19
 
 A sandbox now holds each document with the field order it has in the
