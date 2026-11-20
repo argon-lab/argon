@@ -604,18 +604,12 @@ an intervening write, replay keeps the snapshot frame's own field order.
 On an editable branch, programmatic writes can record pre-image fields in
 name order, and undo can restore fields in name order, as in 2.8.0.
 
-After 2.8.1, programmatic puts and deletes read the previous value by the
-document's `_id` even when an older WAL row uses a different key. This covers
-compound IDs whose fields the 2.0.1 importer indexed in a different order.
-Earlier versions could leave the pre-image empty or record an older value
-from the parent branch. [#154](https://github.com/argon-lab/argon/issues/154)
-
-If garbage collection removes a newer revision while an older row remains
-at or below the recorded reclaim floor, the covering snapshot supplies the
-pre-image. In 2.8.1 and earlier, undo could restore the older revision.
-If no floor was recorded, a surviving typed row can still supply that older
-revision.
-[#155](https://github.com/argon-lab/argon/issues/155)
+- If a document's only prior WAL row is stored under a key the single-key read
+  misses, a programmatic write records no pre-image and undo deletes the
+  document. [#154](https://github.com/argon-lab/argon/issues/154)
+- If a snapshot covers a reclaimed WAL row but an older row remains, a
+  programmatic write can record the older row as its pre-image and undo
+  restores that older value. [#155](https://github.com/argon-lab/argon/issues/155)
 
 ### What Argon can never do to a source
 

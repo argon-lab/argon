@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -86,15 +85,6 @@ func NewService(db *mongo.Database) (*Service, error) {
 				{Key: "document_id", Value: 1},
 				{Key: "lsn", Value: 1},
 			},
-		},
-		{
-			// Untyped envelopes may name a different document than the
-			// compressed image. Typed writes never enter this index.
-			Keys: bson.D{
-				{Key: "key_v", Value: 1}, {Key: "branch_id", Value: 1},
-				{Key: "collection", Value: 1}, {Key: "lsn", Value: 1},
-			},
-			Options: options.Index().SetName("point_untyped_keys").SetPartialFilterExpression(legacyPointFilter()),
 		},
 		{
 			Keys: bson.M{"timestamp": 1},
@@ -365,23 +355,15 @@ func (s *Service) LatestDocumentImageEntry(branchID, collection, documentID stri
 	return nil, nil
 }
 
-func documentIndexKeys(documentID string) ([]string, string, bool, error) {
+func (s *Service) documentHistoryCandidates(branchID, collection, documentID string, startLSN, endLSN int64, visible func(int64) bool) ([]*Entry, bool, error) {
 	id, err := DocumentIDValue(documentID)
 	if err != nil {
-		return nil, "", false, err
+		return nil, false, err
 	}
 	candidates := []string{documentID, LegacyDocumentIDString(id)}
 	alias, affected := oldBinaryIndexKey(documentID)
 	if affected && alias != documentID {
 		candidates = append(candidates, alias)
-	}
-	return candidates, alias, affected, nil
-}
-
-func (s *Service) documentHistoryCandidates(branchID, collection, documentID string, startLSN, endLSN int64, visible func(int64) bool) ([]*Entry, bool, error) {
-	candidates, alias, affected, err := documentIndexKeys(documentID)
-	if err != nil {
-		return nil, false, err
 	}
 	filter := bson.M{
 		"branch_id":   branchID,
@@ -405,106 +387,6 @@ func (s *Service) documentHistoryCandidates(branchID, collection, documentID str
 		}
 	}
 	return entries, affected, err
-}
-
-// DocumentPointSegment contains the newest visible indexed event and the
-// metadata that decides whether it can answer a decoded read.
-type DocumentPointSegment struct {
-	Latest    *Entry
-	Floor     int64
-	Legacy    bool
-	Collision bool
-}
-
-func legacyPointFilter() bson.M {
-	return bson.M{"$or": bson.A{bson.M{"key_v": nil}, bson.M{"key_v": bson.M{"$lt": 1}}}}
-}
-
-// ReadDocumentPointSegment reads the key, checks for untyped envelopes, and
-// reads the floor in one command. Each arm has its own index, so an empty
-// legacy index costs a seek even when a collection has millions of typed rows.
-func (s *Service) ReadDocumentPointSegment(branch *Branch, collection, key string, from, to int64) (DocumentPointSegment, error) {
-	var result DocumentPointSegment
-	candidates, alias, collision, err := documentIndexKeys(key)
-	if err != nil {
-		return result, err
-	}
-	result.Collision = collision
-	window := bson.M{"branch_id": branch.ID, "collection": collection, "lsn": bson.M{"$gte": from, "$lte": to}}
-	var discarded bson.A
-	for _, r := range branch.EffectiveDiscardedRanges() {
-		if to > r.To && r.To >= from {
-			discarded = append(discarded, bson.M{"lsn": bson.M{"$gte": r.From, "$lte": r.To}})
-		}
-	}
-	if len(discarded) > 0 {
-		window["$nor"] = discarded
-	}
-	indexed := maps.Clone(window)
-	indexed["operation"] = bson.M{"$in": dataOperations}
-	indexed["document_id"] = key
-	if collision {
-		indexed["document_id"] = bson.M{"$in": candidates}
-	}
-	query := mongo.Pipeline{
-		{{Key: "$match", Value: indexed}},
-		{{Key: "$sort", Value: bson.M{"lsn": -1}}},
-	}
-	if !collision {
-		query = append(query, bson.D{{Key: "$limit", Value: 1}})
-	}
-	legacy := legacyPointFilter()
-	legacy["operation"] = bson.M{"$in": dataOperations}
-	maps.Copy(legacy, window)
-	query = append(query,
-		bson.D{{Key: "$unionWith", Value: bson.M{"coll": s.collection.Name(), "pipeline": mongo.Pipeline{
-			{{Key: "$match", Value: legacy}},
-			{{Key: "$limit", Value: 1}},
-			{{Key: "$project", Value: bson.M{"_id": 0, "point_legacy": bson.M{"$literal": true}}}},
-		}}}},
-		bson.D{{Key: "$unionWith", Value: bson.M{"coll": reclaimFloorsCollection, "pipeline": mongo.Pipeline{
-			{{Key: "$match", Value: bson.M{"_id": reclaimFloorID(branch.ID, collection)}}},
-			{{Key: "$project", Value: bson.M{"_id": 0, "point_floor": "$lsn"}}},
-		}}}},
-	)
-	ctx := context.Background()
-	cur, err := s.collection.Aggregate(ctx, query)
-	if err != nil {
-		return result, err
-	}
-	defer func() { _ = cur.Close(ctx) }()
-	for cur.Next(ctx) {
-		row := cur.Current
-		switch {
-		case row.Lookup("point_legacy").Type != 0:
-			result.Legacy = true
-		case row.Lookup("point_floor").Type != 0:
-			if err := row.Lookup("point_floor").Unmarshal(&result.Floor); err != nil {
-				return result, err
-			}
-		default:
-			var entry Entry
-			if err := cur.Decode(&entry); err != nil {
-				return result, err
-			}
-			if err := s.compressor.DecompressEntry(&entry); err != nil {
-				return result, err
-			}
-			if collision && entry.Operation == OpDelete && len(entry.PreImage) == 0 && entry.DocumentID == alias {
-				if err := entry.CheckStoredKey(); err != nil {
-					return result, err
-				}
-			}
-			named, err := settleDocumentKey(&entry)
-			if err != nil {
-				return result, err
-			}
-			if result.Latest == nil && (!named || entry.DocumentID == key) {
-				result.Latest = &entry
-			}
-		}
-	}
-	return result, cur.Err()
 }
 
 // settleDocumentKey works out which document a stored entry is about. Entries
