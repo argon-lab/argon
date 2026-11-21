@@ -57,6 +57,7 @@ func insertOldBinaryEntry(t *testing.T, db *mongo.Database, branch *wal.Branch, 
 			{Key: "source_time", Value: primitive.Timestamp{T: uint32(now.Unix()), I: 1}},
 		}})
 	}
+	allowOldFormatRows(t, db)
 	_, err = db.Collection("wal_log").InsertOne(t.Context(), row)
 	require.NoError(t, err)
 	return lsn

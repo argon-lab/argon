@@ -301,6 +301,7 @@ func (m *suiteModel) collectHistory(pick int) error {
 }
 
 func rewriteSuiteLegacyKey(h *historyFixture, branchID string, lsn int64, envelope string) error {
+	allowOldFormatRows(h.t, h.db)
 	changed, err := h.db.Collection("wal_log").UpdateOne(h.t.Context(), bson.M{"branch_id": branchID, "lsn": lsn},
 		bson.M{"$unset": bson.M{"key_v": ""}, "$set": bson.M{"document_id": envelope}})
 	if err == nil && changed.ModifiedCount != 1 {

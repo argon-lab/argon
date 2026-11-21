@@ -580,6 +580,7 @@ func downgradeToLegacyKeys(t *testing.T, db *mongo.Database, f *snapshotFixture,
 		if e.Operation == wal.OpDelete && stripPreImage != nil && wal.DocumentIDString(id) == wal.DocumentIDString(stripPreImage) {
 			update["$unset"] = bson.M{"key_v": "", "pre": ""}
 		}
+		allowOldFormatRows(t, db)
 		res, err := db.Collection("wal_log").UpdateOne(ctx, bson.M{"_id": e.ID}, update)
 		require.NoError(t, err)
 		require.EqualValues(t, 1, res.MatchedCount)
@@ -803,6 +804,7 @@ func TestMergeChanged_EntryBelowFloorIsNotTrusted(t *testing.T) {
 	require.Zero(t, countBranchEntriesIn(t, f, main.ID, "products"))
 	// A deletion that stopped half way: the old entry is back, the newer one
 	// is not.
+	allowOldFormatRows(t, db)
 	_, err = db.Collection("wal_log").InsertOne(ctx, stale)
 	require.NoError(t, err)
 
@@ -846,6 +848,7 @@ func TestMergeChanged_UnkeyedLegacyEntryIsNotSkipped(t *testing.T) {
 		require.NoError(t, err)
 
 		// Turn one of the parent's entries into what 1.x wrote for an update.
+		allowOldFormatRows(t, db)
 		res, err := db.Collection("wal_log").UpdateOne(ctx,
 			bson.M{"branch_id": main.ID, "document_id": "p0005"},
 			bson.M{"$set": bson.M{"operation": "update", "v": 1}, "$unset": bson.M{"document_id": "", "key_v": ""}})
@@ -944,6 +947,7 @@ func TestMergeChanged_ImagelessDeleteWithCurrentKey(t *testing.T) {
 	_, _, err = walwriter.New(f.wal, f.branches, f.mat, main).Delete(ctx, "docs", oid)
 	require.NoError(t, err)
 	// Drop the pre-images of both deletes; the keys stay current.
+	allowOldFormatRows(t, db)
 	res, err := db.Collection("wal_log").UpdateMany(ctx, bson.M{"operation": "delete"}, bson.M{"$unset": bson.M{"pre": ""}})
 	require.NoError(t, err)
 	require.EqualValues(t, 2, res.ModifiedCount)

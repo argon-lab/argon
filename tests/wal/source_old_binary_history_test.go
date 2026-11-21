@@ -35,6 +35,7 @@ func TestSource_OldBinaryIndexedHistory(t *testing.T) {
 				lsn, err := f.mainWriter.Put(ctx, collection, bson.M{"_id": id, "version": int32(i)})
 				require.NoError(t, err)
 				if i == 0 || i == 2 {
+					allowOldFormatRows(t, db)
 					_, err = db.Collection("wal_log").UpdateOne(ctx, bson.M{"branch_id": f.main.ID, "lsn": lsn},
 						bson.M{"$set": bson.M{"document_id": zeroKey}})
 					require.NoError(t, err)

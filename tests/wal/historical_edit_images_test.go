@@ -56,6 +56,7 @@ func TestSource_CheckoutRepeatedCaptureField(t *testing.T) {
 				if event.op == "update" {
 					row["pre"] = image(initial)
 				}
+				allowOldFormatRows(t, h.db)
 				_, err = h.db.Collection("wal_log").InsertOne(ctx, row)
 				require.NoError(t, err)
 			}
