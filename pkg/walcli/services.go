@@ -52,7 +52,8 @@ type Services struct {
 	Sandbox      *sandbox.Service
 	Pins         *pin.Service
 	// Sources records which external database a branch follows.
-	Sources  *source.Registry
+	Sources *source.Registry
+	// Deprecated: Monitor does nothing; it remains for callers that stop it.
 	Monitor  *wal.Monitor
 	MongoURI string
 	// Client is the deployment connection, exposed for tools that read
@@ -271,22 +272,6 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 		}
 	})
 
-	// Create monitor with production-ready configuration
-	monitorConfig := wal.MonitorConfig{
-		HealthCheckInterval:   30 * time.Second,
-		MetricsReportInterval: 60 * time.Second,
-		EnableLogging:         true,
-		EnableMetricsExport:   true,
-		AlertThresholds: wal.AlertThresholds{
-			MaxErrorRate:           0.05, // 5% error rate
-			MaxLatency:             1 * time.Second,
-			MaxConsecutiveFailures: 3,
-			MinSuccessRate:         0.95, // 95% success rate
-		},
-	}
-	monitor := wal.NewMonitor(wal.GlobalMetrics, monitorConfig)
-	monitor.Start()
-
 	built = true
 	return &Services{
 		WAL:          walService,
@@ -306,7 +291,7 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 		Sandbox:      sandboxService,
 		Pins:         pinService,
 		Sources:      sourceRegistry,
-		Monitor:      monitor,
+		Monitor:      &wal.Monitor{},
 		MongoURI:     mongoURI,
 		Client:       client,
 	}, nil

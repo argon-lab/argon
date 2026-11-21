@@ -2,46 +2,46 @@ package cmd
 
 import (
 	"fmt"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 )
 
 var metricsCmd = &cobra.Command{
 	Use:   "metrics",
-	Short: "Show performance metrics",
+	Short: "Count projects, branches and sandboxes, with each project's newest LSN",
+	Long: `Reads the metadata database and reports, for each project, its branches,
+the sandboxes and checked-out branches among them, and the newest LSN it
+has allocated.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		services, err := newCommandServices(cmd)
 		if err != nil {
 			return err
 		}
+		report, err := services.ReadMetrics(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, report)
+		}
 
-		snapshot := services.WAL.GetMetrics()
-		successRates := services.WAL.GetSuccessRates()
-
-		fmt.Println("📊 Argon Performance Metrics:")
-		fmt.Printf("\n   Operations:\n")
-		fmt.Printf("     Append: %d (%.1f%% success)\n", snapshot.AppendOps, successRates["append"]*100)
-		fmt.Printf("     Query: %d (%.1f%% success)\n", snapshot.QueryOps, successRates["query"]*100)
-		fmt.Printf("     Materialization: %d (%.1f%% success)\n", snapshot.MaterialOps, successRates["materialization"]*100)
-		fmt.Printf("     Branch: %d\n", snapshot.BranchOps)
-		fmt.Printf("     Restore: %d\n", snapshot.RestoreOps)
-
-		fmt.Printf("\n   Performance:\n")
-		fmt.Printf("     Average Append: %v\n", snapshot.AvgAppendLatency)
-		fmt.Printf("     Average Query: %v\n", snapshot.AvgQueryLatency)
-		fmt.Printf("     Average Materialization: %v\n", snapshot.AvgMaterialLatency)
-
-		fmt.Printf("\n   System:\n")
-		fmt.Printf("     Current LSN: %d\n", snapshot.CurrentLSN)
-		fmt.Printf("     Active Branches: %d\n", snapshot.ActiveBranches)
-		fmt.Printf("     Active Projects: %d\n", snapshot.ActiveProjects)
-		fmt.Printf("     Last Operation: %v\n", snapshot.LastOperationTime.Format("2006-01-02 15:04:05"))
-
-		return nil
+		out := cmd.OutOrStdout()
+		if len(report.Projects) == 0 {
+			fmt.Fprintln(out, "No projects.")
+			return nil
+		}
+		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "PROJECT\tBRANCHES\tSANDBOXES\tCHECKED OUT\tCURRENT LSN")
+		for _, row := range report.Projects {
+			fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\n", row.Name, row.Branches, row.Sandboxes, row.CheckedOut, row.CurrentLSN)
+		}
+		fmt.Fprintf(w, "TOTAL\t%d\t%d\t%d\t\n", report.Branches, report.Sandboxes, report.CheckedOut)
+		return w.Flush()
 	},
 }
 
 func init() {
-	// Add to root command
+	metricsCmd.Flags().StringP("output", "o", "table", "Output format: table or json")
 	rootCmd.AddCommand(metricsCmd)
 }

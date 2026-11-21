@@ -398,7 +398,8 @@ argon mcp [--read-only] [--disable-tools a,b]
                                     Starts without a database and connects in the
                                     background (releases after 2.3.1)
 argon migrate-wal --project P [--dry-run]      v1 → v2 schema migration
-argon status / metrics              health and performance counters
+argon status                        health and capture checks
+argon metrics [-o json]             branches, sandboxes, checkouts and newest LSN per project
 ```
 
 ## Readiness and scripting

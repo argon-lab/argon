@@ -41,7 +41,6 @@ func credentialServices(t *testing.T, uri, metadataName string) *walcli.Services
 	svc, err := walcli.NewServicesAt(uri, metadataName)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		svc.Monitor.Stop()
 		require.NoError(t, svc.Client.Disconnect(context.Background()))
 	})
 	return svc

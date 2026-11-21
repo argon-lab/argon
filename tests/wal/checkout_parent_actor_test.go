@@ -24,7 +24,6 @@ func TestCheckoutLeavesUncapturedParentActorUnset(t *testing.T) {
 			cleanup, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			_ = services.Ingest.Shutdown(cleanup)
-			services.Monitor.Stop()
 			_ = services.Client.Disconnect(cleanup)
 		})
 		return services

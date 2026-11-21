@@ -134,7 +134,6 @@ func TestSandboxCredentialMCP(t *testing.T) {
 	require.NoError(t, err)
 	ctx := context.Background()
 	t.Cleanup(func() {
-		services.Monitor.Stop()
 		_ = services.Client.Database(name).Drop(ctx)
 		_ = services.Client.Disconnect(ctx)
 	})
@@ -475,7 +474,6 @@ func newEngine(t *testing.T) *engine {
 			}
 		}
 		_ = services.Client.Database(e.metadataDB).Drop(ctx)
-		services.Monitor.Stop()
 		_ = services.Client.Disconnect(ctx)
 	})
 	return e
@@ -644,7 +642,6 @@ func TestARestartedServerResumesCaptureWithoutAToolCall(t *testing.T) {
 	branch, err := earlier.Branches.GetBranch(project.ID, "run-1")
 	require.NoError(t, err)
 	require.NoError(t, first.end())
-	earlier.Monitor.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
