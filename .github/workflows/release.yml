@@ -39,7 +39,7 @@ jobs:
           # must identify the reviewed source that the reusable CI validates.
           test "$(git rev-parse "refs/tags/api/v${version}^{commit}")" = "$(git rev-parse HEAD)"
       - name: Check release tooling
-        run: node --test scripts/release-version.test.js scripts/verify-npm-publication.test.mjs scripts/npm-checksums.test.mjs npm/scripts/install.test.js
+        run: node --test scripts/release-version.test.js scripts/verify-npm-publication.test.mjs scripts/npm-checksums.test.mjs npm/scripts/install.test.js npm/test/launcher.test.js
 
   release:
     name: Build and publish verified binaries

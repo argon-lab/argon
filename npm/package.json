@@ -40,7 +40,7 @@
   "scripts": {
     "postinstall": "node scripts/install.js",
     "preuninstall": "node scripts/uninstall.js",
-    "test": "node --test scripts/install.test.js"
+    "test": "node --test scripts/install.test.js test/launcher.test.js"
   },
   "engines": {
     "node": ">=18.0.0"
