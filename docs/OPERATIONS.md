@@ -731,6 +731,17 @@ coverage, and below every pin's coverage. Consequences, stated plainly:
   immediately (deletion is refused while the branch has live children or
   pins).
 
+Deletion runs oldest first, in transactions of up to 5,000 entries, each batch
+removed whole or not at all. An interrupted run therefore leaves a
+collection's newest entries, never an older entry whose newer one is gone,
+and the next run finishes it. Releases before 2.11.0 deleted in one
+statement that could stop partway, leaving a document's older entry behind
+its removed newer one; single-document reads, the writer's pre-image and
+undo then used that older entry
+([#155](https://github.com/argon-lab/argon/issues/155),
+[#168](https://github.com/argon-lab/argon/issues/168)). Running `argon gc`
+once on 2.11.0 removes such leftovers wherever the new cutoff covers them.
+
 `--dry-run` reports what would be deleted, per branch and collection.
 
 ### Upgrading older snapshots

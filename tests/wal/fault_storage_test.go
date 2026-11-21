@@ -182,7 +182,10 @@ func TestFaultGCStopsBetweenCollections(t *testing.T) {
 		rows, err := f.wal.GetBranchEntries(main.ID, name, 0, at)
 		require.NoError(t, err)
 		if _, reclaimed := floors[name]; reclaimed {
-			require.Empty(t, rows)
+			// The floor is published, and the deletion batch that was
+			// interrupted is rolled back whole: the row is still there,
+			// but reads below the floor are refused.
+			require.Len(t, rows, 1)
 			_, err = f.mat.MaterializeCollectionAtLSN(main, name, at-1)
 			require.ErrorIs(t, err, wal.ErrHistoryReclaimed)
 		} else {
@@ -216,7 +219,7 @@ func TestFaultGCStopsBetweenCollections(t *testing.T) {
 	checkHead(1)
 	report, err := collector.RunProject(ctx, main.ProjectID, zeroRetention)
 	require.NoError(t, err)
-	require.EqualValues(t, 1, report.EntriesRemoved)
+	require.EqualValues(t, 2, report.EntriesRemoved, "the rolled-back batch and the other collection")
 	report, err = collector.RunProject(ctx, main.ProjectID, zeroRetention)
 	require.NoError(t, err)
 	require.Zero(t, report.EntriesRemoved)

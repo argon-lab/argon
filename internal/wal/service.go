@@ -881,17 +881,79 @@ func (s *Service) LatestLSNAtOrBefore(projectID, branchID string, at time.Time, 
 // kept — they are tiny and carry branch/project lineage. Callers are
 // responsible for the coverage argument (see the gc package).
 func (s *Service) DeleteDataEntriesUpTo(branchID, collection string, cutoff int64) (int64, error) {
-	ctx := context.Background()
-	res, err := s.collection.DeleteMany(ctx, bson.M{
+	return s.DeleteDataEntriesUpToContext(context.Background(), branchID, collection, cutoff)
+}
+
+// reclaimBatchSize is how many entries one deletion transaction removes.
+var reclaimBatchSize = 5000
+
+// SetReclaimBatchSizeForTest changes the deletion batch size and returns a
+// function that restores it. Tests use it to interrupt a reclaim between
+// batches; production code never calls it.
+func SetReclaimBatchSizeForTest(n int) (restore func()) {
+	previous := reclaimBatchSize
+	reclaimBatchSize = n
+	return func() { reclaimBatchSize = previous }
+}
+
+// DeleteDataEntriesUpToContext deletes oldest first, in transactions of
+// reclaimBatchSize entries: each batch holds the lowest LSNs still present
+// and is removed whole or not at all. However the deletion stops, a removed
+// entry therefore never leaves an older entry of the same range behind, so a
+// document's surviving rows are always its newest ones. A single DeleteMany
+// gave no such order: an interrupted run could remove a document's newer row
+// and keep an older one, which a single-document read then returned as the
+// current state (issues 155 and 168). Running the deletion again finishes it.
+func (s *Service) DeleteDataEntriesUpToContext(ctx context.Context, branchID, collection string, cutoff int64) (int64, error) {
+	filter := bson.M{
 		"branch_id":  branchID,
 		"collection": collection,
 		"operation":  bson.M{"$in": []OperationType{OpPut, OpDelete}},
 		"lsn":        bson.M{"$lte": cutoff},
-	})
-	if err != nil {
-		return 0, err
 	}
-	return res.DeletedCount, nil
+	hint := bson.D{{Key: "branch_id", Value: 1}, {Key: "collection", Value: 1}, {Key: "lsn", Value: 1}}
+	var removed, done int64
+	for {
+		// Everything at or below done is gone, so each batch starts above
+		// it instead of stepping over the index entries already deleted.
+		// The batch ends at the LSN of its last entry and is removed in one
+		// transaction.
+		window := bson.M{}
+		for k, v := range filter {
+			window[k] = v
+		}
+		window["lsn"] = bson.M{"$gt": done, "$lte": cutoff}
+		var boundary struct {
+			LSN int64 `bson:"lsn"`
+		}
+		err := s.collection.FindOne(ctx, window, options.FindOne().
+			SetSort(bson.D{{Key: "lsn", Value: 1}}).SetSkip(int64(reclaimBatchSize-1)).
+			SetProjection(bson.M{"_id": 0, "lsn": 1}).SetHint(hint)).Decode(&boundary)
+		switch {
+		case errors.Is(err, mongo.ErrNoDocuments):
+			boundary.LSN = cutoff // Fewer than a batch left.
+		case err != nil:
+			return removed, err
+		}
+		window["lsn"] = bson.M{"$gt": done, "$lte": boundary.LSN}
+		var deleted int64
+		_, err = s.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+			res, err := s.collection.DeleteMany(sc, window, options.Delete().SetHint(hint))
+			if err != nil {
+				return nil, err
+			}
+			deleted = res.DeletedCount
+			return nil, nil
+		})
+		if err != nil {
+			return removed, err
+		}
+		removed += deleted
+		if boundary.LSN >= cutoff {
+			return removed, nil
+		}
+		done = boundary.LSN
+	}
 }
 
 // DeleteBranchEntries removes every entry belonging to a branch. Only safe

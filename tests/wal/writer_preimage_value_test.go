@@ -139,7 +139,11 @@ func TestSource_WriterUndoLegacyDocumentKey(t *testing.T) {
 }
 
 func TestSource_WriterUndoSnapshotOverRetainedRow(t *testing.T) {
-	t.Skip("The writer can record an older retained row despite a covering snapshot: https://github.com/argon-lab/argon/issues/155")
+	// Garbage collection no longer leaves this state behind and repairs it on
+	// its next run (TestGCInterruptedReclaimKeepsNewestRows,
+	// TestGCRepairsRowLeftBehindByInterruptedReclaim). The reader itself is
+	// unchanged, so the state built directly here still reads the older row.
+	t.Skip("The reader still answers from a retained older row until garbage collection removes it: https://github.com/argon-lab/argon/issues/155")
 	const collection, id = "items", "q"
 	ctx := t.Context()
 	h := newHistoryFixture(t, "snapshot-preimage")
