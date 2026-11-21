@@ -881,7 +881,7 @@ func (s *Service) DeleteDataEntriesUpTo(branchID, collection string, cutoff int6
 }
 
 // reclaimBatchSize is how many entries one deletion transaction removes.
-var reclaimBatchSize = 1000
+var reclaimBatchSize = 5000
 
 // SetReclaimBatchSizeForTest changes the deletion batch size and returns a
 // function that restores it. Tests use it to interrupt a reclaim between
@@ -907,32 +907,34 @@ func (s *Service) DeleteDataEntriesUpToContext(ctx context.Context, branchID, co
 		"operation":  bson.M{"$in": []OperationType{OpPut, OpDelete}},
 		"lsn":        bson.M{"$lte": cutoff},
 	}
-	find := options.Find().
-		SetSort(bson.D{{Key: "lsn", Value: 1}}).
-		SetProjection(bson.M{"_id": 1}).
-		SetHint(bson.D{{Key: "branch_id", Value: 1}, {Key: "collection", Value: 1}, {Key: "lsn", Value: 1}})
-	var removed int64
+	hint := bson.D{{Key: "branch_id", Value: 1}, {Key: "collection", Value: 1}, {Key: "lsn", Value: 1}}
+	var removed, done int64
 	for {
-		cursor, err := s.collection.Find(ctx, filter, find.SetLimit(int64(reclaimBatchSize)))
-		if err != nil {
+		// Everything at or below done is gone, so each batch starts above
+		// it instead of stepping over the index entries already deleted.
+		// The batch ends at the LSN of its last entry and is removed in one
+		// transaction.
+		window := bson.M{}
+		for k, v := range filter {
+			window[k] = v
+		}
+		window["lsn"] = bson.M{"$gt": done, "$lte": cutoff}
+		var boundary struct {
+			LSN int64 `bson:"lsn"`
+		}
+		err := s.collection.FindOne(ctx, window, options.FindOne().
+			SetSort(bson.D{{Key: "lsn", Value: 1}}).SetSkip(int64(reclaimBatchSize-1)).
+			SetProjection(bson.M{"_id": 0, "lsn": 1}).SetHint(hint)).Decode(&boundary)
+		switch {
+		case errors.Is(err, mongo.ErrNoDocuments):
+			boundary.LSN = cutoff // Fewer than a batch left.
+		case err != nil:
 			return removed, err
 		}
-		var batch []struct {
-			ID interface{} `bson:"_id"`
-		}
-		if err := cursor.All(ctx, &batch); err != nil {
-			return removed, err
-		}
-		if len(batch) == 0 {
-			return removed, nil
-		}
-		ids := make(bson.A, len(batch))
-		for i, row := range batch {
-			ids[i] = row.ID
-		}
+		window["lsn"] = bson.M{"$gt": done, "$lte": boundary.LSN}
 		var deleted int64
 		_, err = s.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
-			res, err := s.collection.DeleteMany(sc, bson.M{"_id": bson.M{"$in": ids}})
+			res, err := s.collection.DeleteMany(sc, window, options.Delete().SetHint(hint))
 			if err != nil {
 				return nil, err
 			}
@@ -943,6 +945,10 @@ func (s *Service) DeleteDataEntriesUpToContext(ctx context.Context, branchID, co
 			return removed, err
 		}
 		removed += deleted
+		if boundary.LSN >= cutoff {
+			return removed, nil
+		}
+		done = boundary.LSN
 	}
 }
 

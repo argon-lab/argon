@@ -731,7 +731,7 @@ coverage, and below every pin's coverage. Consequences, stated plainly:
   immediately (deletion is refused while the branch has live children or
   pins).
 
-Deletion runs oldest first, in transactions of 1,000 entries, each batch
+Deletion runs oldest first, in transactions of up to 5,000 entries, each batch
 removed whole or not at all. An interrupted run therefore leaves a
 collection's newest entries, never an older entry whose newer one is gone,
 and the next run finishes it. Releases before 2.11.0 deleted in one
