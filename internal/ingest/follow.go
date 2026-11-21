@@ -278,6 +278,10 @@ type follower struct {
 	lastToken  bson.Raw
 	recoverAt  primitive.Timestamp
 	unverified bool
+	// waitingReported is set once the status records that received changes
+	// wait for the source's next oplog entry; the next commit updates or
+	// clears that record.
+	waitingReported bool
 }
 
 func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.Database, opts FollowOptions, run *running, untilConsistent bool) (*ConsistentPoint, error) {
@@ -474,6 +478,14 @@ func (s *Service) followStream(ctx context.Context, branchID string, src *mongo.
 					return point, nil
 				}
 			}
+			if len(f.pending) > 0 && !f.waitingReported {
+				if err := f.reportWaiting(ctx); err != nil {
+					if ctx.Err() != nil {
+						return nil, f.flushReady()
+					}
+					return nil, err
+				}
+			}
 			continue
 		}
 		token := append(bson.Raw(nil), stream.ResumeToken()...)
@@ -565,6 +577,38 @@ func (f *follower) stateName() string {
 		return "catching_up"
 	}
 	return "running"
+}
+
+// waitingSince is when the oldest received change that is not yet stored
+// happened on the source. It waits for the stream to pass its cluster time.
+func (f *follower) waitingSince() (time.Time, bool) {
+	if !f.pendingOpen || len(f.pending) == 0 {
+		return time.Time{}, false
+	}
+	if wall, ok := f.pending[0].Metadata["capture_wall_time"].(time.Time); ok {
+		return wall, true
+	}
+	return time.Now(), true
+}
+
+// reportWaiting records in the status that received changes wait for the
+// source's next oplog entry, so that `argon source status` can say why the
+// head has not moved. It writes once per wait; commit updates or clears it.
+func (f *follower) reportWaiting(ctx context.Context) error {
+	since, waiting := f.waitingSince()
+	if !waiting {
+		return nil
+	}
+	if err := f.s.updateSourceLease(ctx, f.run.lease, bson.M{"$set": bson.M{waitingSincePath: since}}); err != nil {
+		return fmt.Errorf("failed to record the change that waits for the source's next write: %w", err)
+	}
+	f.waitingReported = true
+	f.s.mu.Lock()
+	current := f.s.statuses[f.branch.ID]
+	current.WaitingSince = since
+	f.s.statuses[f.branch.ID] = current
+	f.s.mu.Unlock()
+	return nil
 }
 
 // promote closes the open cluster time: its entries may now be published.
@@ -884,6 +928,7 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	status := f.status
 	status.Position = at
 	head := branch.HeadLSN
+	waitingSince, waiting := f.waitingSince()
 	// A restarted follower clears a stored gap only after replay reaches the
 	// source time it observed on opening. A gap that still needs a resync
 	// stops replay before then; an old report or a repaired gap does not.
@@ -930,6 +975,13 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 			fields["capture_status.last_event_lag_ms"] = lagMS
 		}
 		unset := bson.M{sourceCleanStartPath: ""}
+		if f.waitingReported {
+			if waiting {
+				fields[waitingSincePath] = waitingSince
+			} else {
+				unset[waitingSincePath] = ""
+			}
+		}
 		if verified {
 			unset[sourceUnverifiedPath] = ""
 		}
@@ -971,6 +1023,13 @@ func (f *follower) commit(token bson.Raw, at primitive.Timestamp) error {
 	current.LastCapturedAt, current.HeadLSN = capturedAt, head
 	if !eventAt.IsZero() {
 		current.LastEventAt, current.LastEventLagMS = eventAt, lagMS
+	}
+	if f.waitingReported {
+		current.WaitingSince = time.Time{}
+		if waiting {
+			current.WaitingSince = waitingSince
+		}
+		f.waitingReported = waiting
 	}
 	current.Source = &status
 	s.statuses[branch.ID] = current

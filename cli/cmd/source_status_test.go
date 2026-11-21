@@ -86,3 +86,27 @@ func TestCLISourceStatusPrintsVerdictAndNextAction(t *testing.T) {
 		}
 	}
 }
+
+func TestCLISourceStatusShowsChangeWaitingForNextWrite(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	printSourceStatus(cmd, &walcli.SourceInfo{Mode: "exact"})
+	if strings.Contains(out.String(), "Waiting:") {
+		t.Fatalf("nothing waits, yet the table says so:\n%s", out.String())
+	}
+	out.Reset()
+	since := time.Date(2026, 11, 21, 22, 6, 3, 0, time.UTC)
+	info := &walcli.SourceInfo{Mode: "exact", WaitingSince: &since}
+	printSourceStatus(cmd, info)
+	if !strings.Contains(out.String(), "Waiting:     a change made at 2026-11-21T22:06:03Z has been read and is stored when the source writes again") {
+		t.Fatalf("table output missing the waiting change:\n%s", out.String())
+	}
+	out.Reset()
+	if err := writeJSON(cmd, info); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"waiting_since": "2026-11-21T22:06:03Z"`) {
+		t.Fatalf("JSON output missing waiting_since:\n%s", out.String())
+	}
+}

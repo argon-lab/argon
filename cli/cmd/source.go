@@ -211,6 +211,10 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 	if !info.LastEventAt.IsZero() {
 		fmt.Fprintf(out, "  Last change: %s (stored %d ms after it happened)\n", info.LastEventAt.Format(time.RFC3339), info.LastEventLagMS)
 	}
+	if info.WaitingSince != nil {
+		fmt.Fprintf(out, "  Waiting:     a change made at %s has been read and is stored when the source writes again. On an idle source that takes 10 to 20 seconds; any other write to the source deployment ends the wait.\n",
+			info.WaitingSince.Format(time.RFC3339))
+	}
 	if info.ResyncUnfinished {
 		fmt.Fprintf(out, "  Resync:      UNFINISHED since %s. Main is between its last consistent state and the source's current one. If the run was interrupted, `argon source resync -p %s` completes it.\n",
 			info.ResyncStartedAt.Format(time.RFC3339), info.Project)

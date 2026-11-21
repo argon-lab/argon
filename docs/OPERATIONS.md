@@ -217,7 +217,9 @@ source online into a new project. Use a source user allowed to run
   between one and two check intervals if `periodicNoopIntervalSecs` was
   changed. Any other write to the source deployment ends this wait at once.
   The “stored N ms after it happened” time in `argon source status` includes
-  this wait.
+  this wait. While a change waits, `argon source status` shows a `Waiting:`
+  line with the time the change was made (`waiting_since` in JSON output),
+  so an unmoved head is not mistaken for a stuck follower.
 - **Exact mode preserves source documents.** An insert or replacement carries its
   document. An update's document is read from the source as of the update's
   own cluster time and stored byte for byte.

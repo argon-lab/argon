@@ -805,3 +805,51 @@ func TestFollow_UpdateOlderThanSnapshotHistory(t *testing.T) {
 		require.Equal(t, readSourceCase(t, direct, id), readSourceCase(t, catalog, id))
 	})
 }
+
+// A change the follower has read waits for the source's next oplog entry
+// before it is stored; on an idle source that is MongoDB's periodic no-op,
+// ten to twenty seconds later. The status says so while it waits and stops
+// saying so once the change is stored. On the metadata deployment Argon's own
+// writes end the wait at once, so this needs a separate source deployment.
+func TestFollow_StatusReportsChangeWaitingForNextWrite(t *testing.T) {
+	uri := os.Getenv("ARGON_TEST_SOURCE_MONGODB_URI")
+	if uri == "" {
+		t.Skip("set ARGON_TEST_SOURCE_MONGODB_URI: on the metadata deployment nothing waits")
+	}
+	ctx := context.Background()
+	f := newFollowFixture(t, uri)
+	f.seedSmall(t)
+	f.importOnline(t, walcli.OnlineImport{})
+	f.follow(t, f.services, walcli.FollowSourceOptions{})
+	f.waitCaughtUp(t)
+
+	catalog := f.source.Collection("catalog")
+	var seen *walcli.SourceInfo
+	// Another test's write to the same deployment can end a wait before it is
+	// observed; each attempt starts a new one.
+	for attempt := int32(0); attempt < 5 && seen == nil; attempt++ {
+		before, err := f.services.SourceStatus(ctx, f.project)
+		require.NoError(t, err)
+		_, err = catalog.UpdateOne(ctx, bson.M{"_id": "item-00"}, bson.M{"$set": bson.M{"stock": attempt}})
+		require.NoError(t, err)
+		for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			info, err := f.services.SourceStatus(ctx, f.project)
+			require.NoError(t, err)
+			if info.HeadLSN != before.HeadLSN {
+				break
+			}
+			if info.WaitingSince != nil {
+				seen = info
+				break
+			}
+		}
+	}
+	require.NotNil(t, seen, "the status reports the change that waits for the source's next write")
+	require.WithinDuration(t, time.Now(), *seen.WaitingSince, time.Minute)
+
+	f.tick(t)
+	require.Eventually(t, func() bool {
+		info, err := f.services.SourceStatus(ctx, f.project)
+		return err == nil && info.HeadLSN > seen.HeadLSN && info.WaitingSince == nil
+	}, 30*time.Second, 50*time.Millisecond, "the report clears once the change is stored")
+}

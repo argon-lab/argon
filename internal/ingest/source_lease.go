@@ -24,6 +24,9 @@ var (
 const (
 	sourceOwnerPath      = "capture_status.owner"
 	sourceCleanStartPath = sourceOwnerPath + ".clean_start"
+	// waitingSincePath records a received change that waits for the source's
+	// next oplog entry before it is stored.
+	waitingSincePath     = "capture_status.waiting_since"
 	sourceUnverifiedPath = "capture_status.unverified"
 	leaseExpiredReason   = "lease_expired"
 	missingOwnerReason   = "missing_owner"
@@ -373,6 +376,10 @@ func (s *Service) reportSource(ctx context.Context, lease *sourceLease, fields b
 		}
 	}
 	fields[sourceCleanStartPath] = "$$REMOVE"
+	if state == "starting" || state == "stopped" {
+		// A new or stopped run has nothing waiting.
+		fields[waitingSincePath] = "$$REMOVE"
+	}
 	if state == "starting" && admitted != nil && admitted.Kind == SourceHealthy {
 		fields[sourceCleanStartPath] = true
 	}
