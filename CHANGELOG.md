@@ -11,26 +11,60 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.10.0] - 2026-11-20
+
+Adds an optional MongoDB credential per sandbox that only reaches that
+sandbox's database and is revoked when the sandbox is discarded or swept.
+Import, follow and write-back are now tested against sources with access
+control and TLS, three-member replica sets with primary elections, and
+MongoDB 6.0 and 8.0. A model-based correctness suite and fault-injection
+tests run in CI. Undo on some old histories still has the limits listed
+under 2.9.0 ([#154](https://github.com/argon-lab/argon/issues/154),
+[#155](https://github.com/argon-lab/argon/issues/155),
+[#168](https://github.com/argon-lab/argon/issues/168)).
+
 ### Added
 
 - `argon sandbox create --credential` issues a MongoDB user with read/write
-  access only to the new sandbox. REST and MCP sandbox creation accept
-  `credential: true` too. Discard or a successful sweep revokes the user.
-- Source deployment tests for custom MongoDB roles, a non-root engine
-  account and TLS with a private CA. The operations guide includes
-  per-command source roles.
-- Three-member primary election tests for online import, follow and
-  write-back, and CI coverage for MongoDB 6.0 and 8.0 sources and an
-  8.0 engine.
+  access only to the new sandbox; its database is the user's `authSource`
+  and the password is returned once. REST and MCP sandbox creation accept
+  `credential: true` too. Discard, a sweep of the expired sandbox and
+  cleanup after a failed create revoke the user before the database is
+  dropped. The flag is refused when the engine's own connection is not
+  authenticated. An expired sandbox's credential stays valid until a sweep
+  runs. ([#182](https://github.com/argon-lab/argon/pull/182))
+- Source deployment tests for custom least-privilege roles, a non-root
+  engine account and TLS with a private CA; primary elections on a
+  three-member source during follow, online import and write-back; and CI
+  runs with MongoDB 6.0 and 8.0 sources and an 8.0 engine. The operations
+  guide lists the source roles per command as `createRole` commands.
+  Atlas itself and sharded sources remain untested.
+  ([#185](https://github.com/argon-lab/argon/pull/185))
+- A seeded model-based test that checks WAL writes, branches, native
+  capture, snapshots, GC, undo, time travel, diff and merge against an
+  independent model, and fault-injection tests that interrupt capture,
+  checkout, snapshot creation, GC and write-back.
+  ([#184](https://github.com/argon-lab/argon/pull/184))
 
 ### Fixed
 
 - An unauthorized source change stream now names both required MongoDB
   actions, `find` and `changeStream`. A denied write-back delete names
   the `remove` action used in a MongoDB role.
+  ([#185](https://github.com/argon-lab/argon/pull/185))
 - Write-back preflight explains why it refuses a capped collection on
   MongoDB 8.0, where snapshot reads can succeed and transactional writes
-  are prohibited.
+  are prohibited. ([#185](https://github.com/argon-lab/argon/pull/185))
+
+### Known limitations
+
+- `--enable-source-images` runs one `collMod` per collection. If a later
+  collection is denied, earlier ones keep images enabled; nothing is
+  published and the error names both. Grant `collMod` on every collection.
+- The indexed diff can report a stale parent value when an old-format
+  (2.0.1 or earlier) row is written after a typed row on the same branch
+  and collection, for example by an old capture process left running
+  after an upgrade ([#183](https://github.com/argon-lab/argon/issues/183)).
 
 ## [2.9.0] - 2026-11-20
 
