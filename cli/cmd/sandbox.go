@@ -93,11 +93,14 @@ it again right after creating its collection.`,
 				return err
 			}
 		} else {
-			fmt.Printf("Sandbox %q forked from %s at LSN %d.\n", info.BranchName, info.ForkedFrom, info.ForkLSN)
-			fmt.Printf("Expires: %s\n", info.ExpiresAt.Format(time.RFC3339))
-			fmt.Printf("Connection string:\n  %s\n", uri)
+			// The connection string can carry the sandbox password; it goes to
+			// the command's output, the only place Argon ever returns it.
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Sandbox %q forked from %s at LSN %d.\n", info.BranchName, info.ForkedFrom, info.ForkLSN)
+			fmt.Fprintf(out, "Expires: %s\n", info.ExpiresAt.Format(time.RFC3339))
+			fmt.Fprintf(out, "Connection string:\n  %s\n", uri)
 			if !watch {
-				fmt.Printf("Capture its writes with: argon watch -p %s -b %s\n", projectName, info.BranchName)
+				fmt.Fprintf(out, "Capture its writes with: argon watch -p %s -b %s\n", projectName, info.BranchName)
 			}
 		}
 		if !watch {
