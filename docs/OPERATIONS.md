@@ -848,9 +848,9 @@ checked-out branches, with a `source` section: mode (`exact` or `catch_up`),
 position, newest consistent point and inexact ranges.
 
 `argon status` reports connectivity and system health; `argon metrics`
-prints performance counters (operation rates, latencies, error rates). The
-services log ingester lifecycle events and snapshot/GC warnings to stderr;
-`wal.Monitor` runs periodic health checks inside every long-lived process.
+counts each project's branches, sandboxes and checked-out branches and
+shows its newest allocated LSN, read from the metadata database. The
+services log ingester lifecycle events and snapshot/GC warnings to stderr.
 
 ## Authentication
 

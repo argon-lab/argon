@@ -69,7 +69,6 @@ func closeCommandServices() error {
 			cleanupCancel()
 		}
 		cancel()
-		services.Monitor.Stop()
 		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 		if err := services.Client.Disconnect(ctx); err != nil {
 			failures = append(failures, err)

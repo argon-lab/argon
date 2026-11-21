@@ -11,6 +11,18 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Fixed
+
+- `argon metrics` always printed zeros: its operation counters and
+  latencies were never recorded by any operation, and its project, branch
+  and LSN figures were never filled in. It now reads the metadata database
+  and reports, for each project, its branches, the sandboxes and
+  checked-out branches among them, and the newest allocated LSN, with
+  `-o json`. The background monitor that logged these empty counters is
+  gone, so CLI commands no longer print "WAL Monitor: Started/Stopped
+  health monitoring" to stderr. `walcli.Services.Monitor` remains as a
+  deprecated no-op.
+
 ## [2.11.1] - 2026-11-21
 
 ### Fixed

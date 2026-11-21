@@ -18,7 +18,6 @@ type Service struct {
 	db         *mongo.Database
 	collection *mongo.Collection
 	sequencer  *Sequencer
-	metrics    *Metrics
 	compressor *Compressor
 }
 
@@ -34,7 +33,6 @@ func NewService(db *mongo.Database) (*Service, error) {
 		db:         db,
 		collection: db.Collection("wal_log"),
 		sequencer:  NewSequencer(db),
-		metrics:    GlobalMetrics,
 		compressor: compressor,
 	}
 
@@ -967,14 +965,10 @@ func (s *Service) DeleteBranchEntries(branchID string) (int64, error) {
 	return res.DeletedCount, nil
 }
 
-// GetMetrics returns a snapshot of current metrics
-func (s *Service) GetMetrics() MetricsSnapshot {
-	return s.metrics.GetSnapshot()
-}
-
-// GetSuccessRates returns success rates for operations
-func (s *Service) GetSuccessRates() map[string]float64 {
-	return s.metrics.GetSuccessRate()
+// CurrentLSN returns the project's most recently allocated LSN (0 if none).
+// Unlike GetCurrentLSN it reports a failed read.
+func (s *Service) CurrentLSN(projectID string) (int64, error) {
+	return s.sequencer.Current(projectID)
 }
 
 // Close cleans up resources used by the service

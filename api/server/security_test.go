@@ -115,7 +115,6 @@ func TestSandboxCredentialAPI(t *testing.T) {
 	require.NoError(t, err)
 	ctx := context.Background()
 	t.Cleanup(func() {
-		services.Monitor.Stop()
 		_ = services.Client.Database(name).Drop(ctx)
 		_ = services.Client.Disconnect(ctx)
 	})

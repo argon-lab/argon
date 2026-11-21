@@ -86,7 +86,6 @@ func newFollowFixtureAt(t *testing.T, engineURI, sourceURI string) *followFixtur
 			_ = services.Ingest.Cancel(cleanup, status.BranchID)
 		}
 		_ = services.WaitAuto(cleanup)
-		services.Monitor.Stop()
 		if projects, err := services.Projects.ListProjects(); err == nil {
 			for _, project := range projects {
 				branches, _ := services.Branches.ListBranchesAny(project.ID)
@@ -461,7 +460,6 @@ func (f *followFixture) restart(t *testing.T) *walcli.Services {
 			_ = services.Ingest.Cancel(cleanup, status.BranchID)
 		}
 		_ = services.WaitAuto(cleanup)
-		services.Monitor.Stop()
 		_ = services.Client.Disconnect(cleanup)
 	})
 	return services
