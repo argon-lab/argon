@@ -119,6 +119,7 @@ func TestWriteBack_CheckoutMixedImageProvenance(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, f.branches.UpdateBranchHead(branch.ID, lsn))
 		if id == "legacy" {
+			allowOldFormatRows(t, db)
 			result, err := db.Collection("wal_log").UpdateOne(ctx, bson.M{"branch_id": branch.ID, "lsn": lsn},
 				bson.M{"$unset": bson.M{"key_v": ""}})
 			require.NoError(t, err)

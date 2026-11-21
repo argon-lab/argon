@@ -95,6 +95,10 @@ func NewService(db *mongo.Database) (*Service, error) {
 		_ = compressor.Close()
 		return nil, fmt.Errorf("failed to create indexes: %w", err2)
 	}
+	if err := s.ensureFormatGuard(ctx); err != nil {
+		_ = compressor.Close()
+		return nil, fmt.Errorf("install WAL format guard: %w", err)
+	}
 
 	return s, nil
 }

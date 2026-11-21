@@ -94,6 +94,7 @@ func TestWriteBack_UndoRestoresValues(t *testing.T) {
 			}
 			if mode == "missing pre-image" {
 				// Early metadata writers stored a replacement without its pre-image.
+				allowOldFormatRows(t, f.metaDB)
 				res, err := f.metaDB.Collection("wal_log").UpdateOne(ctx, bson.M{"_id": last.ID},
 					bson.M{"$unset": bson.M{"pre": "", "metadata": ""}, "$set": bson.M{"actor": "writer"}})
 				require.NoError(t, err)

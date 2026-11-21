@@ -24,6 +24,7 @@ func TestResync_RecapturesUnverifiedBeforeImage(t *testing.T) {
 			db := f.services.Client.Database(f.metadataName)
 			if provenance == "attached unverified" {
 				// Model a checkpoint whose attached image only establishes decoded values.
+				allowOldFormatRows(t, db)
 				marked, err := db.Collection("wal_log").UpdateOne(ctx,
 					bson.M{"branch_id": main.ID, "collection": "catalog", "document_id": "parcel"},
 					bson.M{"$set": bson.M{"metadata.capture_images": "attached_unverified"}})

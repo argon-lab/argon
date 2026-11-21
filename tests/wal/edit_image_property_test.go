@@ -142,6 +142,7 @@ func newEditImageHistory(t *testing.T, seed int64) *editImageHistory {
 
 	// A historical image may identify its row only through the image _id.
 	at = appendRow(early, b, wal.OpPut, nil, cleanImage(b), "")
+	allowOldFormatRows(t, h.db)
 	_, err = h.db.Collection("wal_log").UpdateOne(ctx, bson.M{"branch_id": early.ID, "lsn": at},
 		bson.M{"$unset": bson.M{"key_v": ""}, "$set": bson.M{"document_id": "old-envelope"}})
 	require.NoError(t, err)
@@ -292,6 +293,7 @@ func (h *editImageHistory) addLegacyPointRows(t *testing.T) {
 			Collection: editCollection, DocumentID: key, Operation: row.op, PostImage: raw})
 		require.NoError(t, err)
 		if row.storedKey != "" {
+			allowOldFormatRows(t, h.db)
 			res, err := h.db.Collection("wal_log").UpdateOne(t.Context(), bson.M{"branch_id": early.ID, "lsn": at},
 				bson.M{"$unset": bson.M{"key_v": ""}, "$set": bson.M{"document_id": row.storedKey}})
 			require.NoError(t, err)
@@ -427,6 +429,7 @@ func TestSource_DecodedPointWithUnrelatedAmbiguousDelete(t *testing.T) {
 	require.NoError(t, err)
 	other, err := h.writer.Put(t.Context(), editCollection, bson.M{"_id": "other"})
 	require.NoError(t, err)
+	allowOldFormatRows(t, h.db)
 	res, err := h.db.Collection("wal_log").UpdateOne(t.Context(), bson.M{"branch_id": h.main.ID, "lsn": other},
 		bson.M{"$unset": bson.M{"key_v": ""}, "$set": bson.M{"document_id": "opaque-envelope"}})
 	require.NoError(t, err)
@@ -585,6 +588,7 @@ func TestSource_EditPointAcrossReclaimedParent(t *testing.T) {
 			if legacy {
 				at, err = writer.Put(ctx, editCollection, bson.M{"_id": "legacy"})
 				require.NoError(t, err)
+				allowOldFormatRows(t, h.db)
 				_, err = h.db.Collection("wal_log").UpdateOne(ctx, bson.M{"branch_id": child.ID, "lsn": at},
 					bson.M{"$unset": bson.M{"key_v": ""}})
 				require.NoError(t, err)

@@ -60,6 +60,7 @@ func TestWriteBack_SnapshotFieldOrder(t *testing.T) {
 				at, err = h.wal.Append(&wal.Entry{BranchID: branch.ID, ProjectID: h.project,
 					Collection: collection, DocumentID: "other", Operation: wal.OpPut, PostImage: other})
 				require.NoError(t, err)
+				allowOldFormatRows(t, h.db)
 				_, err = h.db.Collection("wal_log").UpdateOne(ctx, bson.M{"branch_id": branch.ID, "lsn": at},
 					bson.M{"$unset": bson.M{"key_v": ""}, "$set": bson.M{"document_id": "opaque-envelope"}})
 				require.NoError(t, err)

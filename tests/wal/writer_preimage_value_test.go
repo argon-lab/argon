@@ -107,6 +107,7 @@ func TestSource_WriterUndoLegacyDocumentKey(t *testing.T) {
 			require.NoError(t, err)
 			// Modern append normalizes the index key. Restore the legacy row's
 			// key and absence of a key version, leaving its image intact.
+			allowOldFormatRows(t, h.db)
 			updated, err := h.db.Collection("wal_log").UpdateOne(ctx, bson.M{"branch_id": branch.ID, "lsn": lsn},
 				bson.M{"$unset": bson.M{"key_v": ""}, "$set": bson.M{"document_id": tc.storedKey}})
 			require.NoError(t, err)

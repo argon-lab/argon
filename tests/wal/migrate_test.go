@@ -33,6 +33,7 @@ func insertLegacyEntry(t *testing.T, db *mongo.Database, walService *wal.Service
 	lsn, err := seq.Reserve(projectID, 1)
 	require.NoError(t, err)
 
+	allowOldFormatRows(t, db)
 	_, err = db.Collection("wal_log").InsertOne(context.Background(), bson.M{
 		"lsn":                 lsn,
 		"project_id":          projectID,

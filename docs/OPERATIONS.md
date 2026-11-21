@@ -762,6 +762,25 @@ database, pause its writers and DDL, then run
 `argon import database -p NEW -d DB --uri URI --source-quiesced`.
 This copies the database into a new project. The original branch keeps its history.
 
+### Mixing engine versions on one metadata database
+
+Releases up to 2.0.1 write data entries without a typed document key.
+Reads assume that a branch's untyped entries all come before its first typed
+one, which is what an upgrade produces. An old process still writing after a
+newer release has written breaks that assumption: an indexed diff could then
+report an older value of the parent
+([#183](https://github.com/argon-lab/argon/issues/183)).
+
+From 2.11.0 the engine installs a validator on `wal_log` that refuses data
+entries without a typed key, so a capture process or CLI from 2.0.1 or
+earlier fails with `DocumentValidationFailure` instead of appending. History
+written before the upgrade is untouched, and `argon migrate-wal` can still
+rewrite it. Installing the validator needs `collMod` on the metadata
+database (`dbAdmin` on it, or `dbAdminAnyDatabase`). Without it, or when
+`wal_log` already has a different validator, the engine logs that the guard
+is missing and starts anyway. Stop every process of an older release before
+upgrading.
+
 ## Migrating from WAL schema v1
 
 v1 logged updates as expressions and re-executed them on replay, which was

@@ -28,6 +28,7 @@ func TestSource_SnapshotLegacyKeyEvidenceUsesImage(t *testing.T) {
 	} {
 		t.Run(tc.collection, func(t *testing.T) {
 			at := insertOldBinaryEntry(t, h.db, h.main, tc.collection, tc.key, wal.OpPut, oldBinaryDocument(tc.id, "kept"))
+			allowOldFormatRows(t, h.db)
 			logs := h.db.Collection("wal_log")
 			_, err := logs.UpdateOne(ctx, bson.M{"project_id": h.project, "lsn": at}, bson.M{"$unset": bson.M{"key_v": ""}})
 			require.NoError(t, err)
