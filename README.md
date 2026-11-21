@@ -196,7 +196,7 @@ For a complete managed workflow, run [the two-agent pinned dataset example](exam
 ```bash
 claude mcp add argon -- argon mcp        # 13 tools: sandbox, diff, merge, undo, pins
 # Install the published Python SDK and LangGraph adapter.
-python3 -m pip install 'argon-agents[langgraph]==0.2.0'
+python3 -m pip install 'argon-agents[langgraph]==0.3.0'
 ```
 
 Start `argon console --no-browser` in another terminal, then:

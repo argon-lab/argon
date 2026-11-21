@@ -200,10 +200,10 @@ everything reclaimed after `ARGON_DEMO_TTL_MINUTES` (default 60).
 
 ## Python — argon-agents
 
-Install SDK v0.2.0 from PyPI, with `[langgraph]` for the checkpointer:
+Install SDK v0.3.0 from PyPI, with `[langgraph]` for the checkpointer:
 
 ```bash
-python3 -m pip install 'argon-agents[langgraph]==0.2.0'
+python3 -m pip install 'argon-agents[langgraph]==0.3.0'
 ```
 
 Start `argon console --no-browser` in another terminal. It listens on port
