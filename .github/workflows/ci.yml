@@ -362,3 +362,46 @@ jobs:
       - name: Scan reachable dependencies against the current database
         working-directory: ${{ matrix.module }}
         run: govulncheck ./...
+
+  source-auth:
+    name: Source authentication and TLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash scripts/test-source-deployment.sh auth
+        env:
+          ENGINE_IMAGE: ${{ env.MONGODB_IMAGE }}
+          SOURCE_IMAGE: ${{ env.MONGODB_IMAGE }}
+
+  source-elections:
+    name: Three-member source elections
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash scripts/test-source-deployment.sh rs3
+        env:
+          ENGINE_IMAGE: ${{ env.MONGODB_IMAGE }}
+          SOURCE_IMAGE: ${{ env.MONGODB_IMAGE }}
+
+  source-versions:
+    name: Source ${{ matrix.source }} with engine ${{ matrix.engine }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - source: '6.0.28'
+            engine: '7.0.45'
+          - source: '8.0.38'
+            engine: '7.0.45'
+          - source: '7.0.45'
+            engine: '8.0.38'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash scripts/test-source-deployment.sh versions
+        env:
+          ENGINE_IMAGE: mongo:${{ matrix.engine }}
+          SOURCE_IMAGE: mongo:${{ matrix.source }}

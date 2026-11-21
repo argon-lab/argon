@@ -21,7 +21,14 @@ func sourceStreamOptions() *options.ChangeStreamOptions {
 }
 
 func watchSource(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
-	return src.Watch(ctx, mongo.Pipeline{}, opts)
+	stream, err := src.Watch(ctx, mongo.Pipeline{}, opts)
+	var denied mongo.ServerError
+	if errors.As(err, &denied) && denied.HasErrorCode(13) {
+		// Unauthorized identifies the aggregate command, not which of the two
+		// privileges required by a database-wide change stream was missing.
+		return nil, fmt.Errorf("the source user needs both find and changeStream on database %s: %w", src.Name(), err)
+	}
+	return stream, err
 }
 
 // ProbeStream checks that a source can open and read the stream that will
