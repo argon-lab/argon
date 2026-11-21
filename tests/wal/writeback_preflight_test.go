@@ -110,8 +110,14 @@ func TestWriteBack_CappedCollection(t *testing.T) {
 				p.Changes = append(p.Changes, merge.Change{Collection: "stock", DocumentID: key, DocumentRaw: sourceCaseImage(t, key, bson.D{})})
 			}
 			require.NoError(t, f.services.Merge.SavePlan(ctx, p))
-			var listings, failures int
+			var listings int
+			var attempts []string
 			monitor := &event.CommandMonitor{
+				Started: func(_ context.Context, e *event.CommandStartedEvent) {
+					if e.CommandName == "find" || e.CommandName == "insert" {
+						attempts = append(attempts, e.CommandName)
+					}
+				},
 				Succeeded: func(_ context.Context, e *event.CommandSucceededEvent) {
 					if e.CommandName == "listCollections" {
 						listings++
@@ -120,11 +126,6 @@ func TestWriteBack_CappedCollection(t *testing.T) {
 								{Key: "convertToCapped", Value: "stock"}, {Key: "size", Value: 65536},
 							}).Err())
 						}
-					}
-				},
-				Failed: func(_ context.Context, e *event.CommandFailedEvent) {
-					if e.CommandName == "find" {
-						failures++
 					}
 				},
 			}
@@ -143,15 +144,21 @@ func TestWriteBack_CappedCollection(t *testing.T) {
 			if when == "before preflight" {
 				require.ErrorContains(t, err, "capped collection")
 				require.ErrorContains(t, err, "stock/alpha")
+				require.ErrorContains(t, err, "does not support writes in transactions")
 				require.Empty(t, state.WriteBackLastError)
-				require.Zero(t, failures)
+				require.Empty(t, attempts)
 			} else {
-				var server mongo.CommandError
+				var server mongo.ServerError
 				require.ErrorAs(t, err, &server)
-				require.Equal(t, "SnapshotUnavailable", server.Name)
-				require.ErrorContains(t, err, "capped collections")
+				// Older servers reject the snapshot read. MongoDB 8.0
+				// permits the read and rejects the transactional insert.
+				if server.HasErrorCodeWithMessage(246, "capped collections") {
+					require.Equal(t, []string{"find"}, attempts)
+				} else {
+					require.True(t, server.HasErrorCodeWithMessage(263, "Writes in transactions are not allowed on capped collections"), "%v", err)
+					require.Equal(t, []string{"find", "insert"}, attempts)
+				}
 				require.Equal(t, err.Error(), state.WriteBackLastError)
-				require.Equal(t, 1, failures)
 			}
 			count, err := db.Collection("stock").CountDocuments(ctx, bson.D{})
 			require.NoError(t, err)

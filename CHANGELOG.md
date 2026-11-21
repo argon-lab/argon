@@ -16,6 +16,21 @@ entry — a synchronization barrier, not in-proxy capture).
 - `argon sandbox create --credential` issues a MongoDB user with read/write
   access only to the new sandbox. REST and MCP sandbox creation accept
   `credential: true` too. Discard or a successful sweep revokes the user.
+- Source deployment tests for custom MongoDB roles, a non-root engine
+  account and TLS with a private CA. The operations guide includes
+  per-command source roles.
+- Three-member primary election tests for online import, follow and
+  write-back, and CI coverage for MongoDB 6.0 and 8.0 sources and an
+  8.0 engine.
+
+### Fixed
+
+- An unauthorized source change stream now names both required MongoDB
+  actions, `find` and `changeStream`. A denied write-back delete names
+  the `remove` action used in a MongoDB role.
+- Write-back preflight explains why it refuses a capped collection on
+  MongoDB 8.0, where snapshot reads can succeed and transactional writes
+  are prohibited.
 
 ## [2.9.0] - 2026-11-20
 

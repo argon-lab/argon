@@ -458,8 +458,12 @@ argon merge preview -p myapp -b <sandbox> --output json
 argon merge apply <plan-id> --write-back --approve <approval_digest>
 ```
 
-Write-back tests have not covered Atlas, deployments with access control,
-multi-member elections, sharded sources or MongoDB versions other than 7.0.
+Deployment tests use a self-managed source with SCRAM authentication, a
+keyfile and TLS with a private CA, and a separate engine with a non-root
+account. Three-member tests step down the source primary during follow,
+online copy and an open write-back transaction. The version matrix pairs
+6.0.28 and 8.0.38 sources with a 7.0.45 engine and a 7.0.45 source with an
+8.0.38 engine. Atlas itself and sharded sources remain untested.
 
 #### Ordinary apply versus write-back
 
@@ -521,8 +525,10 @@ an intervening write, replay keeps the snapshot frame's own field order.
 - Write-back targets ordinary collections. Views are read-only, and a source
   with a time-series collection cannot be followed. Write-back checks
   collection options before claiming the plan. A capped target is refused
-  with its first selected key. If a collection becomes
-  capped after that check, its snapshot-read error aborts the transaction.
+  with its first selected key. If a collection becomes capped after that
+  check, MongoDB 6.0 and 7.0 reject the snapshot read. MongoDB 8.0 rejects
+  the write. In both cases the transaction aborts and the plan returns to
+  pending.
   The preflight also checks that an insert or replacement target exists.
   It never upserts. A collection dropped between this check and an insert
   can be recreated by the insert. Collection identity and intervening changes
@@ -634,11 +640,55 @@ not what a future one would do; a reviewer still has to look.
 
 ### Source permissions
 
-Reading and following need `find` and `changeStream` on the source database
-and the ability to run `hello`. Import with `replSetGetConfig` to record the
-replica-set ID. Every later connection to an ID-bound source also needs
-that privilege. `--write-back` also needs `readWrite` on the database.
-`--enable-source-images` also needs `collMod`.
+A database-wide change stream needs both `find` and `changeStream` on
+the source database. The role for each command depends on the operation
+and on how the project identifies its source.
+
+| Command | Source privileges |
+| --- | --- |
+| `import database --online` | `find`, `changeStream`, `listCollections` on the database. Add the cluster action `replSetGetConfig` to record the replica-set ID. |
+| `source follow` | `find` and `changeStream` on the database. An ID-bound project also needs `replSetGetConfig`. |
+| `merge preview` | The command saves the plan in the engine. It needs no source credentials. |
+| `merge check` | `replSetGetConfig` to verify the ID. On collections with a proposed insert or replacement, grant `listIndexes` and, when checking a supported unique key against source documents, `find`. |
+| `merge apply --write-back` | `replSetGetConfig` to verify the ID. For a nonempty batch, grant `listCollections` on the database and `find` on the target collections. Grant `insert` for new documents, `update` for replacements and `remove` for deletes. |
+| `--enable-source-images` on import or follow | Grant the import or follow privileges above, plus `listCollections`, `collMod` on each collection Argon will prepare, and `replSetGetConfig`. |
+
+The following `mongosh` example creates independent roles on the source.
+Replace `shop` and `catalog` with the source database and the collection
+that a plan can change. Add a resource entry for each additional collection
+in the check and apply roles. The images example assumes `catalog` is the
+only ordinary source collection. If there are more, grant `collMod` on
+each one before enabling images. A denial on a later collection leaves
+images enabled on earlier collections, which Argon names in the error.
+
+```javascript
+const admin = db.getSiblingDB("admin");
+const database = {db: "shop", collection: ""};
+const catalog = {db: "shop", collection: "catalog"};
+const allow = (resource, ...actions) => ({resource, actions});
+const identity = allow({cluster: true}, "replSetGetConfig");
+const stream = allow(database, "find", "changeStream");
+const list = allow(database, "listCollections");
+const role = (name, privileges) => admin.createRole({role: name, privileges, roles: []});
+
+role("argonImport", [stream, list, identity]);
+role("argonFollow", [stream, identity]);
+role("argonCheck", [allow(catalog, "listIndexes", "find"), identity]);
+role("argonApply", [list, allow(catalog, "find", "insert", "update", "remove"), identity]);
+role("argonImages", [list, allow(catalog, "collMod")]);
+```
+
+Grant `argonImages` alongside the ID-bound import or follow role only for
+runs that enable images. For a project that will only follow by set name
+and member host, omit `identity` from both the import and follow roles.
+The `hello` command used in discovery needs no additional grant. The engine
+account is separate. The deployment tests run it with `readWriteAnyDatabase`
+and `dbAdminAnyDatabase` on the dedicated engine.
+
+For a private CA, supply the same URI to each command, for example through
+`ARGON_SOURCE_URI`. Use `tls=true&tlsCAFile=/path/to/ca.pem` alongside
+`authSource` and `replicaSet` as appropriate. Percent-encode reserved
+characters in credentials and query values.
 
 ## Snapshot chunk stores
 

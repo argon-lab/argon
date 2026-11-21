@@ -235,7 +235,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 	for _, c := range changes {
 		isCapped, present := capped[c.Collection]
 		if isCapped {
-			return nil, fmt.Errorf("write-back refused before claim: %s/%s targets a capped collection, which does not support snapshot reads", c.Collection, c.DocumentID)
+			return nil, fmt.Errorf("write-back refused before claim: %s/%s targets a capped collection, which does not support writes in transactions", c.Collection, c.DocumentID)
 		}
 		if !present && !c.Delete {
 			return nil, fmt.Errorf("collection %s does not exist in the source database, and write-back does not create collections. Create it there with the options it should have, let following catch up, and preview again", c.Collection)
@@ -635,6 +635,10 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, changes []
 		case c.Delete:
 			result, err := coll.DeleteOne(ctx, bson.M{"_id": c.ID})
 			if err != nil {
+				var denied mongo.ServerError
+				if errors.As(err, &denied) && denied.HasErrorCode(13) {
+					return fmt.Errorf("deleting from %s.%s requires the remove action: %w", database.Name(), c.Collection, err)
+				}
 				return err
 			}
 			if result.DeletedCount != 1 {

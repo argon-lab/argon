@@ -152,6 +152,10 @@ func TestSource_NoArgonPathDropsOrRewritesIt(t *testing.T) {
 		require.Contains(t, report.Skipped[0], "refusing to drop")
 		intact("sweep of a branch record naming the source")
 
+		// The follower also checks for a live checkout on main. Stop it
+		// before manufacturing that state so this test measures the drop
+		// guards independently of when the follower next checks main.
+		require.NoError(t, stop())
 		claim(main.ID)
 		require.ErrorContains(t, services.Checkout.Release(ctx, main.ID), "refusing to drop")
 		require.ErrorContains(t, services.Checkout.Discard(ctx, main.ID), "refusing to drop")
@@ -165,7 +169,6 @@ func TestSource_NoArgonPathDropsOrRewritesIt(t *testing.T) {
 		require.ErrorContains(t, services.Sources.GuardDrop(ctx, "production"), "refusing to drop")
 
 		// Detaching ends the tie; it does not touch the source either.
-		require.NoError(t, stop())
 		require.NoError(t, services.DetachSource(ctx, f.project))
 		info, err := services.Checkout.Checkout(ctx, main.ID)
 		require.NoError(t, err, "a detached main is an ordinary branch again")

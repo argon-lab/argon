@@ -102,10 +102,11 @@ keep running, then follow its changes on the project's `main`. Write-back is
 also available by default. Review the plan in CLI JSON and pass its digest
 when applying it to the source. The experimental options `--auto-resync`
 and `--enable-source-images` are off by default and each requires
-`ARGON_EXPERIMENTAL_SOURCE=1`. Write-back tests have not covered Atlas,
-deployments with access control, multi-member elections, sharded sources or
-MongoDB versions other than 7.0. For known issues and limits, see
-[the operations guide](docs/OPERATIONS.md#following-a-source-database).
+`ARGON_EXPERIMENTAL_SOURCE=1`. The deployment tests exercise authenticated
+TLS connections, primary elections on a three-member source, MongoDB 6.0
+and 8.0 sources with a 7.0 engine, and an 8.0 engine with a 7.0 source.
+Atlas itself and sharded sources remain untested. For source roles and
+deployment limits, see [the operations guide](docs/OPERATIONS.md#following-a-source-database).
 
 ```bash
 export ARGON_SOURCE_URI="mongodb://…"     # read per command, never stored

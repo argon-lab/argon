@@ -389,7 +389,7 @@ func createTestImportData(t *testing.T, db *mongo.Database) {
 // setupTestSourceDB creates a separate source database for import testing
 func setupTestSourceDB(t *testing.T, dbName string) *mongo.Database {
 	ctx := context.Background()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(getTestMongoURI()))
 	require.NoError(t, err)
 
 	// Use the provided database name
