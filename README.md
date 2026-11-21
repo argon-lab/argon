@@ -81,6 +81,12 @@ argon merge apply <plan-id>
 argon sandbox discard -p myapp -b <sandbox>
 ```
 
+On a MongoDB deployment with access control, add `--credential` to
+`argon sandbox create` to get a URI that can read and write only that
+sandbox. Save the URI when the command prints it. The credential stays valid
+until you discard the sandbox or a sweep reaps it after expiry.
+See [Exposure and credentials](docs/OPERATIONS.md#exposure-and-credentials).
+
 Through the MCP server or `argon console`, capture and expiry are managed for
 you: nothing stays in the foreground, and expired sandboxes are swept every
 minute. `--watch` needs 2.3.0 or newer; on older versions run
@@ -255,7 +261,7 @@ window can be reclaimed unless a pin protects it.
 
 | | Command | In one line |
 |---|---|---|
-| **Sandboxes** | `argon sandbox create --ttl 1h` | fork + checkout + TTL in one step — disposable agent workspaces |
+| **Sandboxes** | `argon sandbox create --ttl 1h [--credential]` | fork with a TTL and an optional MongoDB user scoped to the sandbox |
 | **Dataset pins** | `argon pin create` / `pin sandbox` | named captured states protected from GC and resets while the pin exists |
 | **Data PRs** | `argon merge preview/apply` | three-way merges as reviewable plans; conflicts never silent |
 | **Undo** | `argon undo --actor <a>` | revert a range or actor label; append-only, conflict-aware |

@@ -194,6 +194,11 @@ type Branch struct {
 	// hook). Merge or discard it before then — or extend it.
 	ExpiresAt *time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
 
+	// SandboxUsername is the database-local user issued at sandbox creation.
+	// SandboxRevoking fences issuance and TTL changes once cleanup starts.
+	SandboxUsername string `bson:"sandbox_username,omitempty" json:"-"`
+	SandboxRevoking bool   `bson:"sandbox_revoking,omitempty" json:"-"`
+
 	// Follows names the external database this branch mirrors (set by an
 	// online import, cleared by detaching). Such a branch has exactly one
 	// writer, the follower that applies the source's change stream, so every

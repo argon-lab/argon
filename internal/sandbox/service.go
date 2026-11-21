@@ -1,7 +1,5 @@
-// Package sandbox implements ephemeral agent branches: fork, check out,
-// hand an agent the connection string, and let the TTL clean up whatever
-// wasn't merged or explicitly kept. This is the Neon-style workflow that
-// makes it safe to point an AI agent at production-shaped data.
+// Package sandbox manages checked-out branches with an optional scoped
+// MongoDB credential. A sweep reclaims expired branches.
 package sandbox
 
 import (
@@ -32,18 +30,31 @@ func NewService(branches *branchwal.BranchService, co *checkout.Service) *Servic
 
 // Info describes a created sandbox.
 type Info struct {
-	BranchID   string
-	BranchName string
-	PhysicalDB string
-	ExpiresAt  time.Time
-	ForkedFrom string
-	ForkLSN    int64
+	BranchID      string
+	BranchName    string
+	PhysicalDB    string
+	ExpiresAt     time.Time
+	ForkedFrom    string
+	ForkLSN       int64
+	CredentialURI string `json:"-" bson:"-"`
 }
 
 // Create forks a sandbox branch from the given parent, checks it out and
 // stamps the TTL. The returned physical database is what the agent
 // connects to; run the ingester (argon watch) to capture its writes.
 func (s *Service) Create(ctx context.Context, projectID, parentBranchID, name string, ttl time.Duration) (*Info, error) {
+	return s.create(ctx, projectID, parentBranchID, name, ttl, nil)
+}
+
+// CreateWithCredential issues one database-local MongoDB user after checkout.
+func (s *Service) CreateWithCredential(ctx context.Context, projectID, parentBranchID, name string, ttl time.Duration, baseURI string) (*Info, error) {
+	if err := s.checkout.RequireSandboxAuthentication(ctx); err != nil {
+		return nil, err
+	}
+	return s.create(ctx, projectID, parentBranchID, name, ttl, &baseURI)
+}
+
+func (s *Service) create(ctx context.Context, projectID, parentBranchID, name string, ttl time.Duration, baseURI *string) (*Info, error) {
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
@@ -60,28 +71,46 @@ func (s *Service) Create(ctx context.Context, projectID, parentBranchID, name st
 		return nil, fmt.Errorf("parent branch not found: %w", err)
 	}
 
-	branch, err := s.branches.CreateBranch(projectID, name, parent.ID)
+	var branch *wal.Branch
+	var expires time.Time
+	if baseURI != nil {
+		expires = time.Now().Add(ttl)
+		branch, err = s.branches.CreateCredentialSandbox(projectID, name, parent.ID, expires)
+	} else {
+		branch, err = s.branches.CreateBranch(projectID, name, parent.ID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to fork sandbox: %w", err)
 	}
 
-	expires := time.Now().Add(ttl)
-	if err := s.branches.SetExpiry(branch.ID, &expires); err != nil {
-		return nil, s.removeFailed(branch, fmt.Errorf("failed to stamp sandbox TTL: %w", err))
+	if baseURI == nil {
+		expires = time.Now().Add(ttl)
+		if err := s.branches.SetExpiry(branch.ID, &expires); err != nil {
+			return nil, s.removeFailed(branch, false, fmt.Errorf("failed to stamp sandbox TTL: %w", err))
+		}
 	}
 
 	info, err := s.checkout.Checkout(ctx, branch.ID)
 	if err != nil {
-		return nil, s.removeFailed(branch, fmt.Errorf("failed to check the sandbox out: %w", err))
+		return nil, s.removeFailed(branch, false, fmt.Errorf("failed to check the sandbox out: %w", err))
 	}
 
+	var uri string
+	if baseURI != nil {
+		var mayExist bool
+		uri, mayExist, err = s.checkout.IssueSandboxCredential(ctx, branch, *baseURI)
+		if err != nil {
+			return nil, s.removeFailed(branch, mayExist, err)
+		}
+	}
 	return &Info{
-		BranchID:   branch.ID,
-		BranchName: branch.Name,
-		PhysicalDB: info.PhysicalDB,
-		ExpiresAt:  expires,
-		ForkedFrom: parent.Name,
-		ForkLSN:    branch.BaseLSN,
+		BranchID:      branch.ID,
+		BranchName:    branch.Name,
+		PhysicalDB:    info.PhysicalDB,
+		ExpiresAt:     expires,
+		ForkedFrom:    parent.Name,
+		ForkLSN:       branch.BaseLSN,
+		CredentialURI: uri,
 	}, nil
 }
 
@@ -108,11 +137,11 @@ func (s *Service) Adopt(ctx context.Context, branchID string, ttl time.Duration)
 
 	expires := time.Now().Add(ttl)
 	if err := s.branches.SetExpiry(branch.ID, &expires); err != nil {
-		return nil, s.removeFailed(branch, fmt.Errorf("failed to stamp sandbox TTL: %w", err))
+		return nil, s.removeFailed(branch, true, fmt.Errorf("failed to stamp sandbox TTL: %w", err))
 	}
 	info, err := s.checkout.Checkout(ctx, branch.ID)
 	if err != nil {
-		return nil, s.removeFailed(branch, fmt.Errorf("failed to check the sandbox out: %w", err))
+		return nil, s.removeFailed(branch, true, fmt.Errorf("failed to check the sandbox out: %w", err))
 	}
 	return &Info{
 		BranchID:   branch.ID,
@@ -124,10 +153,16 @@ func (s *Service) Adopt(ctx context.Context, branchID string, ttl time.Duration)
 	}, nil
 }
 
-// removeFailed deletes the branch of a sandbox that could not be created, so
-// that a failed create leaves nothing behind and its name can be used again.
-// A failed checkout has already dropped the database it had started to fill.
-func (s *Service) removeFailed(branch *wal.Branch, cause error) error {
+// removeFailed cleans up with a fresh context because the create request
+// may have been interrupted after MongoDB created the user.
+func (s *Service) removeFailed(branch *wal.Branch, userMayExist bool, cause error) error {
+	if branch.SandboxUsername != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.checkout.DiscardFailedSandbox(ctx, branch.ID, userMayExist); err != nil {
+			return fmt.Errorf("%w; cleanup of sandbox %q failed (%v): retry argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
+		}
+	}
 	if err := s.branches.DeleteBranch(branch.ProjectID, branch.Name); err != nil {
 		return fmt.Errorf("%w; the sandbox branch %q was left behind and could not be removed (%v): remove it with argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
 	}
@@ -161,6 +196,10 @@ func (s *Service) Keep(ctx context.Context, branchID string) error {
 // Discard releases and deletes a sandbox immediately. Deletion reclaims
 // its WAL entries and snapshots through the branch delete hook.
 func (s *Service) Discard(ctx context.Context, branchID string) error {
+	return s.discard(ctx, branchID, nil)
+}
+
+func (s *Service) discard(ctx context.Context, branchID string, expiredBefore *time.Time) error {
 	branch, err := s.branches.GetBranchByID(branchID)
 	if err != nil {
 		return fmt.Errorf("sandbox not found: %w", err)
@@ -168,8 +207,13 @@ func (s *Service) Discard(ctx context.Context, branchID string) error {
 	if err := s.branches.RequireDeletable(branchID); err != nil {
 		return err
 	}
-	if branch.IsLive() {
-		if err := s.checkout.Discard(ctx, branch.ID); err != nil {
+	if branch.IsLive() || branch.SandboxUsername != "" {
+		if expiredBefore != nil && branch.SandboxUsername != "" {
+			err = s.checkout.DiscardExpired(ctx, branch.ID, *expiredBefore)
+		} else {
+			err = s.checkout.Discard(ctx, branch.ID)
+		}
+		if err != nil {
 			return fmt.Errorf("failed to release the sandbox: %w", err)
 		}
 	}
@@ -196,7 +240,7 @@ func (s *Service) Sweep(ctx context.Context, projectID string) (*SweepReport, er
 		if !branch.IsExpired(now) {
 			continue
 		}
-		if err := s.Discard(ctx, branch.ID); err != nil {
+		if err := s.discard(ctx, branch.ID, &now); err != nil {
 			report.Skipped = append(report.Skipped, fmt.Sprintf("%s (%v)", branch.Name, err))
 			continue
 		}

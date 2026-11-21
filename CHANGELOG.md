@@ -13,6 +13,9 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Added
 
+- `argon sandbox create --credential` issues a MongoDB user with read/write
+  access only to the new sandbox. REST and MCP sandbox creation accept
+  `credential: true` too. Discard or a successful sweep revokes the user.
 - Source deployment tests for custom MongoDB roles, a non-root engine
   account and TLS with a private CA. The operations guide includes
   per-command source roles.

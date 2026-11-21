@@ -223,6 +223,11 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"cli/cmd/doctor.go:probeCapture WithTransaction",
 		// Argon metadata indexes and checkout of a branch's own physical database.
 		"internal/branch/wal/service.go:NewBranchService CreateMany",
+		// User management targets the database derived from the branch ID.
+		// connectionStatus inspects the engine's authenticated connection.
+		"internal/checkout/credential.go:IssueSandboxCredential RunCommand",
+		"internal/checkout/credential.go:RequireSandboxAuthentication RunCommand",
+		"internal/checkout/credential.go:revokeSandboxUser RunCommand",
 		"internal/checkout/service.go:EnablePrePostImages RunCommand",
 		"internal/checkout/service.go:EnablePrePostImages RunCommand",
 		"internal/checkout/service.go:ReadCaptureBoundary RunCommand",

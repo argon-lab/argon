@@ -790,7 +790,7 @@ services log ingester lifecycle events and snapshot/GC warnings to stderr;
 
 ## Authentication
 
-Argon passes credentials through `MONGODB_URI` untouched. With the wire
+The engine authenticates to MongoDB using `MONGODB_URI`. With the wire
 proxy, clients must set `authSource=admin` explicitly (the URI database is
 a branch alias, not a real database SCRAM can run against).
 
@@ -897,11 +897,37 @@ address is refused unless `--allow-remote` is passed, and should only be used
 when the upstream MongoDB requires authentication — against an open
 development mongod it would publish that database to the network.
 
-Native URIs use the engine's MongoDB credentials. They are suitable only for
-trusted clients sharing those database permissions. For mutually untrusted
-agents, provision restricted users or separate deployments; API bearer auth
-does not restrict a returned MongoDB credential. Changing the URI's database
-preserves its original SCRAM authentication database via `authSource`.
+`argon sandbox create -p myapp --ttl 1h --credential` issues a MongoDB
+user with `readWrite` on that sandbox's physical database only. The same
+database is its `authSource`. Save the connection string from the create
+response. It is the only time Argon returns the password. Branch metadata
+stores only the username.
+
+Enable MongoDB access control and authenticate the engine. Argon checks
+`connectionStatus` on its own connection. An empty `authenticatedUsers`
+list makes it refuse `--credential` because it cannot establish that the
+deployment enforces authentication. In addition to its usual permissions,
+the engine needs `userAdmin` on each sandbox database or
+`userAdminAnyDatabase` on `admin` to manage the users.
+
+MongoDB's `dropDatabase` preserves users defined on the database. Discard,
+expiry cleanup and cleanup after a failed create explicitly call `dropUser`
+before dropping the database. If revocation fails, discard
+reports the error and a sweep lists the sandbox as skipped with the reason.
+On MongoDB 7.0.45 an already-authenticated connection's next write after
+revocation failed with `Unauthorized` (code 13).
+Expiry alone leaves the credential valid until a sweep reaps the sandbox.
+The API and MCP servers sweep every minute while running. For a CLI-only
+deployment, schedule `argon sandbox sweep -p myapp`. Use `argon sandbox keep`
+to remove the TTL and keep the credential valid until you discard the branch.
+To remove a checkout with a sandbox credential, use `argon sandbox discard`.
+Ordinary release refuses these branches.
+
+Without `--credential`, the sandbox URI uses the engine's MongoDB
+credentials and preserves their original SCRAM authentication database via
+`authSource`. Share it only with clients trusted with the engine's database
+permissions. For other clients, provision restricted users or separate
+deployments. API bearer authentication controls access to the API only.
 
 Capture status may include `last_captured_at`, `last_event_at`, `head_lsn` and
 `last_event_lag_ms`. Lag is the last event wall-clock-to-checkpoint sample, not
