@@ -662,6 +662,11 @@ func (f *follower) convert(ctx context.Context, raw bson.Raw, event *changeEvent
 			return nil, &CaptureError{Message: fmt.Sprintf("time-series collection %s was created on the source; its measurements cannot be followed, so the branch no longer equals the source from here. A source with time-series collections cannot be followed", event.NS.Collection)}
 		}
 		return nil, nil
+	case "createIndexes", "dropIndexes":
+		if source.SkipCollection(event.NS.Collection) {
+			return nil, nil
+		}
+		return nil, f.s.recordIndexEvent(ctx, f.branch, event)
 	default:
 		return nil, nil
 	}

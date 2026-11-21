@@ -789,7 +789,8 @@ stays `writing_back` and cannot be reused.
 - Replica-set sources only. Sharded clusters are refused.
 - Write-back tests have not covered Atlas, deployments with access control,
   multi-member elections, sharded sources or MongoDB versions other than 7.0.
-- Indexes, validators and collection options are not followed. Collection
+- Validators and collection options are not followed. Index builds and
+  drops on the source are recorded for checkouts (from 2.11.0). Collection
   drops and renames end following until `argon source resync` is run; a
   source that drops or renames collections as a matter of routine (`$out`,
   temporary collections) needs a resync each time.
@@ -939,8 +940,10 @@ maps, where the later value wins, so the state is correct either way.
 
 Document insert/update/replace/delete operations are versioned. Collection
 rename/drop/database-drop is unsupported and produces persisted `degraded`
-health. Indexes, validators and collection options are executed by mongod but
-are not versioned or reproduced by a later checkout. Missing delete pre-images
+health. Validators and collection options are executed by mongod but are not
+versioned or reproduced by a later checkout. Index builds and drops are
+recorded for the branch and built by its later checkouts and its
+descendants' (from 2.11.0); they are not versioned. Missing delete pre-images
 make undo unrecoverable for those documents. Observe the capture health rather
 than assuming a running process implies complete history.
 

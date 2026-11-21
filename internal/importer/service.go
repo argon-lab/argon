@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/indexspec"
 	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
@@ -24,6 +25,7 @@ type ImportService struct {
 	walService     *wal.Service
 	projectService *projectwal.ProjectService
 	branchService  *branchwal.BranchService
+	indexes        *indexspec.Store
 
 	// onImported runs after a successful import with the freshly loaded
 	// branch. Wired to snapshot creation: an imported project starts with
@@ -101,6 +103,30 @@ type ImportResult struct {
 	ConsistentLSN         int64                `json:"consistent_lsn,omitempty"`
 	ConsistentClusterTime *primitive.Timestamp `json:"consistent_cluster_time,omitempty"`
 	ImagesEnabled         []string             `json:"source_images_enabled,omitempty"`
+	// IndexNotes names collections whose index definitions were not recorded.
+	IndexNotes []string `json:"index_notes,omitempty"`
+}
+
+// SetIndexStore makes imports record each collection's secondary index
+// definitions, which checkouts of the project then build.
+func (s *ImportService) SetIndexStore(store *indexspec.Store) { s.indexes = store }
+
+// recordIndexes keeps the source collection's index definitions for branch.
+// A source user without listIndexes still imports: the collection's
+// checkouts then have only the _id index, and the returned note says so.
+func (s *ImportService) recordIndexes(ctx context.Context, collection *mongo.Collection, branch *wal.Branch) (string, error) {
+	if s.indexes == nil {
+		return "", nil
+	}
+	specs, err := indexspec.FromCollection(ctx, collection)
+	var denied mongo.CommandError
+	if errors.As(err, &denied) && denied.Code == 13 {
+		return fmt.Sprintf("indexes of %s were not recorded: the source user lacks listIndexes, so checkouts build only the _id index", collection.Name()), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return "", s.indexes.Set(ctx, branch.ID, collection.Name(), specs)
 }
 
 // NewImportService creates a new import service
@@ -321,6 +347,13 @@ func (s *ImportService) ImportDatabase(ctx context.Context, opts ImportOptions) 
 			result.ImportedDocs += imported
 			result.WALEntries += walEntries
 			result.Collections = append(result.Collections, collName)
+			note, err := s.recordIndexes(ctx, sourceDB.Collection(collName), branch)
+			if err != nil {
+				return nil, err
+			}
+			if note != "" {
+				result.IndexNotes = append(result.IndexNotes, note)
+			}
 		}
 	}
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
@@ -34,5 +35,13 @@ func init() {
 		gcCmd, restorePreviewCmd, restoreResetCmd, restoreBranchCmd,
 	} {
 		command.Flags().StringP("output", "o", "table", "Output format: table or json")
+	}
+}
+
+// printIndexNotes lists the indexes a checkout built differently from their
+// recorded definition or could not build.
+func printIndexNotes(cmd *cobra.Command, notes []string) {
+	for _, note := range notes {
+		fmt.Fprintf(cmd.OutOrStdout(), "Note: %s\n", note)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/checkout"
 	"github.com/argon-lab/argon/v2/internal/gc"
 	"github.com/argon-lab/argon/v2/internal/importer"
+	"github.com/argon-lab/argon/v2/internal/indexspec"
 	"github.com/argon-lab/argon/v2/internal/ingest"
 	"github.com/argon-lab/argon/v2/internal/materializer"
 	"github.com/argon-lab/argon/v2/internal/merge"
@@ -183,11 +184,18 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 	// this is the second, independent check behind checkout's own.
 	checkoutService.SetDropGuard(sourceRegistry.GuardDrop)
 	ingestService := ingest.NewService(client, db, walService, branchService)
+	indexStore := indexspec.NewStore(db)
+	checkoutService.SetIndexStore(indexStore)
+	importerService.SetIndexStore(indexStore)
+	ingestService.SetIndexStore(indexStore)
 	importerService.EnableOnline(db, sourceRegistry, ingestService)
 	// A removed import leaves no snapshot of the data it copied.
 	projectService.SetImportAbortHook(func(ctx context.Context, branchIDs []string) error {
 		for _, branchID := range branchIDs {
 			if _, _, err := snapshotService.CleanupBranch(ctx, branchID); err != nil {
+				return err
+			}
+			if err := indexStore.Forget(ctx, branchID); err != nil {
 				return err
 			}
 		}
@@ -254,6 +262,9 @@ func newServices(client *mongo.Client, mongoURI, dbName string) (*Services, erro
 	branchService.SetDeleteHook(func(branchID string) {
 		if err := ingestService.ClearResumeState(context.Background(), branchID); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to reclaim capture state for %s: %v\n", branchID, err)
+		}
+		if err := indexStore.Forget(context.Background(), branchID); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to forget index definitions of branch %s: %v\n", branchID, err)
 		}
 		if _, _, _, err := gcService.ReclaimDeletedBranch(context.Background(), branchID); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to reclaim storage for branch %s: %v\n", branchID, err)

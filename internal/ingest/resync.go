@@ -341,6 +341,9 @@ func (s *Service) resync(ctx context.Context, branchID string, src *mongo.Databa
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := s.refreshIndexes(ctx, branch, src, collections, held); err != nil {
+		return err
+	}
 
 	expectedHead := branch.HeadLSN
 	point, err := s.followStream(ctx, branchID, src, FollowOptions{

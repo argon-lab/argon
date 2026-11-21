@@ -89,7 +89,7 @@ it again right after creating its collection.`,
 		}
 
 		if jsonOutput(cmd) {
-			if err := writeJSON(cmd, map[string]any{"branch_id": info.BranchID, "name": info.BranchName, "physical_db": info.PhysicalDB, "connection_string": uri, "expires_at": info.ExpiresAt, "fork_lsn": info.ForkLSN, "capture_managed": watch}); err != nil {
+			if err := writeJSON(cmd, map[string]any{"branch_id": info.BranchID, "name": info.BranchName, "physical_db": info.PhysicalDB, "connection_string": uri, "expires_at": info.ExpiresAt, "fork_lsn": info.ForkLSN, "capture_managed": watch, "indexes": info.Indexes, "index_notes": info.IndexNotes}); err != nil {
 				return err
 			}
 		} else {
@@ -99,6 +99,7 @@ it again right after creating its collection.`,
 			fmt.Fprintf(out, "Sandbox %q forked from %s at LSN %d.\n", info.BranchName, info.ForkedFrom, info.ForkLSN)
 			fmt.Fprintf(out, "Expires: %s\n", info.ExpiresAt.Format(time.RFC3339))
 			fmt.Fprintf(out, "Connection string:\n  %s\n", uri)
+			printIndexNotes(cmd, info.IndexNotes)
 			if !watch {
 				fmt.Fprintf(out, "Capture its writes with: argon watch -p %s -b %s\n", projectName, info.BranchName)
 			}

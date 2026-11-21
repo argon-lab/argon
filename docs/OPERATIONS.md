@@ -51,9 +51,10 @@ migration. Everything here reflects what the code does today.
 `argon import database` copies ordinary documents with sequential cursor reads.
 A cursor reads different documents at different moments, so a copy of a
 database that is being written is not, by itself, a state that database was
-ever in. There are two ways to get one that is. Either way indexes, validators
-and collection options are not copied, and `--yes` only skips the
-target-creation confirmation.
+ever in. There are two ways to get one that is. Either way validators and
+collection options are not copied, and `--yes` only skips the
+target-creation confirmation. Secondary index definitions are recorded
+(see [Indexes in checkouts](#indexes-in-checkouts)).
 
 ### Online: the source keeps running
 
@@ -646,8 +647,8 @@ and on how the project identifies its source.
 
 | Command | Source privileges |
 | --- | --- |
-| `import database --online` | `find`, `changeStream`, `listCollections` on the database. Add the cluster action `replSetGetConfig` to record the replica-set ID. |
-| `source follow` | `find` and `changeStream` on the database. An ID-bound project also needs `replSetGetConfig`. |
+| `import database --online` | `find`, `changeStream`, `listCollections` on the database. Add the cluster action `replSetGetConfig` to record the replica-set ID, and `listIndexes` so that checkouts build the source's indexes (without it they get only `_id`). |
+| `source follow` | `find` and `changeStream` on the database. An ID-bound project also needs `replSetGetConfig`. Index builds and drops arrive on the stream; `source resync` reads current definitions with `listIndexes` when granted. |
 | `merge preview` | The command saves the plan in the engine. It needs no source credentials. |
 | `merge check` | `replSetGetConfig` to verify the ID. On collections with a proposed insert or replacement, grant `listIndexes` and, when checking a supported unique key against source documents, `find`. |
 | `merge apply --write-back` | `replSetGetConfig` to verify the ID. For a nonempty batch, grant `listCollections` on the database and `find` on the target collections. Grant `insert` for new documents, `update` for replacements and `remove` for deletes. |
@@ -689,6 +690,39 @@ For a private CA, supply the same URI to each command, for example through
 `ARGON_SOURCE_URI`. Use `tls=true&tlsCAFile=/path/to/ca.pem` alongside
 `authSource` and `replicaSet` as appropriate. Percent-encode reserved
 characters in credentials and query values.
+
+## Indexes in checkouts
+
+From 2.11.0 a checkout builds each collection's secondary indexes after
+copying its documents, so a sandbox enforces the same unique constraints as
+its source and its queries can use the same indexes.
+
+Where the definitions come from:
+
+- `argon import database` (online or quiesced) records the source's index
+  definitions, except `_id`. A source user without `listIndexes` still
+  imports; `index_notes` in the result names the collections whose
+  checkouts then have only the `_id` index.
+- `argon source follow` records index builds and drops on the source as they
+  happen, and `argon source resync` records the source's current definitions.
+- Capture records index builds and drops made through a branch's own
+  checkout. They apply to later checkouts of that branch and of its
+  descendants, not to its parent or siblings. A merge does not carry them.
+
+A branch without its own record uses its nearest ancestor's definitions as
+they are now, not as they were at the fork point: indexes are not versioned.
+
+When building them a checkout:
+
+- builds a TTL index without `expireAfterSeconds`, so a sandbox never deletes
+  its own documents;
+- skips an index it cannot build, for example a unique index the branch's data
+  violates, and builds the rest;
+- reports both in `index_notes` (JSON) and on stdout, and the number built in
+  `indexes`.
+
+Index builds count towards the time a checkout takes. Validators, collation
+defaults and other collection options are still not copied.
 
 ## Snapshot chunk stores
 

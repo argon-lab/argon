@@ -18,6 +18,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/indexspec"
 	"github.com/argon-lab/argon/v2/internal/materializer"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -40,7 +41,12 @@ type Service struct {
 	beforeDiscard func(context.Context, string) error
 	dropGuard     func(context.Context, string) error
 	duringLoad    func(context.Context, string) func(context.Context)
+	indexes       *indexspec.Store
 }
+
+// SetIndexStore makes checkouts build each collection's recorded secondary
+// indexes after loading its documents.
+func (s *Service) SetIndexStore(store *indexspec.Store) { s.indexes = store }
 
 // requireOwn is the check behind every drop, made before anything else is
 // done on the way to one.
@@ -118,6 +124,10 @@ type Info struct {
 	LSN             int64
 	Collections     int
 	Documents       int64
+	// Indexes counts the secondary indexes built. IndexNotes names those
+	// built without their TTL expiry and those that could not be built.
+	Indexes    int
+	IndexNotes []string
 }
 
 // Checkout materializes the branch's state at its current head into its
@@ -217,6 +227,9 @@ func (s *Service) fill(ctx context.Context, branch *wal.Branch, dbName string, c
 		}
 		info.Collections++
 		info.Documents += count
+		if err := s.buildIndexes(ctx, branch, physical.Collection(collection), info); err != nil {
+			return nil, err
+		}
 	}
 	// Persist a stream boundary before making the URI available. A first watch
 	// can now recover writes that arrived between checkout and stream startup.
@@ -236,6 +249,26 @@ func (s *Service) fill(ctx context.Context, branch *wal.Branch, dbName string, c
 		return nil, fmt.Errorf("failed to mark branch live: %w", err)
 	}
 	return info, nil
+}
+
+// buildIndexes creates the secondary indexes recorded for a collection of the
+// branch, after its documents are loaded and before the capture boundary is
+// read, so the builds are not captured as changes.
+func (s *Service) buildIndexes(ctx context.Context, branch *wal.Branch, coll *mongo.Collection, info *Info) error {
+	if s.indexes == nil {
+		return nil
+	}
+	specs, _, err := s.indexes.Resolve(ctx, branch, coll.Name(), s.branches.GetBranchByID)
+	if err != nil {
+		return err
+	}
+	built, notes, err := indexspec.Build(ctx, coll, specs)
+	if err != nil {
+		return fmt.Errorf("collection %s: %w", coll.Name(), err)
+	}
+	info.Indexes += built
+	info.IndexNotes = append(info.IndexNotes, notes...)
+	return nil
 }
 
 // ErrNoCaptureBoundary means a hello reply carried no operationTime, so no

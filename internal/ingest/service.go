@@ -20,6 +20,7 @@ import (
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/checkout"
+	"github.com/argon-lab/argon/v2/internal/indexspec"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -44,6 +45,74 @@ type Service struct {
 	runs         map[string]*running
 	statuses     map[string]Status
 	autoSnapshot interface{ MaybeSnapshot(*wal.Branch) }
+	indexes      *indexspec.Store
+}
+
+// SetIndexStore makes capture and following record index builds and drops,
+// so later checkouts of the branch and of its descendants build them too.
+func (s *Service) SetIndexStore(store *indexspec.Store) { s.indexes = store }
+
+// refreshIndexes records the source's current index definitions after a
+// resync, which may have missed index changes made during a gap. Collections
+// the branch no longer holds keep no definitions. A source user without
+// listIndexes leaves the recorded definitions as they were.
+func (s *Service) refreshIndexes(ctx context.Context, branch *wal.Branch, src *mongo.Database, onSource, held []string) error {
+	if s.indexes == nil {
+		return nil
+	}
+	present := make(map[string]bool, len(onSource))
+	for _, name := range onSource {
+		present[name] = true
+		specs, err := indexspec.FromCollection(ctx, src.Collection(name))
+		var denied mongo.CommandError
+		if errors.As(err, &denied) && denied.Code == 13 {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := s.indexes.Set(ctx, branch.ID, name, specs); err != nil {
+			return err
+		}
+	}
+	for _, name := range held {
+		if !present[name] {
+			if err := s.indexes.Set(ctx, branch.ID, name, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// recordIndexEvent applies a createIndexes or dropIndexes change event to the
+// branch's recorded index definitions. Replaying the event after a restart
+// gives the same result.
+func (s *Service) recordIndexEvent(ctx context.Context, branch *wal.Branch, event *changeEvent) error {
+	if s.indexes == nil {
+		return nil
+	}
+	values, err := event.OperationDescription.Lookup("indexes").Array().Values()
+	if err != nil {
+		return nil // Not the shape MongoDB documents; nothing to record.
+	}
+	specs := make([]bson.Raw, 0, len(values))
+	names := make([]string, 0, len(values))
+	for _, v := range values {
+		if doc, ok := v.DocumentOK(); ok {
+			specs = append(specs, doc)
+			names = append(names, indexspec.Name(doc))
+		}
+	}
+	if event.OperationType == "dropIndexes" {
+		err = s.indexes.Dropped(ctx, branch, event.NS.Collection, names, s.branches.GetBranchByID)
+	} else {
+		err = s.indexes.Created(ctx, branch, event.NS.Collection, specs, s.branches.GetBranchByID)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to record %s on %s: %w", event.OperationType, event.NS.Collection, err)
+	}
+	return nil
 }
 
 // NewService creates an ingester over the deployment holding both the
@@ -438,6 +507,9 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 			return nil, imageSetupError(err)
 		}
 		return nil, nil
+
+	case "createIndexes", "dropIndexes":
+		return nil, s.recordIndexEvent(ctx, branch, &event)
 
 	case "invalidate":
 		return nil, &CaptureError{Message: "change stream invalidated (physical database dropped?)"}
