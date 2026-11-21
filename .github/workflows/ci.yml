@@ -186,7 +186,7 @@ jobs:
     # The wire proxy parses bytes from unauthenticated sockets. The seed
     # corpus runs with the tests above; this explores beyond it briefly.
     - name: Fuzz the wire-protocol frame parser
-      run: go test ./internal/wireproxy -run '^$' -fuzz FuzzRewrite -fuzztime 20s
+      run: go test ./internal/wireproxy -run '^$' -fuzz FuzzRewrite -fuzztime 300000x
 
     - name: Test and build CLI
       working-directory: ./cli
