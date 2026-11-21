@@ -1,0 +1,114 @@
+name: Atlas
+
+# MongoDB Atlas as a followed source: online import, following, a sandbox,
+# write-back and the TLS identity, against a real Atlas cluster. The tests
+# are in tests/wal/source_atlas_test.go and skip without a connection string,
+# so ordinary CI cannot cover them.
+#
+# The connection string is the repository secret ARGON_TEST_ATLAS_SHARED_URI:
+# a database user on a free M0 cluster that holds nothing but these tests'
+# databases, with readWriteAnyDatabase. The tests create and drop databases
+# named follow_src_<id>, and write to follow_tick to move the stream on. GitHub's runners have no fixed address, so that
+# cluster's IP access list allows 0.0.0.0/0; the password is what protects it.
+#
+# Secrets are not given to pull requests from forks. This runs on master,
+# daily (which also keeps an M0 from being paused for inactivity), and by hand.
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+    paths:
+      - 'internal/source/**'
+      - 'internal/ingest/**'
+      - 'internal/importer/**'
+      - 'internal/merge/**'
+      - 'internal/dberr/**'
+      - 'pkg/walcli/source*.go'
+      - 'tests/wal/source_atlas*'
+      - 'tests/wal/source_follow_test.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/atlas.yml'
+
+permissions:
+  contents: read
+
+# One run at a time: the cleanup step drops every test database on the
+# cluster, which would pull them from under a concurrent run.
+concurrency:
+  group: atlas
+  cancel-in-progress: false
+
+env:
+  MONGODB_IMAGE: mongo:7.0.45@sha256:c53852c00c23ca9f23fc39690350ffa9a80e3642fe8f96879726d8da0abe80a7
+
+jobs:
+  atlas:
+    name: Atlas source (M0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ARGON_TEST_ATLAS_SHARED_URI: ${{ secrets.ARGON_TEST_ATLAS_SHARED_URI }}
+    steps:
+      - name: Check for the Atlas connection string
+        id: secret
+        run: |
+          if [ -z "$ARGON_TEST_ATLAS_SHARED_URI" ]; then
+            echo "::warning::The repository secret ARGON_TEST_ATLAS_SHARED_URI is not set; nothing was tested against Atlas."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.secret.outputs.present == 'true'
+
+      # The engine and its metadata run here; Atlas holds only the source.
+      - name: Start MongoDB (single-node replica set)
+        if: steps.secret.outputs.present == 'true'
+        run: |
+          trap 'docker logs ci-mongo >&2 || true' ERR
+          docker run -d --name ci-mongo -p 27017:27017 "$MONGODB_IMAGE" --replSet rs0 --bind_ip_all
+          for _ in $(seq 1 30); do
+            docker exec ci-mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' && break
+            sleep 1
+          done
+          docker exec ci-mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
+          for _ in $(seq 1 30); do
+            [ "$(docker exec ci-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break
+            sleep 1
+          done
+          test "$(docker exec ci-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = true
+
+      - name: Set up Go
+        if: steps.secret.outputs.present == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # A skipped test would pass quietly, so any SKIP fails the step.
+      - name: Run the Atlas tests
+        if: steps.secret.outputs.present == 'true'
+        run: |
+          go test -v -count=1 -timeout 15m -run '^TestSourceAtlas' ./tests/wal 2>&1 | tee /tmp/atlas-tests.log
+          grep -q -- '--- PASS: TestSourceAtlas' /tmp/atlas-tests.log
+          if grep -- '--- SKIP' /tmp/atlas-tests.log; then
+            echo "::error::An Atlas test skipped although the connection string is set."
+            exit 1
+          fi
+
+      # The tests drop their own databases; a run that was killed leaves
+      # them behind, and an M0 has 512 MB. Dropping each collection removes
+      # the database and needs only readWrite.
+      - name: Remove leftover test databases
+        if: always() && steps.secret.outputs.present == 'true'
+        run: |
+          docker run --rm -e URI="$ARGON_TEST_ATLAS_SHARED_URI" "$MONGODB_IMAGE" bash -c 'mongosh "$URI" --quiet --eval "
+            for (const d of db.adminCommand({listDatabases: 1, nameOnly: true}).databases) {
+              if (!d.name.startsWith(\"follow_src_\") && d.name !== \"follow_tick\") continue;
+              const target = db.getSiblingDB(d.name);
+              for (const c of target.getCollectionNames()) target.getCollection(c).drop();
+              print(\"removed \" + d.name);
+            }"'
