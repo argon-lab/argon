@@ -13,6 +13,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+// ErrCredentialUnavailable reports that this deployment cannot issue sandbox
+// credentials: it does not enforce authentication, or the engine may not
+// manage users. It describes the deployment, not the request.
+var ErrCredentialUnavailable = errors.New("sandbox credentials are unavailable on this deployment")
+
 // RequireSandboxAuthentication checks the engine's own authenticated session.
 func (s *Service) RequireSandboxAuthentication(ctx context.Context) error {
 	var status struct {
@@ -24,7 +29,7 @@ func (s *Service) RequireSandboxAuthentication(ctx context.Context) error {
 		return fmt.Errorf("cannot check MongoDB authentication for sandbox credentials: %w", err)
 	}
 	if len(status.AuthInfo.AuthenticatedUsers) == 0 {
-		return errors.New("the deployment does not enforce authentication for the engine connection (connectionStatus reports no authenticated user); sandbox credentials require an authenticated deployment")
+		return fmt.Errorf("%w: the deployment does not enforce authentication for the engine connection (connectionStatus reports no authenticated user); sandbox credentials require an authenticated deployment", ErrCredentialUnavailable)
 	}
 	return nil
 }
@@ -63,7 +68,7 @@ func (s *Service) IssueSandboxCredential(ctx context.Context, branch *wal.Branch
 		}).Err()
 		var denied mongo.CommandError
 		if errors.As(err, &denied) && denied.Code == 13 {
-			return errors.New("MongoDB denied createUser: the engine needs userAdmin on the sandbox databases or userAdminAnyDatabase")
+			return fmt.Errorf("%w: MongoDB denied createUser: the engine needs userAdmin on the sandbox databases or userAdminAnyDatabase", ErrCredentialUnavailable)
 		}
 		mayExist = true
 		if err != nil {

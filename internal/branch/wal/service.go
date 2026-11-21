@@ -33,6 +33,9 @@ type BranchService struct {
 
 var ErrBranchChanged = errors.New("branch changed concurrently; reload and retry")
 
+// ErrBranchExists reports that the project already has a branch of that name.
+var ErrBranchExists = errors.New("branch already exists")
+
 // SetDeleteGuard registers a check that can refuse DeleteBranch.
 func (s *BranchService) SetDeleteGuard(guard func(branchID string) error) {
 	s.deleteGuard = guard
@@ -95,7 +98,7 @@ func (s *BranchService) createBranch(projectID, name, parentID string, credentia
 	// Check if branch already exists
 	existing, _ := s.GetBranch(projectID, name)
 	if existing != nil {
-		return nil, errors.New("branch already exists")
+		return nil, ErrBranchExists
 	}
 
 	// Get parent branch if specified
@@ -567,7 +570,7 @@ func (s *BranchService) CreateBranchWithData(branch *wal.Branch) error {
 	// Check if branch already exists
 	existing, _ := s.GetBranch(branch.ProjectID, branch.Name)
 	if existing != nil {
-		return errors.New("branch already exists")
+		return ErrBranchExists
 	}
 
 	// Create WAL entry for branch creation
