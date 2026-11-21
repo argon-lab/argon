@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -259,7 +260,7 @@ func (s *Service) execute(ctx context.Context, branchID string, cfg runConfig, r
 				stuck, stored = 0, now
 			}
 			switch {
-			case errors.As(err, &command) && (command.Code == 10334 || command.Code == 13):
+			case errors.As(err, &command) && command.Code == 10334, dberr.Unauthorized(err):
 				return &CaptureError{Message: fmt.Sprintf("the source cannot be followed past this position: %v", err)}
 			case !mongo.IsNetworkError(err) && !mongo.IsTimeout(err) || errors.Is(err, errCommitTimeout):
 				if stuck++; stuck >= maxStuckAttempts {

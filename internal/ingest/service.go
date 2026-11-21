@@ -20,6 +20,7 @@ import (
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/checkout"
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"github.com/argon-lab/argon/v2/internal/indexspec"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -64,8 +65,7 @@ func (s *Service) refreshIndexes(ctx context.Context, branch *wal.Branch, src *m
 	for _, name := range onSource {
 		present[name] = true
 		specs, err := indexspec.FromCollection(ctx, src.Collection(name))
-		var denied mongo.CommandError
-		if errors.As(err, &denied) && denied.Code == 13 {
+		if dberr.Unauthorized(err) {
 			return nil
 		}
 		if err != nil {

@@ -70,7 +70,7 @@ func prepareOnline(ctx context.Context, opts ImportOptions, metadata *mongo.Data
 			disconnectSource(client)
 		}
 	}()
-	identity, err := source.Identify(ctx, client)
+	identity, err := source.IdentifyAt(ctx, client, opts.MongoURI)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +207,7 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 		BranchID: branch.ID, ProjectID: project.ID, Database: opts.DatabaseName,
 		Display: source.Display(opts.MongoURI, opts.DatabaseName),
 		SetName: identity.SetName, ReplicaSetID: identity.ReplicaSetID, Hosts: identity.Hosts,
+		AtlasTLS: identity.ReplicaSetID == "" && identity.VerifiedAtlas,
 	}); err != nil {
 		return nil, err
 	}

@@ -257,7 +257,7 @@ func (s *Service) preparePlanImages(ctx context.Context, plan *Plan) error {
 			return fmt.Errorf("source binding for branch %s changed during preview; run preview again", target.Name)
 		}
 		plan.FollowedDatabase = binding.Database
-		plan.FollowedReplicaSetID = binding.ReplicaSetID
+		plan.FollowedReplicaSetID = binding.WriteIdentity()
 	}
 	plan.FormatVersion = orderedPlanVersion
 	plan.ProvenanceVersion = provenanceVersion

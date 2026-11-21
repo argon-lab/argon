@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"github.com/argon-lab/argon/v2/internal/ingest"
 	"github.com/argon-lab/argon/v2/internal/source"
 	"github.com/argon-lab/argon/v2/internal/wal"
@@ -202,7 +203,7 @@ func (s *Service) ApplyToSource(ctx context.Context, planID primitive.ObjectID, 
 		return nil, err
 	}
 	if plan.FollowedDatabase != databaseName || plan.FollowedReplicaSetID == "" {
-		return nil, errors.New("write-back requires the database and replica-set ID recorded at preview; preview again with this version")
+		return nil, errors.New("write-back requires the database and source identity recorded at preview; preview again with this version")
 	}
 	source, err := s.branches.GetBranchByID(plan.SourceBranchID)
 	if err != nil {
@@ -635,8 +636,7 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, changes []
 		case c.Delete:
 			result, err := coll.DeleteOne(ctx, bson.M{"_id": c.ID})
 			if err != nil {
-				var denied mongo.ServerError
-				if errors.As(err, &denied) && denied.HasErrorCode(13) {
+				if dberr.Unauthorized(err) {
 					return fmt.Errorf("deleting from %s.%s requires the remove action: %w", database.Name(), c.Collection, err)
 				}
 				return err
@@ -646,11 +646,17 @@ func writeChanges(ctx mongo.SessionContext, database *mongo.Database, changes []
 			}
 		case c.BeforeRaw == nil:
 			if _, err := coll.InsertOne(ctx, c.DocumentRaw); err != nil {
+				if dberr.Unauthorized(err) {
+					return fmt.Errorf("inserting into %s.%s requires the insert action: %w", database.Name(), c.Collection, err)
+				}
 				return err
 			}
 		default:
 			result, err := coll.ReplaceOne(ctx, bson.M{"_id": c.ID}, c.DocumentRaw)
 			if err != nil {
+				if dberr.Unauthorized(err) {
+					return fmt.Errorf("replacing in %s.%s requires the update action: %w", database.Name(), c.Collection, err)
+				}
 				return err
 			}
 			if result.MatchedCount != 1 {

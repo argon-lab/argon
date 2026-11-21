@@ -34,7 +34,8 @@ the database it was imported from: its main branch follows that database.
 The source connection string is given to commands that contact the source
 (--uri, or the ARGON_SOURCE_URI environment variable) and is never stored.
 "argon merge apply <plan> --write-back --approve <digest>" writes the documents
-in a plan and requires a replica-set ID recorded at import.
+in a plan and requires a replica-set ID recorded at import, or, on a MongoDB
+Atlas tier that hides the ID (M0, Flex), an import over a verified TLS connection.
 The --enable-source-images option also requires that ID and changes how the
 source stores writes. Both --enable-source-images and --auto-resync are
 experimental and require ARGON_EXPERIMENTAL_SOURCE=1. Operators can also enable
@@ -369,7 +370,7 @@ func init() {
 	}
 	sourceFollowCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceFollowCmd.Flags().Bool("allow-inexact", false, "Continue past updates whose exact documents the source no longer serves, recording the range as inexact")
-	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID recorded at import)")
+	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID, or a verified MongoDB Atlas connection, recorded at import)")
 	sourceFollowCmd.Flags().Bool("auto-resync", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Complete an unfinished resync or repair a source stream gap, then continue following")
 	sourceResyncCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceResyncCmd.Flags().Bool("force", false, "Resync even though following did not end as degraded")

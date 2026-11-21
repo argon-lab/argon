@@ -464,7 +464,8 @@ keyfile and TLS with a private CA, and a separate engine with a non-root
 account. Three-member tests step down the source primary during follow,
 online copy and an open write-back transaction. The version matrix pairs
 6.0.28 and 8.0.38 sources with a 7.0.45 engine and a 7.0.45 source with an
-8.0.38 engine. Atlas itself and sharded sources remain untested.
+8.0.38 engine. Atlas is covered in [MongoDB Atlas as a source](#mongodb-atlas-as-a-source);
+sharded sources remain untested.
 
 #### Ordinary apply versus write-back
 
@@ -638,6 +639,67 @@ transaction body (single-document insert, replace and delete), the `collMod`
 of `--enable-source-images`, and read-only commands (`hello`,
 `replSetGetConfig`, `find`, `collStats`). The list pins where such calls are,
 not what a future one would do; a reviewer still has to look.
+
+### MongoDB Atlas as a source
+
+From 2.12.0 an Atlas cluster can be imported, followed and written back to
+with the engine and its sandboxes running elsewhere, for example on a
+self-managed replica set. This was tested on a free M0 and a dedicated M10
+cluster running MongoDB 8.0, with least-privilege custom roles.
+
+**How the source is identified.** Atlas's shared tiers (M0, Flex) refuse
+`replSetGetConfig`, so the replica-set ID cannot be recorded there. In its
+place Argon accepts a connection that reaches Atlas with full TLS
+verification:
+
+- every seed host and every member the cluster reports is under
+  `mongodb.net`;
+- TLS is on, and the driver checks each server certificate and host name
+  against the system's certificate authorities;
+- the connection string sets no `tlsInsecure`, `tlsAllowInvalidCertificates`,
+  `tlsAllowInvalidHostnames` or custom `tlsCAFile`.
+
+Only Atlas can present a certificate for those hosts, so a tunnel or another
+deployment cannot stand in for the cluster. The import records this
+(`argon source status` shows "replica-set name and TLS-verified MongoDB
+Atlas hosts"), and every later command must connect the same way, or it is
+refused. A dedicated tier that allows `replSetGetConfig` records the ID as
+before.
+
+**Roles.** Create a custom role on the source database in the Atlas UI
+(Database Access, Custom Roles) or with the Atlas Admin API. Atlas spells the
+actions in capitals. No cluster action is needed:
+
+| Command | Atlas custom role actions on the source database |
+| --- | --- |
+| `import database --online` | `FIND`, `CHANGE_STREAM`, `LIST_COLLECTIONS`; add `LIST_INDEXES` so that sandboxes get the source's indexes |
+| `source follow` | `FIND`, `CHANGE_STREAM` |
+| `merge check` | `FIND`, `LIST_INDEXES` |
+| `merge apply --write-back` | `FIND`, `LIST_COLLECTIONS`, `INSERT`, `UPDATE`, `REMOVE` |
+| `--enable-source-images` | the import or follow actions plus `COLL_MOD` |
+
+**What was tested on M0 and M10:**
+
+- Each role above was given to its own user and worked.
+- Each role with one action removed was refused, with an error naming what
+  was missing, and the source was left unchanged.
+- Without `LIST_INDEXES`, the import still completed and its `index_notes`
+  named the collection.
+- An Atlas connection string with `tlsInsecure=true` was refused for a
+  project imported over a verified connection.
+
+**Limits:**
+
+- Atlas returns its own error code (8000) for missing privileges on shared
+  tiers; Argon treats it like `Unauthorized`.
+- On an idle dedicated cluster the import and the last followed change take
+  up to about ten seconds longer, until Atlas advances the cluster time.
+- `argon sandbox create --credential` needs `createUser` on the engine's
+  deployment, which Atlas never allows. Keep the engine on a deployment you
+  administer, or create sandbox users in the Atlas UI or Admin API.
+- Atlas Search indexes are not secondary indexes and are not built in
+  sandboxes.
+- Running the engine itself on Atlas was not part of these tests.
 
 ### Source permissions
 

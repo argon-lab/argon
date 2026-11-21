@@ -787,8 +787,9 @@ stays `writing_back` and cannot be reused.
 ### Limits
 
 - Replica-set sources only. Sharded clusters are refused.
-- Write-back tests have not covered Atlas, deployments with access control,
-  multi-member elections, sharded sources or MongoDB versions other than 7.0.
+- Write-back is tested with access control, TLS, three-member elections,
+  MongoDB 6.0, 7.0 and 8.0, and MongoDB Atlas M0 and M10 (from 2.12.0).
+  Sharded sources are not tested.
 - Validators and collection options are not followed. Index builds and
   drops on the source are recorded for checkouts (from 2.11.0). Collection
   drops and renames end following until `argon source resync` is run; a

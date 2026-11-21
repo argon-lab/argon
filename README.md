@@ -105,8 +105,10 @@ and `--enable-source-images` are off by default and each requires
 `ARGON_EXPERIMENTAL_SOURCE=1`. The deployment tests exercise authenticated
 TLS connections, primary elections on a three-member source, MongoDB 6.0
 and 8.0 sources with a 7.0 engine, and an 8.0 engine with a 7.0 source.
-Atlas itself and sharded sources remain untested. For source roles and
-deployment limits, see [the operations guide](docs/OPERATIONS.md#following-a-source-database).
+MongoDB Atlas is tested as a source on a free M0 cluster and a dedicated M10,
+with least-privilege custom roles; see [MongoDB Atlas as a source](docs/OPERATIONS.md#mongodb-atlas-as-a-source).
+Sharded sources remain untested. For source roles and deployment limits, see
+[the operations guide](docs/OPERATIONS.md#following-a-source-database).
 
 ```bash
 export ARGON_SOURCE_URI="mongodb://…"     # read per command, never stored
