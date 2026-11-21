@@ -654,13 +654,21 @@ verification:
 
 - every seed host and every member the cluster reports is under
   `mongodb.net`;
-- TLS is on, and the driver checks each server certificate and host name
-  against the system's certificate authorities;
-- the connection string sets no `tlsInsecure`, `tlsAllowInvalidCertificates`,
-  `tlsAllowInvalidHostnames` or custom `tlsCAFile`.
+- TLS is on, the driver checks each server certificate and host name, and
+  the connection string sets no `tlsInsecure`, `tlsAllowInvalidCertificates`,
+  `tlsAllowInvalidHostnames`, `tlsDisableOCSPEndpointCheck` or custom
+  `tlsCAFile`;
+- every TLS handshake of the connection also verifies against the Mozilla
+  root program that Argon ships, not only against the machine's trust store.
 
-Only Atlas can present a certificate for those hosts, so a tunnel or another
-deployment cannot stand in for the cluster. The import records this
+Only Atlas can obtain a certificate for those hosts from a public authority,
+so a tunnel or another deployment cannot stand in for the cluster. The third
+condition matters on machines that trust a private root (a corporate root,
+`mkcert`, `SSL_CERT_FILE`): such a root could issue a certificate for an
+Atlas host name, and it is not accepted for this identity. Behind a
+TLS-inspecting proxy, reading and following still work, but a shared-tier
+source cannot be written to. After the connection is identified as Atlas,
+any later handshake that does not verify against those roots is refused. The import records this
 (`argon source status` shows "replica-set name and TLS-verified MongoDB
 Atlas hosts"), and every later command must connect the same way, or it is
 refused. A dedicated tier that allows `replSetGetConfig` records the ID as
@@ -700,6 +708,12 @@ actions in capitals. No cluster action is needed:
 - Atlas Search indexes are not secondary indexes and are not built in
   sandboxes.
 - Running the engine itself on Atlas was not part of these tests.
+- The identity rests on host names under `mongodb.net`. Other Atlas services
+  under that domain (Data Federation, Stream Processing) present valid
+  certificates too; they answer as sharded clusters or not as the imported
+  replica set, which import and every later check refuse. A cluster deleted
+  and recreated under the same name in the same project can reuse its host
+  names; on a shared tier, treat that as a new source and import again.
 
 ### Source permissions
 

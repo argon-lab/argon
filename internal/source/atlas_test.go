@@ -1,8 +1,16 @@
 package source
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"strings"
 	"testing"
+	"time"
 )
 
 const atlasHosts = "ac-a-shard-00-00.q4bf3vu.mongodb.net:27017,ac-a-shard-00-01.q4bf3vu.mongodb.net:27017"
@@ -88,5 +96,74 @@ func TestBindingWriteIdentity(t *testing.T) {
 	}
 	if !strings.Contains(byAtlas.Strength(), "TLS-verified") {
 		t.Fatalf("Strength = %q", byAtlas.Strength())
+	}
+}
+
+// Found in review: turning off the OCSP responder check weakens revocation
+// checking and must not count as full verification.
+func TestOCSPEndpointCheckOffIsNotVerified(t *testing.T) {
+	uri := "mongodb://" + atlasHosts + "/?tls=true&tlsDisableOCSPEndpointCheck=true"
+	if VerifiedAtlasConnection(uri, reportedAtlas) {
+		t.Fatal("tlsDisableOCSPEndpointCheck=true accepted as a fully verified Atlas connection")
+	}
+}
+
+// Found in review: the driver accepts an unescaped '?' in the password, so
+// the options have to be read the way the driver reads them.
+func TestWeakensTLSSeesOptionAfterQuestionMarkInPassword(t *testing.T) {
+	uri := "mongodb://u:p?x@" + atlasHosts + "/?tlsAllowInvalidHostnames=true&tls=true"
+	if !weakensTLS(uri) {
+		t.Fatal("weakensTLS missed tlsAllowInvalidHostnames=true after a '?' in the password")
+	}
+}
+
+// Found in review: a private root the machine trusts can issue a certificate
+// for an Atlas host name. Such a chain is not public, does not identify the
+// source as Atlas, and once a client is identified as Atlas it is refused.
+func TestPrivateRootIsNotPublic(t *testing.T) {
+	const host = "ac-a-shard-00-00.q4bf3vu.mongodb.net"
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Corporate Root"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, _ := x509.ParseCertificate(caDER)
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: host}, DNSNames: []string{host},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}, ca, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(leafDER)
+	state := tls.ConnectionState{ServerName: host, PeerCertificates: []*x509.Certificate{leaf, ca}}
+
+	// The same chain does verify against a pool that trusts the root, as a
+	// machine with that root installed would.
+	private := x509.NewCertPool()
+	private.AddCert(ca)
+	if _, err := leaf.Verify(x509.VerifyOptions{DNSName: host, Roots: private}); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	if verifiesPublicly(state) {
+		t.Fatal("a chain to a private root verified as public")
+	}
+	rec := &handshakeRecorder{}
+	if err := rec.verify(state); err != nil {
+		t.Fatalf("before identification the handshake is only recorded: %v", err)
+	}
+	if rec.allPublic() {
+		t.Fatal("a client with a private-root handshake counts as publicly verified")
+	}
+	rec.enforce()
+	if err := rec.verify(state); err == nil {
+		t.Fatal("after identification a private-root handshake must fail")
 	}
 }

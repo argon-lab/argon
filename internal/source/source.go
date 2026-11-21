@@ -191,7 +191,7 @@ func (b *Binding) Verify(id Identity) error {
 		return nil
 	}
 	if b.AtlasTLS && !id.VerifiedAtlas {
-		return fmt.Errorf("this project identifies its source by a verified TLS connection to MongoDB Atlas, and this connection is not one (%s): use the Atlas connection string with TLS certificate checks on and no custom certificate authority", b.Display)
+		return fmt.Errorf("this project identifies its source by a verified TLS connection to MongoDB Atlas, and this connection is not one (%s): use the Atlas connection string with TLS certificate checks on and no custom certificate authority, from a machine whose connection to Atlas is not intercepted by a private root (for example a TLS-inspecting proxy)", b.Display)
 	}
 	if b.SetName != id.SetName {
 		return fmt.Errorf("the connection leads to replica set %q, but this project follows %q (%s)", id.SetName, b.SetName, b.Display)
@@ -457,9 +457,13 @@ func Connect(ctx context.Context, uri string) (*mongo.Client, error) {
 		// The parser's message can quote the string it was given.
 		return nil, fmt.Errorf("the source connection string cannot be used: %w", RedactError(err, uri))
 	}
+	recorder := recordHandshakes(clientOptions)
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to the source: %w", RedactError(err, uri))
+	}
+	if recorder != nil {
+		handshakes.Store(client, recorder)
 	}
 	if err := client.Ping(ctx, readpref.Primary()); err != nil {
 		disconnect, cancel := context.WithTimeout(context.Background(), 5*time.Second)
