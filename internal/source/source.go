@@ -44,7 +44,11 @@ type Binding struct {
 	// Hosts are the replica-set members the deployment reported. When the
 	// replica-set ID could not be read they are the second half of the
 	// identity: a set name alone ("rs0") says almost nothing.
-	Hosts     []string  `bson:"hosts,omitempty" json:"hosts,omitempty"`
+	Hosts []string `bson:"hosts,omitempty" json:"hosts,omitempty"`
+	// AtlasTLS records that, without an ID, the import reached the source as
+	// MongoDB Atlas over a fully verified TLS connection (see IdentifyAt).
+	// Every later connection must do the same, and then may write.
+	AtlasTLS  bool      `bson:"atlas_tls,omitempty" json:"atlas_tls,omitempty"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 }
 
@@ -54,6 +58,8 @@ type Identity struct {
 	ReplicaSetID string
 	Hosts        []string
 	Sharded      bool
+	// VerifiedAtlas is set by IdentifyAt.
+	VerifiedAtlas bool
 }
 
 // Registry stores bindings in the Argon metadata database.
@@ -126,10 +132,18 @@ func ReadBinding(ctx context.Context, metadata *mongo.Database, branchID string)
 
 // FenceWriteBackClaim updates the binding in the metadata claim transaction.
 // A real modification conflicts with a concurrent detach even on a retried plan.
-func FenceWriteBackClaim(ctx context.Context, metadata *mongo.Database, branchID, projectID, database, replicaSetID string) error {
-	result, err := metadata.Collection(collectionName).UpdateOne(ctx, bson.M{
-		"_id": branchID, "project_id": projectID, "database": database, "replica_set_id": replicaSetID,
-	},
+// writeIdentity is the WriteIdentity recorded in the plan.
+func FenceWriteBackClaim(ctx context.Context, metadata *mongo.Database, branchID, projectID, database, writeIdentity string) error {
+	filter := bson.M{"_id": branchID, "project_id": projectID, "database": database, "replica_set_id": writeIdentity}
+	if setName, ok := strings.CutPrefix(writeIdentity, atlasIdentityPrefix); ok {
+		// An Atlas binding has no ID; the field is absent rather than empty.
+		filter["replica_set_id"] = bson.M{"$exists": false}
+		filter["atlas_tls"] = true
+		filter["set_name"] = setName
+	} else if writeIdentity == "" {
+		return errors.New("the plan records no source it may write to; run preview again")
+	}
+	result, err := metadata.Collection(collectionName).UpdateOne(ctx, filter,
 		bson.M{"$inc": bson.M{"write_back_claims": int64(1)}})
 	if err == nil && result.MatchedCount != 1 {
 		return errors.New("following was detached or its source binding changed; run preview again")
@@ -176,6 +190,9 @@ func (b *Binding) Verify(id Identity) error {
 		}
 		return nil
 	}
+	if b.AtlasTLS && !id.VerifiedAtlas {
+		return fmt.Errorf("this project identifies its source by a verified TLS connection to MongoDB Atlas, and this connection is not one (%s): use the Atlas connection string with TLS certificate checks on and no custom certificate authority, from a machine whose connection to Atlas is not intercepted by a private root (for example a TLS-inspecting proxy)", b.Display)
+	}
 	if b.SetName != id.SetName {
 		return fmt.Errorf("the connection leads to replica set %q, but this project follows %q (%s)", id.SetName, b.SetName, b.Display)
 	}
@@ -189,26 +206,50 @@ const replicaSetIDRequired = "a replica-set ID is required because a tunnel or a
 const configReader = "a user allowed to run replSetGetConfig, for example one with the clusterMonitor role"
 const reimportWithID = "stop any running follower, run `argon source detach -p <project> --yes`, then import online into a new project with " + configReader
 
-// RequireReplicaSetID refuses source writes unless the binding recorded an ID.
+// RequireReplicaSetID refuses source writes unless the binding recorded an ID,
+// or recorded a verified Atlas connection in its place.
 func (b *Binding) RequireReplicaSetID() error {
-	if b.ReplicaSetID == "" {
+	if b.ReplicaSetID == "" && !b.AtlasTLS {
 		return errors.New(replicaSetIDRequired + ". To bind the source again, " + reimportWithID)
 	}
 	return nil
 }
 
-// RequireReplicaSetID refuses source writes during import unless the ID can be recorded.
+// RequireReplicaSetID refuses source writes during import unless the ID can
+// be recorded, or the connection is a verified Atlas connection.
 func (id Identity) RequireReplicaSetID() error {
-	if id.ReplicaSetID == "" {
+	if id.ReplicaSetID == "" && !id.VerifiedAtlas {
 		return errors.New(replicaSetIDRequired + ". To record the ID, import online with " + configReader)
 	}
 	return nil
+}
+
+// atlasIdentityPrefix marks a write identity that rests on a verified Atlas
+// connection rather than a replica-set ID.
+const atlasIdentityPrefix = "atlas-tls:"
+
+// WriteIdentity is what a saved plan records about the source it may write
+// to: the replica-set ID, or the set name of a binding that recorded a
+// verified Atlas connection. It is empty when the binding cannot be written
+// to.
+func (b *Binding) WriteIdentity() string {
+	switch {
+	case b.ReplicaSetID != "":
+		return b.ReplicaSetID
+	case b.AtlasTLS:
+		return atlasIdentityPrefix + b.SetName
+	default:
+		return ""
+	}
 }
 
 // Strength says what a binding's identity check rests on.
 func (b *Binding) Strength() string {
 	if b.ReplicaSetID != "" {
 		return "replica-set ID"
+	}
+	if b.AtlasTLS {
+		return "replica-set name and TLS-verified MongoDB Atlas hosts"
 	}
 	return "replica-set name and member hosts"
 }
@@ -416,11 +457,16 @@ func Connect(ctx context.Context, uri string) (*mongo.Client, error) {
 		// The parser's message can quote the string it was given.
 		return nil, fmt.Errorf("the source connection string cannot be used: %w", RedactError(err, uri))
 	}
+	recorder := recordHandshakes(clientOptions)
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to the source: %w", RedactError(err, uri))
 	}
+	if recorder != nil {
+		handshakes.Store(client, recorder)
+	}
 	if err := client.Ping(ctx, readpref.Primary()); err != nil {
+		handshakes.Delete(client)
 		disconnect, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = client.Disconnect(disconnect)

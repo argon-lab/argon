@@ -121,8 +121,11 @@ type Plan struct {
 	WriteBackLastError string `bson:"write_back_last_error,omitempty" json:"write_back_last_error,omitempty"`
 
 	// ProvenanceVersion identifies the writer that verified or marked every image.
-	ProvenanceVersion    int    `bson:"provenance_version,omitempty" json:"provenance_version,omitempty"`
-	FollowedDatabase     string `bson:"followed_database,omitempty" json:"followed_database,omitempty"`
+	ProvenanceVersion int    `bson:"provenance_version,omitempty" json:"provenance_version,omitempty"`
+	FollowedDatabase  string `bson:"followed_database,omitempty" json:"followed_database,omitempty"`
+	// FollowedReplicaSetID is the source binding's WriteIdentity at preview:
+	// its replica-set ID, or "atlas-tls:<set name>" for a binding that rests
+	// on a verified MongoDB Atlas connection.
 	FollowedReplicaSetID string `bson:"followed_replica_set_id,omitempty" json:"followed_replica_set_id,omitempty"`
 }
 

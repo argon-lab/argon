@@ -18,6 +18,10 @@ import (
 // manage users. It describes the deployment, not the request.
 var ErrCredentialUnavailable = errors.New("sandbox credentials are unavailable on this deployment")
 
+// atlasCommandNotAllowed is the code MongoDB Atlas returns (AtlasError,
+// CMD_NOT_ALLOWED) for commands it reserves to its own control plane.
+const atlasCommandNotAllowed = 8000
+
 // RequireSandboxAuthentication checks the engine's own authenticated session.
 func (s *Service) RequireSandboxAuthentication(ctx context.Context) error {
 	var status struct {
@@ -68,7 +72,12 @@ func (s *Service) IssueSandboxCredential(ctx context.Context, branch *wal.Branch
 		}).Err()
 		var denied mongo.CommandError
 		if errors.As(err, &denied) && denied.Code == 13 {
-			return fmt.Errorf("%w: MongoDB denied createUser: the engine needs userAdmin on the sandbox databases or userAdminAnyDatabase", ErrCredentialUnavailable)
+			return fmt.Errorf("%w: MongoDB denied createUser: the engine needs userAdmin on the sandbox databases or userAdminAnyDatabase (on MongoDB Atlas, which grants neither, create the user in the Atlas UI or with the Atlas Admin API)", ErrCredentialUnavailable)
+		}
+		if errors.As(err, &denied) && denied.Code == atlasCommandNotAllowed {
+			// MongoDB Atlas manages database users through its own API and UI
+			// and refuses the createUser command on every tier.
+			return fmt.Errorf("%w: MongoDB Atlas does not allow createUser; create a user scoped to the sandbox database in the Atlas UI or with the Atlas Admin API, or run the engine on a deployment you administer", ErrCredentialUnavailable)
 		}
 		mayExist = true
 		if err != nil {

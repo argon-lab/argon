@@ -9,6 +9,7 @@ require (
 	github.com/klauspost/compress v1.20.2
 	github.com/stretchr/testify v1.9.0
 	go.mongodb.org/mongo-driver v1.17.7
+	golang.org/x/crypto/x509roots/fallback v0.0.0-20261115193255-739070949446
 )
 
 require (

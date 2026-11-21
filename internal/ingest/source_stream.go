@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -22,8 +23,7 @@ func sourceStreamOptions() *options.ChangeStreamOptions {
 
 func watchSource(ctx context.Context, src *mongo.Database, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
 	stream, err := src.Watch(ctx, mongo.Pipeline{}, opts)
-	var denied mongo.ServerError
-	if errors.As(err, &denied) && denied.HasErrorCode(13) {
+	if dberr.Unauthorized(err) {
 		// Unauthorized identifies the aggregate command, not which of the two
 		// privileges required by a database-wide change stream was missing.
 		return nil, fmt.Errorf("the source user needs both find and changeStream on database %s: %w", src.Name(), err)

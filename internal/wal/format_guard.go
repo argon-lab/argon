@@ -3,11 +3,10 @@ package wal
 import (
 	"bytes"
 	"context"
-	"errors"
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"log"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // FormatGuardValidator is the wal_log validator that refuses data entries
@@ -60,8 +59,7 @@ func (s *Service) ensureFormatGuard(ctx context.Context) error {
 		{Key: "validationLevel", Value: "moderate"},
 		{Key: "validationAction", Value: "error"},
 	}).Err()
-	var denied mongo.CommandError
-	if errors.As(err, &denied) && denied.Code == 13 {
+	if dberr.Unauthorized(err) {
 		log.Printf("WAL format guard not installed: the engine's MongoDB user may not run collMod on %s.%s; releases up to 2.0.1 can still append to it", s.db.Name(), s.collection.Name())
 		return nil
 	}

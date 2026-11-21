@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"github.com/argon-lab/argon/v2/internal/indexspec"
 	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
 	"github.com/argon-lab/argon/v2/internal/source"
@@ -119,8 +120,7 @@ func (s *ImportService) recordIndexes(ctx context.Context, collection *mongo.Col
 		return "", nil
 	}
 	specs, err := indexspec.FromCollection(ctx, collection)
-	var denied mongo.CommandError
-	if errors.As(err, &denied) && denied.Code == 13 {
+	if dberr.Unauthorized(err) {
 		return fmt.Sprintf("indexes of %s were not recorded: the source user lacks listIndexes, so checkouts build only the _id index", collection.Name()), nil
 	}
 	if err != nil {
