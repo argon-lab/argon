@@ -1,5 +1,7 @@
 # Argon — MongoDB sandboxes for AI agents
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 <p align="center">
   <a href="https://argonlabs.tech">
     <img src=".github/assets/hero.png" alt="Argon — MongoDB sandboxes for AI agents. Git for MongoDB underneath: branch, diff, merge, undo." width="100%">
