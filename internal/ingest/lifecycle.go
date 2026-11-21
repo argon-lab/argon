@@ -63,7 +63,10 @@ type Status struct {
 	LastCapturedAt time.Time `bson:"last_captured_at,omitempty" json:"last_captured_at,omitempty"`
 	LastEventAt    time.Time `bson:"last_event_at,omitempty" json:"last_event_at,omitempty"`
 	LastEventLagMS int64     `bson:"last_event_lag_ms,omitempty" json:"last_event_lag_ms,omitempty"`
-	HeadLSN        int64     `bson:"head_lsn,omitempty" json:"head_lsn,omitempty"`
+	// WaitingSince is when the oldest change that a follower has received
+	// but not stored happened. It waits for the source's next oplog entry.
+	WaitingSince time.Time `bson:"waiting_since,omitempty" json:"waiting_since,omitempty"`
+	HeadLSN      int64     `bson:"head_lsn,omitempty" json:"head_lsn,omitempty"`
 	// Source is set for a branch that follows an external database.
 	Source *SourceStatus `bson:"source,omitempty" json:"source,omitempty"`
 	Owner  *SourceOwner  `bson:"owner,omitempty" json:"-"`

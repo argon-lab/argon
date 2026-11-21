@@ -154,6 +154,10 @@ type SourceInfo struct {
 	LastCapturedAt time.Time `json:"last_captured_at,omitempty"`
 	LastEventAt    time.Time `json:"last_event_at,omitempty"`
 	LastEventLagMS int64     `json:"last_event_lag_ms,omitempty"`
+	// WaitingSince is set while a running follower holds a change it has
+	// read but not stored: it waits for the source's next oplog entry, which
+	// on an idle source takes ten to twenty seconds.
+	WaitingSince *time.Time `json:"waiting_since,omitempty"`
 }
 
 // SourceOwner describes the run recorded as holding the followed branch's lease.
@@ -233,6 +237,9 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 	}
 	info.UpdatedAt, info.LastCapturedAt = status.UpdatedAt, status.LastCapturedAt
 	info.LastEventAt, info.LastEventLagMS = status.LastEventAt, status.LastEventLagMS
+	if since := status.WaitingSince; !since.IsZero() && status.State == "running" && !status.SourceLeaseExpired {
+		info.WaitingSince = &since
+	}
 	if owner := status.Owner; owner != nil {
 		info.Owner = &SourceOwner{Kind: owner.Kind, Host: owner.Host, PID: owner.PID, StartedAt: owner.StartedAt, HeartbeatAt: owner.HeartbeatAt}
 	}
