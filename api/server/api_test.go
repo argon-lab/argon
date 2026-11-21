@@ -597,3 +597,30 @@ func dbFromURI(uri string) string {
 	}
 	return db
 }
+
+// A sandbox that cannot be created as asked is a client-side outcome: a
+// taken name is a conflict, and a credential on a deployment that does not
+// enforce authentication cannot be issued. Neither is a server error.
+func TestAPI_SandboxCreateRefusalStatuses(t *testing.T) {
+	dbName := fmt.Sprintf("argon_api_test_%d", time.Now().UnixNano())
+	services, err := walcli.NewServicesAt("mongodb://localhost:27017", dbName)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = services.Client.Database(dbName).Drop(context.Background())
+	})
+	router := NewRouter(services)
+	t.Cleanup(router.Shutdown)
+	code, _ := do(t, router, "POST", "/api/v1/projects", map[string]string{"name": "refusals"})
+	require.Equal(t, http.StatusCreated, code)
+	const path = "/api/v1/projects/refusals/sandboxes"
+
+	code, resp := do(t, router, "POST", path, map[string]any{"name": "box"})
+	require.Equal(t, http.StatusCreated, code, "%v", resp["error"])
+	code, resp = do(t, router, "POST", path, map[string]any{"name": "box"})
+	require.Equal(t, http.StatusConflict, code)
+	require.Contains(t, resp["error"], "already exists")
+
+	code, resp = do(t, router, "POST", path, map[string]any{"name": "scoped", "credential": true})
+	require.Equal(t, http.StatusUnprocessableEntity, code)
+	require.Contains(t, resp["error"], "does not enforce authentication")
+}

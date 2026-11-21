@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -238,6 +239,20 @@ func (r *Router) stopIngester(branchID string) error {
 }
 
 // --- helpers ---
+
+// sandboxCreateStatus classifies a failed sandbox creation: a taken name is a
+// conflict, a deployment that cannot issue credentials is a request this
+// server cannot fulfil as asked, and anything else is a server error.
+func sandboxCreateStatus(err error) int {
+	switch {
+	case errors.Is(err, walcli.ErrBranchExists):
+		return http.StatusConflict
+	case errors.Is(err, walcli.ErrCredentialUnavailable):
+		return http.StatusUnprocessableEntity
+	default:
+		return http.StatusInternalServerError
+	}
+}
 
 func abortErr(c *gin.Context, status int, err error) {
 	c.JSON(status, gin.H{"error": err.Error()})
@@ -469,7 +484,7 @@ func (r *Router) createSandbox(c *gin.Context) {
 	ttl := time.Duration(body.TTLMinutes * float64(time.Minute))
 	info, uri, err := r.services.CreateSandbox(c.Request.Context(), projectID, parent.ID, body.Name, ttl, credential)
 	if err != nil {
-		abortErr(c, http.StatusInternalServerError, err)
+		abortErr(c, sandboxCreateStatus(err), err)
 		return
 	}
 	if err := r.startIngester(info.BranchID, body.Actor); err != nil {

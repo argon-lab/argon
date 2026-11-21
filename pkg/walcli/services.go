@@ -518,6 +518,14 @@ func (s *Services) SandboxCaptureFailure(info *sandbox.Info, cause error) error 
 	return fmt.Errorf("capture failed and sandbox %q was discarded: %w", info.BranchName, cause)
 }
 
+// ErrBranchExists reports a branch or sandbox name already used in the project.
+var ErrBranchExists = branchwal.ErrBranchExists
+
+// ErrCredentialUnavailable reports a deployment that cannot issue sandbox
+// credentials: it does not enforce authentication, or the engine may not
+// manage users.
+var ErrCredentialUnavailable = checkout.ErrCredentialUnavailable
+
 // ErrSandboxURIOnce is returned when a caller asks for a scoped URI again.
 var ErrSandboxURIOnce = errors.New("the sandbox connection string was returned at creation and cannot be retrieved again")
 
