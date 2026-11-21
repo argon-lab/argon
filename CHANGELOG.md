@@ -11,8 +11,37 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.12.0] - 2026-11-21
+
+MongoDB Atlas is a supported source, including the free tier: an Atlas
+cluster can be imported online, followed, checked and written back to, with
+the engine and its sandboxes on a deployment you run. Tested against an
+Atlas M0 and M10 running MongoDB 8.0, with least-privilege custom roles.
+
+### Added
+
+- On Atlas tiers that refuse `replSetGetConfig` (M0, Flex), a connection that
+  reaches only `*.mongodb.net` hosts with full TLS verification, every
+  handshake of it also verified against the Mozilla root program that Argon
+  ships, identifies the source in place of the replica-set ID, so merge
+  check and write-back work there. Any option that weakens TLS (including
+  `tlsDisableOCSPEndpointCheck` and a custom `tlsCAFile`), a private root the
+  machine trusts, or a host outside `mongodb.net` disqualifies it, and once
+  identified the client refuses a handshake that does not verify publicly.
+  `argon source status` shows the identity. The operations guide lists the
+  Atlas custom-role actions per command.
+  ([#202](https://github.com/argon-lab/argon/pull/202))
+
 ### Fixed
 
+- Atlas's shared tiers report a missing privilege as AtlasError 8000 rather
+  than Unauthorized. An import without `listIndexes` now notes it and
+  continues instead of failing, a follower without `changeStream` stops at
+  once instead of retrying and blocking write-back, and a refused write-back
+  names the missing `insert`, `update` or `remove` action.
+  ([#202](https://github.com/argon-lab/argon/pull/202))
+- `--credential` on an engine whose deployment is Atlas explains that Atlas
+  does not allow `createUser`. ([#202](https://github.com/argon-lab/argon/pull/202))
 - `argon metrics` always printed zeros: its operation counters and
   latencies were never recorded by any operation, and its project, branch
   and LSN figures were never filled in. It now reads the metadata database
@@ -21,7 +50,20 @@ entry — a synchronization barrier, not in-proxy capture).
   `-o json`. The background monitor that logged these empty counters is
   gone, so CLI commands no longer print "WAL Monitor: Started/Stopped
   health monitoring" to stderr. `walcli.Services.Monitor` remains as a
-  deprecated no-op.
+  deprecated no-op. ([#199](https://github.com/argon-lab/argon/pull/199))
+
+### Changed
+
+- The fuzz step in CI runs a fixed number of inputs instead of a duration,
+  which sometimes failed on its own deadline.
+  ([#203](https://github.com/argon-lab/argon/pull/203))
+
+### Known limitations
+
+- Running the engine itself on Atlas, Atlas failover during following, the
+  Flex tier and sharded Atlas clusters are not tested.
+- Behind a TLS-inspecting proxy, a shared-tier Atlas source can be read and
+  followed but not written to.
 
 ## [2.11.1] - 2026-11-21
 
