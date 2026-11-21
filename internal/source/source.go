@@ -466,6 +466,7 @@ func Connect(ctx context.Context, uri string) (*mongo.Client, error) {
 		handshakes.Store(client, recorder)
 	}
 	if err := client.Ping(ctx, readpref.Primary()); err != nil {
+		handshakes.Delete(client)
 		disconnect, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = client.Disconnect(disconnect)

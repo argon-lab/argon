@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -162,8 +163,38 @@ func TestPrivateRootIsNotPublic(t *testing.T) {
 	if rec.allPublic() {
 		t.Fatal("a client with a private-root handshake counts as publicly verified")
 	}
-	rec.enforce()
-	if err := rec.verify(state); err == nil {
+	if rec.enforceIfAllPublic() {
+		t.Fatal("a client with a private-root handshake was identified")
+	}
+	public := &handshakeRecorder{seen: 1}
+	if !public.enforceIfAllPublic() {
+		t.Fatal("a client whose handshakes all verified publicly was not identified")
+	}
+	public.untrusted = 0
+	if err := public.verify(state); err == nil {
 		t.Fatal("after identification a private-root handshake must fail")
+	}
+}
+
+// Found in review: Connect left a recorder in the package map for every
+// client, so a long-running process kept disconnected clients alive. A failed
+// Connect removes it; IdentifyAt takes it out.
+func TestConnectLeavesNoRecorder(t *testing.T) {
+	count := func() int {
+		n := 0
+		handshakes.Range(func(_, _ any) bool { n++; return true })
+		return n
+	}
+	before := count()
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		_, err := Connect(ctx, "mongodb://127.0.0.1:1/?tls=true&serverSelectionTimeoutMS=50")
+		cancel()
+		if err == nil {
+			t.Fatal("nothing listens on port 1")
+		}
+	}
+	if after := count(); after != before {
+		t.Fatalf("%d recorders left after failed Connect calls", after-before)
 	}
 }

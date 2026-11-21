@@ -34,18 +34,15 @@ const atlasDomain = ".mongodb.net"
 // shipped with Argon (see Connect). That verified connection is the identity,
 // and it is accepted for writes in place of the ID.
 func IdentifyAt(ctx context.Context, client *mongo.Client, uri string) (Identity, error) {
+	// The recorder stays attached to the client's TLS configuration; the map
+	// only hands it over once, so it never outlives the client.
+	rec, _ := handshakes.LoadAndDelete(client)
+	recorder, _ := rec.(*handshakeRecorder)
 	id, err := Identify(ctx, client)
 	if err != nil {
 		return id, err
 	}
-	rec, _ := handshakes.Load(client)
-	recorder, _ := rec.(*handshakeRecorder)
-	id.VerifiedAtlas = VerifiedAtlasConnection(uri, id.Hosts) && recorder != nil && recorder.allPublic()
-	if id.VerifiedAtlas {
-		// From now on a handshake that public roots cannot verify fails, so
-		// a later connection of this client cannot reach another server.
-		recorder.enforce()
-	}
+	id.VerifiedAtlas = VerifiedAtlasConnection(uri, id.Hosts) && recorder != nil && recorder.enforceIfAllPublic()
 	return id, nil
 }
 
@@ -167,10 +164,17 @@ func (r *handshakeRecorder) allPublic() bool {
 	return r.seen > 0 && r.untrusted == 0
 }
 
-func (r *handshakeRecorder) enforce() {
+// enforceIfAllPublic reports whether every handshake so far verified
+// publicly and, if so, refuses every later one that does not. Checking and
+// enforcing under one lock leaves no handshake between the two unchecked.
+func (r *handshakeRecorder) enforceIfAllPublic() bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.seen == 0 || r.untrusted > 0 {
+		return false
+	}
 	r.enforced = true
-	r.mu.Unlock()
+	return true
 }
 
 // verifiesPublicly reports whether the server's certificate chain, as sent in
