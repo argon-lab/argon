@@ -165,7 +165,11 @@ func TestSandboxCredentialAPI(t *testing.T) {
 		legacy, err := services.Branches.GetBranch(project.ID, request["name"].(string))
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, services.Sandbox.Discard(ctx, legacy.ID)) })
-		require.Equal(t, 5, len(body))
+		keys := make([]string, 0, len(body))
+		for key := range body {
+			keys = append(keys, key)
+		}
+		require.ElementsMatch(t, []string{"branch", "connection_string", "expires_at", "forked_from", "fork_lsn", "indexes", "index_notes"}, keys)
 		require.True(t, body["connection_string"] == services.BranchConnectionString(legacy.PhysicalDB),
 			"sandboxes without a credential must return the original URI")
 	}
