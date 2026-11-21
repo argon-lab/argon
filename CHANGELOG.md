@@ -11,6 +11,17 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.11.1] - 2026-11-21
+
+### Fixed
+
+- `POST /api/v1/projects/{project}/sandboxes` returned HTTP 500 for every
+  refusal. A taken sandbox name now returns 409, and `credential: true` on a
+  deployment that does not enforce authentication, or whose engine may not
+  create users, returns 422 with the same message as before. Found by the
+  Python SDK's integration tests.
+  ([#193](https://github.com/argon-lab/argon/pull/193))
+
 ## [2.11.0] - 2026-11-21
 
 Checkouts and sandboxes now build each collection's secondary indexes, so a
