@@ -66,10 +66,11 @@ preserves pending direct writes. Stop writers before release.`,
 		}
 
 		if jsonOutput(cmd) {
-			return writeJSON(cmd, map[string]any{"branch_id": branchID, "physical_db": info.PhysicalDB, "lsn": info.LSN, "connection_string": services.BranchConnectionString(info.PhysicalDB), "capture_managed": false})
+			return writeJSON(cmd, map[string]any{"branch_id": branchID, "physical_db": info.PhysicalDB, "lsn": info.LSN, "connection_string": services.BranchConnectionString(info.PhysicalDB), "capture_managed": false, "indexes": info.Indexes, "index_notes": info.IndexNotes})
 		}
-		fmt.Printf("Checked out at LSN %d: %d collection(s), %d document(s)\n",
-			info.LSN, info.Collections, info.Documents)
+		fmt.Printf("Checked out at LSN %d: %d collection(s), %d document(s), %d secondary index(es)\n",
+			info.LSN, info.Collections, info.Documents, info.Indexes)
+		printIndexNotes(cmd, info.IndexNotes)
 		fmt.Printf("Connection string:\n  %s\n", services.BranchConnectionString(info.PhysicalDB))
 		fmt.Println("Run \"argon watch\" for this branch to capture direct writes into the WAL.")
 		return nil

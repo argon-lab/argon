@@ -253,8 +253,9 @@ files. Side by side:
 Where it differs from Git: there is no commit step, because a running capture
 process records each document change. A merge goes from a branch into its
 parent and compares whole documents. Checking out a branch copies its data, so
-it takes time and storage that depend on the dataset. Documents are versioned;
-indexes and collection options are not. History older than the retention
+it takes time and storage that depend on the dataset. Documents are versioned.
+Secondary indexes are not, but a checkout builds the latest definitions
+recorded for its branch; collection options are not copied. History older than the retention
 window can be reclaimed unless a pin protects it.
 
 ## What you get
@@ -273,8 +274,9 @@ window can be reclaimed unless a pin protects it.
 | **Web console** | `argon console` | local UI + REST API in one command |
 
 Data history covers document inserts, updates, replacements and deletes. Collection
-drop/rename produces degraded capture; indexes and collection options are not
-versioned. Native writes are asynchronous; control operations drain capture.
+drop/rename produces degraded capture. Index definitions are recorded from
+the source and from captured index builds, and a checkout builds them; they
+are not versioned, and collection options are not copied. Native writes are asynchronous; control operations drain capture.
 Stop writers before release. Existing pins protect their referenced states, while GC can expire audit
 and undo history. See [operations](docs/OPERATIONS.md) for recovery and credentials.
 

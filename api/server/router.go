@@ -407,6 +407,8 @@ func (r *Router) checkoutBranch(c *gin.Context) {
 		"lsn":               info.LSN,
 		"collections":       info.Collections,
 		"documents":         info.Documents,
+		"indexes":           info.Indexes,
+		"index_notes":       info.IndexNotes,
 	})
 }
 
@@ -483,6 +485,8 @@ func (r *Router) createSandbox(c *gin.Context) {
 		"expires_at":        info.ExpiresAt,
 		"forked_from":       info.ForkedFrom,
 		"fork_lsn":          info.ForkLSN,
+		"indexes":           info.Indexes,
+		"index_notes":       info.IndexNotes,
 	})
 }
 
@@ -623,6 +627,8 @@ func (r *Router) sandboxFromPin(c *gin.Context) {
 		"expires_at":        info.ExpiresAt,
 		"forked_from":       info.ForkedFrom,
 		"fork_lsn":          info.ForkLSN,
+		"indexes":           info.Indexes,
+		"index_notes":       info.IndexNotes,
 		"pin":               pin.Name,
 	})
 }

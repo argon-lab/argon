@@ -231,10 +231,13 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/checkout/service.go:EnablePrePostImages RunCommand",
 		"internal/checkout/service.go:EnablePrePostImages RunCommand",
 		"internal/checkout/service.go:ReadCaptureBoundary RunCommand",
+		// Index builds run on the checkout's own physical database.
+		"internal/checkout/service.go:buildIndexes Build",
 		"internal/checkout/service.go:dropPhysical Drop",
 		"internal/checkout/service.go:fill DeleteOne",
 		"internal/checkout/service.go:fill ReadCaptureBoundary",
 		"internal/checkout/service.go:fill UpdateOne",
+		"internal/checkout/service.go:fill buildIndexes",
 		"internal/checkout/service.go:fill loadCollection",
 		"internal/checkout/service.go:loadCollection EnablePrePostImages",
 		"internal/checkout/service.go:loadCollection InsertMany",
@@ -252,6 +255,8 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/importer/online.go:prepareOnline ProbeStream",
 		"internal/importer/service.go:ImportDatabase DryRunOnline",
 		"internal/importer/service.go:PreviewImport RunCommand",
+		// createIndexes on the collection checkout passes in, never a source.
+		"internal/indexspec/store.go:Build RunCommand",
 		// Reads the source stream and writes Argon's metadata and WAL.
 		"internal/ingest/follow.go:CatchUp followStream",
 		"internal/ingest/follow.go:Follow followStream",

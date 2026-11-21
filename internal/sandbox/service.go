@@ -37,6 +37,9 @@ type Info struct {
 	ForkedFrom    string
 	ForkLSN       int64
 	CredentialURI string `json:"-" bson:"-"`
+	// Indexes and IndexNotes report the secondary indexes the checkout built.
+	Indexes    int
+	IndexNotes []string
 }
 
 // Create forks a sandbox branch from the given parent, checks it out and
@@ -107,6 +110,8 @@ func (s *Service) create(ctx context.Context, projectID, parentBranchID, name st
 		BranchID:      branch.ID,
 		BranchName:    branch.Name,
 		PhysicalDB:    info.PhysicalDB,
+		Indexes:       info.Indexes,
+		IndexNotes:    info.IndexNotes,
 		ExpiresAt:     expires,
 		ForkedFrom:    parent.Name,
 		ForkLSN:       branch.BaseLSN,
@@ -147,6 +152,8 @@ func (s *Service) Adopt(ctx context.Context, branchID string, ttl time.Duration)
 		BranchID:   branch.ID,
 		BranchName: branch.Name,
 		PhysicalDB: info.PhysicalDB,
+		Indexes:    info.Indexes,
+		IndexNotes: info.IndexNotes,
 		ExpiresAt:  expires,
 		ForkedFrom: forkedFrom,
 		ForkLSN:    branch.BaseLSN,

@@ -296,7 +296,7 @@ func toolSandboxCreate(ctx context.Context, s *Server, args map[string]interface
 		return "", s.services.SandboxCaptureFailure(info, err)
 	}
 
-	return fmt.Sprintf(
+	reply := fmt.Sprintf(
 		"Sandbox %q created (forked from %s at LSN %d).\n"+
 			"Connection string: %s\n"+
 			"Expires: %s\n"+
@@ -305,7 +305,11 @@ func toolSandboxCreate(ctx context.Context, s *Server, args map[string]interface
 		info.BranchName, info.ForkedFrom, info.ForkLSN,
 		uri,
 		info.ExpiresAt.Format(time.RFC3339),
-	), nil
+	)
+	for _, note := range info.IndexNotes {
+		reply += "\nNote: " + note
+	}
+	return reply, nil
 }
 
 func toolSandboxDiscard(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {

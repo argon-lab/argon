@@ -249,6 +249,13 @@ func (s *ImportService) importOnline(ctx context.Context, opts ImportOptions) (_
 		result.ImportedDocs += copied
 		result.WALEntries += copied
 		result.Collections = append(result.Collections, name)
+		note, err := s.recordIndexes(ctx, sourceDB.Collection(name), branch)
+		if err != nil {
+			return nil, err
+		}
+		if note != "" {
+			result.IndexNotes = append(result.IndexNotes, note)
+		}
 	}
 
 	point, err := s.follower.CatchUp(ctx, branch.ID, sourceDB, prepared.replayAt, branch.HeadLSN, result.StartLSN+1,
