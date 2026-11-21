@@ -270,7 +270,7 @@ window can be reclaimed unless a pin protects it.
 | **Undo** | `argon undo --actor <a>` | revert a range or actor label; append-only, conflict-aware |
 | **Real databases** | `argon checkout` / `argon proxy` | any driver, real mongod; proxy serves stable `mongodb://host/<project>~<branch>` URIs |
 | **Write capture** | `argon watch` | exact change-stream images → history, one actor label per branch |
-| **Branching** | `argon branches create` | a metadata write — instant, zero copy |
+| **Branching** | `argon branches create` | a metadata write; copies no documents |
 | **Time travel** | `argon time-travel query` | query captured document states at retained LSNs; restore/pin also accept timestamps |
 | **Restore** | `argon restore preview/reset/branch` | rewind a released branch or fork retained history |
 | **Web console** | `argon console` | local UI + REST API in one command |

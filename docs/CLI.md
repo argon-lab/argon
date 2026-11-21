@@ -15,7 +15,7 @@ through `MONGODB_URI`; configure server auth through `ARGON_API_TOKEN`.
 ```
 argon projects create <name>                   project + main branch
 argon projects list
-argon branches create <name> -p P [--from B]   instant — a pointer, no copy
+argon branches create <name> -p P [--from B]   a pointer; copies no documents
 argon branches list   -p P
 argon branches delete <name> -p P              refused for main, branches with
                                                live children, pinned branches

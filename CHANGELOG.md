@@ -11,6 +11,13 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Changed
+
+- `argon projects` and `argon branches` no longer describe branching as
+  instant in their help and output, and drop the "Features: ✅ …" lines from
+  their listings. A branch is a metadata write that copies no documents;
+  the README and CLI reference now say that instead.
+
 ## [2.12.0] - 2026-11-21
 
 MongoDB Atlas is a supported source, including the free tier: an Atlas
