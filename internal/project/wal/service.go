@@ -190,6 +190,11 @@ func (s *ProjectService) DeleteProject(projectID string) error {
 
 	// Delete all branches except main
 	for _, branch := range branches {
+		if branch.SandboxUsername != "" {
+			return fmt.Errorf("discard sandbox %q before deleting its project", branch.Name)
+		}
+	}
+	for _, branch := range branches {
 		if branch.Name != "main" {
 			if err := s.branches.DeleteBranch(projectID, branch.Name); err != nil {
 				// Log error but continue

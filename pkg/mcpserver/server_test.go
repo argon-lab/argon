@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
+	"os"
 	"runtime"
 	"sort"
 	"strings"
@@ -118,6 +120,46 @@ func TestEveryToolDeclaresItsBehaviour(t *testing.T) {
 	}
 	sort.Strings(destructive)
 	assert.Equal(t, []string{"argon_merge_apply", "argon_sandbox_discard", "argon_undo"}, destructive)
+}
+
+func TestSandboxCredentialMCP(t *testing.T) {
+	props := listedTools(t, newBareServer())["argon_sandbox_create"]["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	require.Equal(t, "boolean", props["credential"].(map[string]any)["type"])
+	uri := os.Getenv("ARGON_TEST_AUTH_MONGODB_URI")
+	if uri == "" {
+		t.Skip("set ARGON_TEST_AUTH_MONGODB_URI to test sandbox credentials")
+	}
+	name := fmt.Sprintf("argon_mcp_credential_%d", time.Now().UnixNano())
+	services, err := walcli.NewServicesAt(uri, name)
+	require.NoError(t, err)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		services.Monitor.Stop()
+		_ = services.Client.Database(name).Drop(ctx)
+		_ = services.Client.Disconnect(ctx)
+	})
+	project, err := services.Projects.CreateProject("scoped")
+	require.NoError(t, err)
+	c := serve(t, func(in io.Reader, out io.Writer) *Server { return New(services, in, out) })
+	text, failed := c.tool("argon_sandbox_create", map[string]any{"project": "scoped", "name": "box", "credential": "true"})
+	require.True(t, failed)
+	require.Equal(t, "credential must be a boolean", text)
+	text, failed = c.tool("argon_sandbox_create", map[string]any{"project": "scoped", "name": "box", "credential": true})
+	require.False(t, failed)
+	b, err := services.Branches.GetBranch(project.ID, "box")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, services.Sandbox.Discard(ctx, b.ID)) })
+	_, rest, ok := strings.Cut(text, "Connection string: ")
+	require.True(t, ok)
+	raw, _, _ := strings.Cut(rest, "\n")
+	u, err := url.Parse(raw)
+	require.True(t, err == nil, "invalid connection string")
+	require.NotEmpty(t, b.SandboxUsername)
+	require.Equal(t, b.SandboxUsername, u.User.Username())
+	require.Equal(t, b.PhysicalDB, u.Query().Get("authSource"))
+	text, failed = c.tool("argon_connect", map[string]any{"project": "scoped", "branch": "box"})
+	require.True(t, failed)
+	require.Equal(t, walcli.ErrSandboxURIOnce.Error(), text)
 }
 
 func TestWithheldToolsAreNeitherListedNorCallable(t *testing.T) {

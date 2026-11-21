@@ -115,6 +115,7 @@ func toolDescriptors() []map[string]interface{} {
 				"project":     str("Project name"),
 				"from":        str("Parent branch to fork (default: main)"),
 				"name":        str("Sandbox name (default: generated)"),
+				"credential":  boolean("Issue a MongoDB credential with read/write access only to this sandbox (default: false)"),
 				"ttl_minutes": num("Minutes until the sandbox is reclaimed (default: 60)"),
 				"actor":       str("Label for all native writes on this branch/run; not individual writer identity"),
 			}),
@@ -269,6 +270,10 @@ func (s *Server) resolveBranchID(project, branch string) (projectID, branchID st
 // --- tool implementations ---
 
 func toolSandboxCreate(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {
+	credential, ok := args["credential"].(bool)
+	if _, present := args["credential"]; present && !ok {
+		return "", fmt.Errorf("credential must be a boolean")
+	}
 	project := argString(args, "project")
 	projectID, parentID, err := s.resolveBranchID(project, argString(args, "from"))
 	if err != nil {
@@ -283,12 +288,12 @@ func toolSandboxCreate(ctx context.Context, s *Server, args map[string]interface
 	if err := s.services.SyncBranch(ctx, parentID); err != nil {
 		return "", err
 	}
-	info, err := s.services.Sandbox.Create(ctx, projectID, parentID, argString(args, "name"), ttl)
+	info, uri, err := s.services.CreateSandbox(ctx, projectID, parentID, argString(args, "name"), ttl, credential)
 	if err != nil {
 		return "", fmt.Errorf("sandbox creation failed: %w", err)
 	}
 	if err := s.startIngester(info.BranchID, argString(args, "actor")); err != nil {
-		return "", err
+		return "", s.services.SandboxCaptureFailure(info, err)
 	}
 
 	return fmt.Sprintf(
@@ -298,7 +303,7 @@ func toolSandboxCreate(ctx context.Context, s *Server, args map[string]interface
 			"Writes through this connection are captured as versioned history. "+
 			"Merge back with argon_merge_preview/apply, revert with argon_undo, or discard with argon_sandbox_discard.",
 		info.BranchName, info.ForkedFrom, info.ForkLSN,
-		s.services.BranchConnectionString(info.PhysicalDB),
+		uri,
 		info.ExpiresAt.Format(time.RFC3339),
 	), nil
 }
@@ -357,6 +362,9 @@ func toolConnect(ctx context.Context, s *Server, args map[string]interface{}) (s
 	branch, err := s.services.Branches.GetBranchByID(branchID)
 	if err != nil {
 		return "", err
+	}
+	if branch.SandboxUsername != "" {
+		return "", walcli.ErrSandboxURIOnce
 	}
 	if !branch.IsLive() {
 		info, err := s.services.Checkout.Checkout(ctx, branchID)

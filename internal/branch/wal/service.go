@@ -80,6 +80,16 @@ func NewBranchService(db *mongo.Database, walService *wal.Service) (*BranchServi
 
 // CreateBranch creates a new WAL-based branch
 func (s *BranchService) CreateBranch(projectID, name, parentID string) (*wal.Branch, error) {
+	return s.createBranch(projectID, name, parentID, nil)
+}
+
+// CreateCredentialSandbox reserves the username and expiration in the initial
+// branch record, so cleanup can find the user even after a process restart.
+func (s *BranchService) CreateCredentialSandbox(projectID, name, parentID string, expires time.Time) (*wal.Branch, error) {
+	return s.createBranch(projectID, name, parentID, &expires)
+}
+
+func (s *BranchService) createBranch(projectID, name, parentID string, credentialExpiry *time.Time) (*wal.Branch, error) {
 	ctx := context.Background()
 
 	// Check if branch already exists
@@ -127,6 +137,11 @@ func (s *BranchService) CreateBranch(projectID, name, parentID string) (*wal.Bra
 		CreatedAt:  time.Now(),
 		CreatedLSN: lsn,
 		IsDeleted:  false,
+	}
+
+	if credentialExpiry != nil {
+		branch.SandboxUsername = "sandbox_" + branch.ID
+		branch.ExpiresAt = credentialExpiry
 	}
 
 	// Set head and base LSN
@@ -215,7 +230,17 @@ func (s *BranchService) SetExpiry(branchID string, expiresAt *time.Time) error {
 	if expiresAt != nil {
 		update = bson.M{"$set": bson.M{"expires_at": *expiresAt}}
 	}
-	_, err := s.collection.UpdateOne(ctx, bson.M{"_id": branchID}, update)
+	result, err := s.collection.UpdateOne(ctx, bson.M{"_id": branchID, "sandbox_revoking": bson.M{"$ne": true}}, update)
+	if err == nil && result.MatchedCount == 0 {
+		// Historically updating an absent branch was a no-op.
+		err = s.collection.FindOne(ctx, bson.M{"_id": branchID, "sandbox_revoking": true}).Err()
+		if err == nil {
+			return ErrBranchChanged
+		}
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil
+		}
+	}
 	return err
 }
 
@@ -243,6 +268,9 @@ func (s *BranchService) SetCheckoutState(branchID, physicalDB, state string, che
 func (s *BranchService) CompareAndSetCheckout(ctx context.Context, expected *wal.Branch, physicalDB string, checkedOutLSN int64) error {
 	filter := bson.M{"_id": expected.ID, "head_lsn": expected.HeadLSN, "is_deleted": false, "follows": bson.M{"$in": bson.A{nil, ""}},
 		"mutation_version": mutationVersionCondition(expected.MutationVersion), "state": bson.M{"$ne": wal.BranchStateLive}}
+	if expected.SandboxUsername != "" {
+		filter["sandbox_revoking"] = bson.M{"$ne": true}
+	}
 	res, err := s.collection.UpdateOne(ctx, filter, bson.M{"$set": bson.M{
 		"physical_db": physicalDB, "state": wal.BranchStateLive, "checked_out_lsn": checkedOutLSN},
 		"$inc": bson.M{"mutation_version": 1}})
@@ -309,6 +337,9 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 	}
 	if err := s.RequireDeletable(branch.ID); err != nil {
 		return err
+	}
+	if branch.SandboxUsername != "" && (!branch.SandboxRevoking || branch.PhysicalDB != "") {
+		return fmt.Errorf("discard sandbox %q before deleting the branch", branch.Name)
 	}
 
 	// Create WAL entry for deletion
@@ -498,6 +529,9 @@ func (s *BranchService) ForceDeleteBranch(projectID, name string) error {
 	branch, err := s.GetBranch(projectID, name)
 	if err != nil {
 		return err
+	}
+	if branch.SandboxUsername != "" {
+		return fmt.Errorf("discard sandbox %q before deleting the branch", branch.Name)
 	}
 
 	// Create WAL entry for deletion

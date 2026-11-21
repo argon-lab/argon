@@ -42,6 +42,7 @@ it again right after creating its collection.`,
 		from, _ := cmd.Flags().GetString("from")
 		name, _ := cmd.Flags().GetString("name")
 		ttl, _ := cmd.Flags().GetDuration("ttl")
+		credential, _ := cmd.Flags().GetBool("credential")
 		watch, _ := cmd.Flags().GetBool("watch")
 		actor, _ := cmd.Flags().GetString("actor")
 		if projectName == "" {
@@ -67,7 +68,7 @@ it again right after creating its collection.`,
 		if err := services.SyncBranch(cmd.Context(), parentID); err != nil {
 			return err
 		}
-		info, err := services.Sandbox.Create(context.Background(), project.ID, parentID, name, ttl)
+		info, uri, err := services.CreateSandbox(cmd.Context(), project.ID, parentID, name, ttl, credential)
 		if err != nil {
 			return fmt.Errorf("sandbox creation failed: %w", err)
 		}
@@ -80,18 +81,21 @@ it again right after creating its collection.`,
 			err := services.StartCapture(startCtx, info.BranchID, actor)
 			cancel()
 			if err != nil {
+				if credential {
+					return services.SandboxCaptureFailure(info, err)
+				}
 				return fmt.Errorf("sandbox %q was created but capture did not start (run \"argon watch -p %s -b %s\" before writing to it): %w", info.BranchName, projectName, info.BranchName, err)
 			}
 		}
 
 		if jsonOutput(cmd) {
-			if err := writeJSON(cmd, map[string]any{"branch_id": info.BranchID, "name": info.BranchName, "physical_db": info.PhysicalDB, "connection_string": services.BranchConnectionString(info.PhysicalDB), "expires_at": info.ExpiresAt, "fork_lsn": info.ForkLSN, "capture_managed": watch}); err != nil {
+			if err := writeJSON(cmd, map[string]any{"branch_id": info.BranchID, "name": info.BranchName, "physical_db": info.PhysicalDB, "connection_string": uri, "expires_at": info.ExpiresAt, "fork_lsn": info.ForkLSN, "capture_managed": watch}); err != nil {
 				return err
 			}
 		} else {
 			fmt.Printf("Sandbox %q forked from %s at LSN %d.\n", info.BranchName, info.ForkedFrom, info.ForkLSN)
 			fmt.Printf("Expires: %s\n", info.ExpiresAt.Format(time.RFC3339))
-			fmt.Printf("Connection string:\n  %s\n", services.BranchConnectionString(info.PhysicalDB))
+			fmt.Printf("Connection string:\n  %s\n", uri)
 			if !watch {
 				fmt.Printf("Capture its writes with: argon watch -p %s -b %s\n", projectName, info.BranchName)
 			}
@@ -201,17 +205,24 @@ var sandboxKeepCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
-		branchID, err := resolveBranch(services, projectName, branchName)
+		branch, err := services.ResolveBranch(projectName, branchName)
 		if err != nil {
 			return err
 		}
-		if err := services.Sandbox.Keep(context.Background(), branchID); err != nil {
+		if err := services.Sandbox.Keep(cmd.Context(), branch.ID); err != nil {
 			return fmt.Errorf("keep failed: %w", err)
 		}
 		if jsonOutput(cmd) {
-			return writeJSON(cmd, map[string]any{"kept": true, "branch_id": branchID})
+			result := map[string]any{"kept": true, "branch_id": branch.ID}
+			if branch.SandboxUsername != "" {
+				result["credential_valid_until_discard"] = true
+			}
+			return writeJSON(cmd, result)
 		}
 		fmt.Println("TTL removed; the branch is permanent now.")
+		if branch.SandboxUsername != "" {
+			fmt.Println("The sandbox credential stays valid until the branch is discarded.")
+		}
 		return nil
 	},
 }
@@ -258,6 +269,7 @@ func init() {
 	sandboxCreateCmd.Flags().String("from", "", "Parent branch to fork (default: main)")
 	sandboxCreateCmd.Flags().String("name", "", "Sandbox name (default: generated)")
 	sandboxCreateCmd.Flags().Duration("ttl", time.Hour, "Time to live before the sweep reclaims it")
+	sandboxCreateCmd.Flags().Bool("credential", false, "Issue a MongoDB credential with read/write access only to this sandbox")
 	sandboxCreateCmd.Flags().Bool("watch", false, "Capture the sandbox's writes and stay in the foreground until interrupted")
 	sandboxCreateCmd.Flags().String("actor", "", "Persisted actor label for captured writes (needs --watch; default: ingest)")
 	for _, c := range []*cobra.Command{sandboxListCmd, sandboxSweepCmd} {
