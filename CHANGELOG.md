@@ -18,6 +18,16 @@ entry — a synchronization barrier, not in-proxy capture).
   their listings. A branch is a metadata write that copies no documents;
   the README and CLI reference now say that instead.
 
+### Fixed
+
+- The npm launcher (`argonctl`) now passes SIGINT, SIGTERM and SIGHUP on to
+  the Argon binary and exits with its status, or with the same signal.
+  Before, a signal sent only to the launcher's process (by a supervisor, or
+  a script's `send_signal`) ended the launcher and left the binary running:
+  `argon source follow` went on holding its source lease and `argon source
+  status` still showed `State: running`. Ctrl-C in a terminal was not
+  affected.
+
 ## [2.12.0] - 2026-11-21
 
 MongoDB Atlas is a supported source, including the free tier: an Atlas
