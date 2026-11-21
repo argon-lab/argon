@@ -95,7 +95,7 @@ func suiteCheckPhysical(ctx context.Context, coll *mongo.Collection, want suiteS
 	if err != nil {
 		return err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 	seen := make(map[int]bool)
 	for cursor.Next(ctx) {
 		raw := cursor.Current

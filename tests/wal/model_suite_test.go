@@ -206,7 +206,9 @@ func (m *suiteModel) write(op suiteOp, b *suiteBranch) error {
 				return err
 			}
 			posts = append(posts, raw)
-			docs[i] = d.Map()
+			if err := bson.Unmarshal(raw, &docs[i]); err != nil {
+				return err
+			}
 		}
 		lsns, err = w.PutMany(m.t.Context(), suiteCollection, docs)
 		if err != nil {

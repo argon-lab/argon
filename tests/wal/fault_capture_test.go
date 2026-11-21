@@ -175,7 +175,7 @@ func checkCaptureResumeToken(t *testing.T, ctx context.Context, db *mongo.Databa
 		SetShowExpandedEvents(true).SetMaxAwaitTime(500 * time.Millisecond)
 	stream, err := db.Watch(read, mongo.Pipeline{}, opts)
 	require.NoError(t, err)
-	defer stream.Close(ctx)
+	defer func() { _ = stream.Close(ctx) }()
 	for i := 0; i < faultCaptureDocs; {
 		require.True(t, stream.Next(read), "missing change-%d after saved checkpoint: %v", i, stream.Err())
 		collection, _ := stream.Current.Lookup("ns", "coll").StringValueOK()
