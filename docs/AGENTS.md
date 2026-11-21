@@ -25,14 +25,22 @@ Fork + checkout + TTL, one step:
 
 ```bash
 argon sandbox create -p myapp --ttl 1h
-# → connection string; hand it to the agent, any driver works
 ```
+
+By default, the URI uses the engine's MongoDB credentials. On an
+authenticated deployment, add `--credential` to create a user with read/write
+access only to this sandbox. Set `"credential": true` in the
+`argon_sandbox_create` MCP tool arguments or the REST sandbox create body
+for the same result. Save the URI from the create response. Argon returns
+the password once. See [required MongoDB roles](OPERATIONS.md#exposure-and-credentials).
 
 MCP and REST sandboxes wait for capture readiness and drain before returning
 URIs. Their server processes also sweep expired sandboxes every minute. With
 the bare CLI, add `--watch --actor <run-label>` to `sandbox create` (or keep
 `argon watch --actor <run-label>` running) and explicitly schedule
-`argon sandbox sweep`. Actor labels apply to an entire branch and
+`argon sandbox sweep`. An expired sandbox's credential stays valid until a
+sweep reaps it. Keeping the sandbox removes its TTL and leaves the credential
+valid until discard. Actor labels apply to an entire branch and
 are persisted; use a new sandbox for a different run label.
 
 Collections inherited from the parent are ready for exact capture. A collection
@@ -151,7 +159,7 @@ GET    /api/v1/projects/:p/branches/:b
 DELETE /api/v1/projects/:p/branches/:b
 POST   /api/v1/projects/:p/branches/:b/checkout
 POST   /api/v1/projects/:p/branches/:b/release
-POST   /api/v1/projects/:p/sandboxes                   {name?, from?, ttl_minutes?, actor?}
+POST   /api/v1/projects/:p/sandboxes                   {name?, from?, ttl_minutes?, actor?, credential?}
 GET    /api/v1/projects/:p/sandboxes
 DELETE /api/v1/projects/:p/sandboxes/:b
 POST   /api/v1/projects/:p/sandboxes/:b/extend         {ttl_minutes}
@@ -175,11 +183,12 @@ GET    /api/v1/meta
 GET    /api/v1/status/ingesters
 ```
 
-Sandbox-creating endpoints start a supervised ingester; errors return
-`{"error": "..."}` with a meaningful status. Listing sandboxes returns each
-live sandbox's `connection_string`; a sandbox whose capture cannot run, for
-example after a collection drop, is listed with `capture_error` instead and
-can still be discarded. Optional switches, all off
+Sandbox-creating endpoints start a supervised ingester. Errors return
+`{"error": "..."}` with a meaningful status. Listing sandboxes omits
+`connection_string` for a sandbox created with `credential: true`.
+For other live sandboxes, the list includes the usual URI. A sandbox whose
+capture cannot run, for example after a collection drop, is listed with
+`capture_error` and can still be discarded. Optional switches, all off
 by default: `ARGON_API_TOKEN` (Bearer auth on every `/api` endpoint
 except `/meta`), `ARGON_READ_ONLY=1`, `ARGON_CORS_ORIGINS`,
 `ARGON_ALLOWED_HOSTS` (extra hostnames a token-less local server answers
@@ -266,9 +275,9 @@ python3 examples/pinned_agents.py --api http://127.0.0.1:1818
 
 Set `ARGON_API_TOKEN` in the example's environment when the local server uses
 a bearer token. This requires your own engine; the hosted demo does not
-provide database credentials. Native MongoDB credentials remain deployment
-credentials, not a security boundary between mutually untrusted agents.
-Provision restricted MongoDB users/deployments for those workloads.
+provide database credentials. For code that should only access its sandbox,
+use a URI issued by `sandbox create --credential` or provision a restricted
+MongoDB user yourself.
 
 [examples/boxd-sandbox](../examples/boxd-sandbox/) does that for agent-written
 code running in a separate code sandbox: a boxd machine gets a MongoDB user

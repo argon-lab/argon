@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -354,7 +355,9 @@ func (r *Router) getBranch(c *gin.Context) {
 			abortErr(c, http.StatusServiceUnavailable, err)
 			return
 		}
-		resp["connection_string"] = r.services.BranchConnectionString(branch.PhysicalDB)
+		if branch.SandboxUsername == "" {
+			resp["connection_string"] = r.services.BranchConnectionString(branch.PhysicalDB)
+		}
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -381,6 +384,10 @@ func (r *Router) checkoutBranch(c *gin.Context) {
 	info, err := r.services.Checkout.Checkout(c.Request.Context(), branchID)
 	if err != nil {
 		abortErr(c, http.StatusInternalServerError, err)
+		return
+	}
+	if info.SandboxUsername != "" {
+		abortErr(c, http.StatusConflict, walcli.ErrSandboxURIOnce)
 		return
 	}
 	var capture struct {
@@ -423,13 +430,25 @@ func (r *Router) createSandbox(c *gin.Context) {
 		return
 	}
 	var body struct {
-		From       string  `json:"from"`
-		Name       string  `json:"name"`
-		TTLMinutes float64 `json:"ttl_minutes"`
-		Actor      string  `json:"actor"`
+		From       string          `json:"from"`
+		Name       string          `json:"name"`
+		TTLMinutes float64         `json:"ttl_minutes"`
+		Actor      string          `json:"actor"`
+		Credential json.RawMessage `json:"credential"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil && err.Error() != "EOF" {
 		abortErr(c, http.StatusBadRequest, err)
+		return
+	}
+	// Treat only an omitted field or explicit false as opting out. A malformed
+	// value must never select the engine's connection string.
+	var credential bool
+	switch string(body.Credential) {
+	case "", "false":
+	case "true":
+		credential = true
+	default:
+		abortErr(c, http.StatusBadRequest, fmt.Errorf("credential must be a boolean"))
 		return
 	}
 	from := body.From
@@ -446,18 +465,21 @@ func (r *Router) createSandbox(c *gin.Context) {
 		return
 	}
 	ttl := time.Duration(body.TTLMinutes * float64(time.Minute))
-	info, err := r.services.Sandbox.Create(c.Request.Context(), projectID, parent.ID, body.Name, ttl)
+	info, uri, err := r.services.CreateSandbox(c.Request.Context(), projectID, parent.ID, body.Name, ttl, credential)
 	if err != nil {
 		abortErr(c, http.StatusInternalServerError, err)
 		return
 	}
 	if err := r.startIngester(info.BranchID, body.Actor); err != nil {
-		abortErr(c, http.StatusServiceUnavailable, err)
+		abortErr(c, http.StatusServiceUnavailable, r.services.SandboxCaptureFailure(info, err))
 		return
+	}
+	if credential {
+		c.Header("Cache-Control", "no-store")
 	}
 	c.JSON(http.StatusCreated, gin.H{
 		"branch":            info.BranchName,
-		"connection_string": r.services.BranchConnectionString(info.PhysicalDB),
+		"connection_string": uri,
 		"expires_at":        info.ExpiresAt,
 		"forked_from":       info.ForkedFrom,
 		"fork_lsn":          info.ForkLSN,

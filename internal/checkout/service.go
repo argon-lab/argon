@@ -112,11 +112,12 @@ func PhysicalDBName(branchID string) string {
 
 // Info describes a completed checkout.
 type Info struct {
-	BranchID    string
-	PhysicalDB  string
-	LSN         int64
-	Collections int
-	Documents   int64
+	BranchID        string
+	SandboxUsername string `json:"-"`
+	PhysicalDB      string
+	LSN             int64
+	Collections     int
+	Documents       int64
 }
 
 // Checkout materializes the branch's state at its current head into its
@@ -132,6 +133,9 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	if branch.IsFollower() {
 		return nil, fmt.Errorf("branch %s follows the external database %q and cannot be checked out: connect to that database to read it, or fork a sandbox to write", branch.Name, branch.Follows)
 	}
+	if branch.SandboxRevoking {
+		return nil, fmt.Errorf("sandbox %q is being discarded", branch.Name)
+	}
 	// A connection request must never rebuild a database with pending writes.
 	if branch.IsLive() {
 		// The caller connects and writes to whatever is returned here, so it
@@ -140,7 +144,7 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 		if err != nil {
 			return nil, err
 		}
-		return &Info{BranchID: branch.ID, PhysicalDB: own, LSN: branch.HeadLSN}, nil
+		return &Info{BranchID: branch.ID, SandboxUsername: branch.SandboxUsername, PhysicalDB: own, LSN: branch.HeadLSN}, nil
 	}
 
 	collections, err := s.materializer.CollectionsAtLSN(branch, branch.HeadLSN)
@@ -197,7 +201,7 @@ func (s *Service) fill(ctx context.Context, branch *wal.Branch, dbName string, c
 		}
 	}
 
-	info := &Info{BranchID: branch.ID, PhysicalDB: dbName, LSN: branch.HeadLSN}
+	info := &Info{BranchID: branch.ID, SandboxUsername: branch.SandboxUsername, PhysicalDB: dbName, LSN: branch.HeadLSN}
 	// Materialize and load one collection at a time. Every collection is
 	// read at the same head LSN, so the database is the same consistent
 	// state as before; peak memory is the largest collection instead of
@@ -347,6 +351,9 @@ func (s *Service) Release(ctx context.Context, branchID string) error {
 	if err != nil {
 		return fmt.Errorf("branch %s not found: %w", branchID, err)
 	}
+	if branch.SandboxUsername != "" {
+		return fmt.Errorf("branch %q has a sandbox credential; use sandbox discard to revoke it and remove the database", branch.Name)
+	}
 	if branch.PhysicalDB != "" {
 		// Before the capture drain as well: draining writes a marker into
 		// the database it is told is the branch's.
@@ -377,12 +384,46 @@ func (s *Service) Release(ctx context.Context, branchID string) error {
 // explicitly deleted. Unlike Release, it does not require recoverable history.
 // The caller must check pins/children before invoking it.
 func (s *Service) Discard(ctx context.Context, branchID string) error {
+	return s.discard(ctx, branchID, nil, true)
+}
+
+// DiscardExpired rechecks a credential sandbox's expiry at revocation.
+func (s *Service) DiscardExpired(ctx context.Context, branchID string, before time.Time) error {
+	return s.discard(ctx, branchID, &before, true)
+}
+
+// DiscardFailedSandbox accepts the issue outcome from IssueSandboxCredential.
+// An engine definitively denied createUser may also lack dropUser.
+func (s *Service) DiscardFailedSandbox(ctx context.Context, branchID string, userMayExist bool) error {
+	return s.discard(ctx, branchID, nil, userMayExist)
+}
+
+func (s *Service) discard(ctx context.Context, branchID string, expiredBefore *time.Time, userMayExist bool) error {
+	branch, err := s.branches.GetBranchByIDContext(ctx, branchID)
+	if err != nil {
+		return err
+	}
+	if branch.SandboxUsername != "" {
+		if err := s.branches.BeginSandboxRevocation(ctx, branch, expiredBefore); err != nil {
+			return err
+		}
+		if userMayExist {
+			if err := s.revokeSandboxUser(ctx, branch); err != nil {
+				return err
+			}
+		}
+		if err := s.branches.RequireDeletable(branch.ID); err != nil {
+			return err
+		}
+	}
 	if s.beforeDiscard != nil {
 		if err := s.beforeDiscard(ctx, branchID); err != nil {
 			return err
 		}
 	}
-	branch, err := s.branches.GetBranchByID(branchID)
+	// Reload after stopping capture. A checkout may also have finished
+	// while we acquired the revocation fence.
+	branch, err = s.branches.GetBranchByIDContext(ctx, branchID)
 	if err != nil {
 		return err
 	}

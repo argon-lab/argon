@@ -23,16 +23,9 @@ func resolveProjectID(services *walcli.Services, projectName string) (string, er
 
 // resolveBranch loads the project and branch named by the shared flags.
 func resolveBranch(services *walcli.Services, projectName, branchName string) (string, error) {
-	project, err := services.Projects.GetProjectByName(projectName)
+	branch, err := services.ResolveBranch(projectName, branchName)
 	if err != nil {
-		return "", fmt.Errorf("project %q not found: %w", projectName, err)
-	}
-	if branchName == "" {
-		branchName = "main"
-	}
-	branch, err := services.Branches.GetBranch(project.ID, branchName)
-	if err != nil {
-		return "", fmt.Errorf("branch %q not found: %w", branchName, err)
+		return "", err
 	}
 	return branch.ID, nil
 }
@@ -68,6 +61,9 @@ preserves pending direct writes. Stop writers before release.`,
 		if err != nil {
 			return fmt.Errorf("checkout failed: %w", err)
 		}
+		if info.SandboxUsername != "" {
+			return walcli.ErrSandboxURIOnce
+		}
 
 		if jsonOutput(cmd) {
 			return writeJSON(cmd, map[string]any{"branch_id": branchID, "physical_db": info.PhysicalDB, "lsn": info.LSN, "connection_string": services.BranchConnectionString(info.PhysicalDB), "capture_managed": false})
@@ -97,13 +93,12 @@ The branch record must name the database Argon created for that branch.`,
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
-		branchID, err := resolveBranch(services, projectName, branchName)
+		branch, err := services.ResolveBranch(projectName, branchName)
 		if err != nil {
 			return err
 		}
-		branch, err := services.Branches.GetBranchByID(branchID)
-		if err != nil {
-			return err
+		if branch.SandboxUsername != "" {
+			return walcli.ErrSandboxURIOnce
 		}
 		if !branch.IsLive() {
 			return fmt.Errorf("branch is not checked out; run \"argon checkout\" first")
@@ -113,7 +108,7 @@ The branch record must name the database Argon created for that branch.`,
 			return err
 		}
 		if jsonOutput(cmd) {
-			return writeJSON(cmd, map[string]any{"branch_id": branchID, "connection_string": services.BranchConnectionString(own), "capture_managed": false})
+			return writeJSON(cmd, map[string]any{"branch_id": branch.ID, "connection_string": services.BranchConnectionString(own), "capture_managed": false})
 		}
 		fmt.Println(services.BranchConnectionString(own))
 		return nil

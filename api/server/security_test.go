@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +87,9 @@ func TestDemoNeverReturnsNativeServiceCredentials(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, code)
 		require.NotContains(t, fmt.Sprint(body), "service:secret")
 	}
+	code, body, _ = doDemo(t, r, "POST", "/api/v1/projects/"+p+"/sandboxes", cookie, map[string]bool{"credential": true})
+	require.Equal(t, http.StatusForbidden, code)
+	require.NotContains(t, body, "connection_string")
 	project, err := services.Projects.GetProjectByName(p)
 	require.NoError(t, err)
 	main, err := services.Branches.GetBranch(project.ID, "main")
@@ -97,6 +102,72 @@ func TestDemoNeverReturnsNativeServiceCredentials(t *testing.T) {
 		require.Equal(t, http.StatusOK, code)
 		require.NotContains(t, fmt.Sprint(body), "connection_string")
 		require.NotContains(t, fmt.Sprint(body), "service:secret")
+	}
+}
+
+func TestSandboxCredentialAPI(t *testing.T) {
+	uri := os.Getenv("ARGON_TEST_AUTH_MONGODB_URI")
+	if uri == "" {
+		t.Skip("set ARGON_TEST_AUTH_MONGODB_URI to test sandbox credentials")
+	}
+	name := fmt.Sprintf("argon_api_credential_%d", time.Now().UnixNano())
+	services, err := walcli.NewServicesAt(uri, name)
+	require.NoError(t, err)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		services.Monitor.Stop()
+		_ = services.Client.Database(name).Drop(ctx)
+		_ = services.Client.Disconnect(ctx)
+	})
+	r := NewRouterWith(services, Options{})
+	t.Cleanup(r.Shutdown)
+	project, err := services.Projects.CreateProject("scoped")
+	require.NoError(t, err)
+	const path = "/api/v1/projects/scoped"
+	for _, invalid := range []any{"true", nil} {
+		status, _ := do(t, r, "POST", path+"/sandboxes", map[string]any{"name": "box", "credential": invalid})
+		require.Equal(t, http.StatusBadRequest, status)
+	}
+	status, body := do(t, r, "POST", path+"/sandboxes", map[string]any{"name": "box", "credential": true})
+	require.Equal(t, http.StatusCreated, status, "%v", body["error"])
+	b, err := services.Branches.GetBranch(project.ID, "box")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, services.Sandbox.Discard(ctx, b.ID)) })
+	raw, ok := body["connection_string"].(string)
+	require.True(t, ok)
+	u, err := url.Parse(raw)
+	require.True(t, err == nil, "invalid connection string")
+	require.NotEmpty(t, b.SandboxUsername)
+	require.Equal(t, b.SandboxUsername, u.User.Username())
+	require.Equal(t, b.PhysicalDB, u.Query().Get("authSource"))
+
+	status, body = do(t, r, "GET", path+"/branches/box", nil)
+	require.Equal(t, http.StatusOK, status)
+	_, hasURI := body["connection_string"]
+	require.False(t, hasURI, "branch details reissued a URI")
+	status, body = do(t, r, "GET", path+"/sandboxes", nil)
+	require.Equal(t, http.StatusOK, status)
+	items := body["sandboxes"].([]any)
+	require.Len(t, items, 1)
+	require.Nil(t, items[0].(map[string]any)["capture_error"])
+	_, hasURI = items[0].(map[string]any)["connection_string"]
+	require.False(t, hasURI, "sandbox list reissued a URI")
+	status, body = do(t, r, "POST", path+"/branches/box/checkout", nil)
+	require.Equal(t, http.StatusConflict, status)
+	require.Contains(t, body["error"], "returned at creation")
+
+	for _, request := range []map[string]any{
+		{"name": "omitted"},
+		{"name": "disabled", "credential": false},
+	} {
+		status, body := do(t, r, "POST", path+"/sandboxes", request)
+		require.Equal(t, http.StatusCreated, status)
+		legacy, err := services.Branches.GetBranch(project.ID, request["name"].(string))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, services.Sandbox.Discard(ctx, legacy.ID)) })
+		require.Equal(t, 5, len(body))
+		require.True(t, body["connection_string"] == services.BranchConnectionString(legacy.PhysicalDB),
+			"sandboxes without a credential must return the original URI")
 	}
 }
 
