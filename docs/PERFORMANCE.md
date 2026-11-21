@@ -34,6 +34,12 @@ engine source and raw samples in RESULTS.md; these are measurements for the
 recorded environment, not an SLA. A p99 computed from twenty observations
 does not establish production tail latency.
 
+The 2026-11-20 sandbox-ready report times what an agent waits for with the
+published 2.9.0 CLI: `argon sandbox create --watch` until its reply, then the
+first acknowledged write on the returned connection string, by data size and
+by the number of sandboxes created together. Forking is a metadata write; the
+physical copy at checkout takes nearly all of that time.
+
 Expanded dataset/concurrency/depth runs and longer recovery/soak runs need
 their own published evidence before drawing scale conclusions. Use the
 benchmark repository's current results and experiment plan to distinguish
