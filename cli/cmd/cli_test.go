@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"reflect"
@@ -99,6 +100,61 @@ func TestCLIImportRequiresStoppedSourceBeforeConnecting(t *testing.T) {
 	_, stderr, err = invokeCLI(t, "mongodb://127.0.0.1:1", "import", "cleanup", "--project", "target")
 	if err == nil || !strings.Contains(stderr, "stop the original importer") {
 		t.Fatalf("cleanup must require stopped-importer confirmation: %v %s", err, stderr)
+	}
+}
+
+func TestSandboxCredentialCLI(t *testing.T) {
+	uri := os.Getenv("ARGON_TEST_AUTH_MONGODB_URI")
+	if uri == "" {
+		t.Skip("set ARGON_TEST_AUTH_MONGODB_URI to test sandbox credentials")
+	}
+	metadata := "argon_cli_credential_" + primitive.NewObjectID().Hex()
+	t.Setenv("ARGON_METADATA_DB", metadata)
+	ctx := context.Background()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Database(metadata).Drop(ctx)
+		_ = client.Disconnect(ctx)
+	})
+	if _, stderr, err := invokeCLI(t, uri, "projects", "create", "scoped"); err != nil {
+		t.Fatalf("create project: %v %s", err, stderr)
+	}
+	stdout, stderr, err := invokeCLI(t, uri, "sandbox", "create", "-p", "scoped", "--name", "box", "--credential", "--output", "json")
+	if err != nil {
+		t.Fatalf("create sandbox: %v %s", err, stderr)
+	}
+	t.Cleanup(func() {
+		if _, stderr, err := invokeCLI(t, uri, "sandbox", "discard", "-p", "scoped", "-b", "box"); err != nil {
+			t.Errorf("discard: %v %s", err, stderr)
+		}
+	})
+	var created struct {
+		URI string `json:"connection_string"`
+		DB  string `json:"physical_db"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &created); err != nil {
+		t.Fatal("invalid sandbox JSON")
+	}
+	u, err := url.Parse(created.URI)
+	if err != nil || created.DB == "" || u.Query().Get("authSource") != created.DB {
+		t.Fatal("sandbox URI does not authenticate against its physical database")
+	}
+	password, ok := u.User.Password()
+	if !ok || password == "" || strings.Contains(stderr, password) || strings.Count(stdout, password) != 1 {
+		t.Fatal("sandbox password must appear exactly once in the response and never on stderr")
+	}
+	for _, command := range []string{"connect", "checkout"} {
+		output, failure, err := invokeCLI(t, uri, command, "-p", "scoped", "-b", "box")
+		if err == nil || output != "" || !strings.Contains(failure, "returned at creation") {
+			t.Fatalf("%s did not refuse to reissue the URI", command)
+		}
+	}
+	stdout, stderr, err = invokeCLI(t, uri, "sandbox", "keep", "-p", "scoped", "-b", "box")
+	if err != nil || !strings.Contains(stdout, "credential stays valid until the branch is discarded") {
+		t.Fatalf("keep did not explain credential lifetime: %v %s", err, stderr)
 	}
 }
 

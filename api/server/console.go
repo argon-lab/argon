@@ -520,7 +520,7 @@ func (r *Router) listSandboxes(c *gin.Context) {
 			// writes to it would not be captured.
 			if err := r.startIngester(b.ID); err != nil {
 				item["capture_error"] = err.Error()
-			} else {
+			} else if b.SandboxUsername == "" {
 				item["connection_string"] = r.services.BranchConnectionString(own)
 			}
 		}

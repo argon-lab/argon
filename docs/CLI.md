@@ -362,12 +362,20 @@ backups.
 
 ```
 argon sandbox create -p P [--from B] [--name N] [--ttl 1h]   fork+checkout+TTL
+argon sandbox create -p P --credential                       issue a MongoDB user for this sandbox
 argon sandbox create -p P --watch [--actor A]                 …and capture it in the foreground
 argon sandbox list / discard / keep / sweep
 ```
 
-`sweep` reaps expired sandboxes (pinned ones skipped loudly); `keep`
-removes the TTL. Bare CLI commands do not start background workers. Keep
+`--credential` returns a URI with read/write access only to the sandbox's
+physical database. Save it from the create output. Argon returns its password
+once. Without this flag, the URI uses the engine's MongoDB credentials.
+See [required MongoDB roles](OPERATIONS.md#exposure-and-credentials).
+
+`sweep` reaps expired sandboxes and reports any it skips, including pinned
+ones. A sandbox credential stays valid after expiry until a sweep reaps the
+sandbox. `keep` removes the TTL and leaves the credential valid until
+`discard`. Bare CLI commands do not start background workers. Keep
 `watch` running and schedule `sweep`, or use console/API/MCP managed sandboxes.
 `sandbox create --watch` starts capture before it prints the connection string
 and runs until interrupted, so one terminal replaces `sandbox create` plus

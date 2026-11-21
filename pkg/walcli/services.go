@@ -461,6 +461,55 @@ func (s *Services) BranchConnectionString(physicalDB string) string {
 	return checkout.ConnectionString(s.MongoURI, physicalDB)
 }
 
+// ResolveBranch loads a branch by its project and branch names.
+func (s *Services) ResolveBranch(projectName, branchName string) (*wal.Branch, error) {
+	project, err := s.Projects.GetProjectByName(projectName)
+	if err != nil {
+		return nil, fmt.Errorf("project %q not found: %w", projectName, err)
+	}
+	if branchName == "" {
+		branchName = "main"
+	}
+	branch, err := s.Branches.GetBranch(project.ID, branchName)
+	if err != nil {
+		return nil, fmt.Errorf("branch %q not found: %w", branchName, err)
+	}
+	return branch, nil
+}
+
+// CreateSandbox returns the URI to hand to the caller at creation time.
+func (s *Services) CreateSandbox(ctx context.Context, projectID, parentID, name string, ttl time.Duration, credential bool) (*sandbox.Info, string, error) {
+	if credential {
+		info, err := s.Sandbox.CreateWithCredential(ctx, projectID, parentID, name, ttl, s.MongoURI)
+		if err != nil {
+			return nil, "", err
+		}
+		return info, info.CredentialURI, nil
+	}
+	info, err := s.Sandbox.Create(ctx, projectID, parentID, name, ttl)
+	if err != nil {
+		return nil, "", err
+	}
+	return info, s.BranchConnectionString(info.PhysicalDB), nil
+}
+
+// SandboxCaptureFailure removes a credential sandbox if capture failed before
+// its one-time URI was handed out. An ordinary sandbox can resume capture later.
+func (s *Services) SandboxCaptureFailure(info *sandbox.Info, cause error) error {
+	if info.CredentialURI == "" {
+		return cause
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.Sandbox.Discard(ctx, info.BranchID); err != nil {
+		return fmt.Errorf("capture failed: %w; discard sandbox %q to finish cleanup: %v", cause, info.BranchName, err)
+	}
+	return fmt.Errorf("capture failed and sandbox %q was discarded: %w", info.BranchName, cause)
+}
+
+// ErrSandboxURIOnce is returned when a caller asks for a scoped URI again.
+var ErrSandboxURIOnce = errors.New("the sandbox connection string was returned at creation and cannot be retrieved again")
+
 // RunGC wraps garbage collection for CLI use: the cli module cannot import
 // internal packages, so the config type stays behind this boundary.
 func (s *Services) RunGC(ctx context.Context, projectID string, retention time.Duration, dryRun bool) (*gc.Report, error) {

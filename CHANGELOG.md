@@ -11,6 +11,12 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Added
+
+- `argon sandbox create --credential` issues a MongoDB user with read/write
+  access only to the new sandbox. REST and MCP sandbox creation accept
+  `credential: true` too. Discard or a successful sweep revokes the user.
+
 ## [2.9.0] - 2026-11-20
 
 Adds `argon merge check`, which reports unique-index collisions with the
