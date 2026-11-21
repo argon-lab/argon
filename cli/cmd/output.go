@@ -33,6 +33,7 @@ func init() {
 		checkoutCmd, connectCmd, releaseCmd, statusCmd, doctorCmd,
 		timeTravelInfoCmd, timeTravelQueryCmd, snapshotCreateCmd, snapshotListCmd,
 		gcCmd, restorePreviewCmd, restoreResetCmd, restoreBranchCmd,
+		migrateCmd,
 	} {
 		command.Flags().StringP("output", "o", "table", "Output format: table or json")
 	}
