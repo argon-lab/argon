@@ -11,6 +11,66 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.11.0] - 2026-11-21
+
+Checkouts and sandboxes now build each collection's secondary indexes, so a
+sandbox enforces the source's unique constraints. Garbage collection deletes
+oldest first in transactions, which removes the cause of
+[#155](https://github.com/argon-lab/argon/issues/155) and
+[#168](https://github.com/argon-lab/argon/issues/168) and repairs histories
+already affected on its next run. MongoDB now refuses WAL appends from
+releases up to 2.0.1 ([#183](https://github.com/argon-lab/argon/issues/183)).
+
+### Added
+
+- A checkout builds the secondary indexes recorded for its branch, or for its
+  nearest ancestor, after loading each collection. Import records the
+  source's definitions; following and resync keep them current; capture
+  records index builds and drops made through a branch's checkout, which
+  then apply to that branch and its descendants. A TTL index is built
+  without its expiry. An index the branch's data violates is skipped and
+  reported. Checkout, sandbox and pin-sandbox results report `indexes` and
+  `index_notes`. A source user without `listIndexes` still imports, and
+  `index_notes` names the collections whose checkouts get only `_id`.
+  Indexes are not versioned and a merge does not carry index changes.
+  ([#190](https://github.com/argon-lab/argon/pull/190))
+
+### Changed
+
+- The engine installs a validator on `wal_log` that refuses data entries
+  without a typed document key, which only releases up to 2.0.1 write. An
+  old capture process left running after an upgrade now fails with
+  `DocumentValidationFailure` instead of appending rows that made the
+  indexed diff read a stale parent value. Installing it needs `collMod` on
+  the metadata database; without it the engine logs that the guard is
+  missing and starts anyway. ([#188](https://github.com/argon-lab/argon/pull/188))
+- Garbage collection deletes a collection's reclaimable entries in ascending
+  LSN order, up to 5,000 per transaction. Deleting 200,000 entries took about
+  1.3 times as long as before. ([#189](https://github.com/argon-lab/argon/pull/189))
+
+### Fixed
+
+- An interrupted garbage collection could delete a document's newer entry
+  and keep an older one, which single-document reads, a programmatic
+  writer's pre-image and undo then used as the current state, while the
+  collection read answered from the snapshot. Whatever survives an
+  interruption is now the newest part of the range, and the next run
+  finishes it. A run on 2.11.0 also deletes such leftovers from earlier
+  releases where its cutoff covers them; run `argon gc` once after
+  upgrading. ([#155](https://github.com/argon-lab/argon/issues/155),
+  [#168](https://github.com/argon-lab/argon/issues/168),
+  [#189](https://github.com/argon-lab/argon/pull/189))
+
+### Known limitations
+
+- Until garbage collection runs, a history already left in the state of #155
+  or #168 still reads the older row; the reader is unchanged.
+- History in which a 2.0.1-or-earlier process already wrote after a newer
+  release keeps the stale indexed diff of #183; the guard only stops new
+  appends.
+- Undo on some old histories keeps the limit of
+  [#154](https://github.com/argon-lab/argon/issues/154).
+
 ## [2.10.0] - 2026-11-20
 
 Adds an optional MongoDB credential per sandbox that only reaches that
