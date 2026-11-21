@@ -8,8 +8,8 @@ import (
 
 var projectsCmd = &cobra.Command{
 	Use:   "projects",
-	Short: "Manage Argon projects with time travel",
-	Long:  `Create and manage MongoDB projects with instant branching and time travel capabilities.`,
+	Short: "Create and list projects",
+	Long:  `Create and list Argon projects. Each project starts with a main branch.`,
 }
 
 var projectsCreateCmd = &cobra.Command{
@@ -32,9 +32,9 @@ var projectsCreateCmd = &cobra.Command{
 			return writeJSON(cmd, map[string]any{"project": project})
 		}
 
-		fmt.Printf("✅ Created project '%s' with time travel capabilities\n", project.Name)
+		fmt.Printf("✅ Created project '%s'\n", project.Name)
 		fmt.Printf("   Project ID: %s\n", project.ID)
-		fmt.Printf("   Main branch created with instant branching\n")
+		fmt.Printf("   Main branch: main\n")
 		fmt.Println()
 		fmt.Println("Next steps:")
 		fmt.Printf("  argon branches list --project %s\n", project.Name)
@@ -69,12 +69,11 @@ var projectsListCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("Found %d project(s) with time travel:\n\n", len(projects))
+		fmt.Printf("Found %d project(s):\n\n", len(projects))
 		for _, project := range projects {
 			fmt.Printf("📁 %s\n", project.Name)
 			fmt.Printf("   ID: %s\n", project.ID)
 			fmt.Printf("   Created: %v\n", project.CreatedAt.Format("2006-01-02 15:04:05"))
-			fmt.Printf("   Features: ✅ Instant branching, ✅ Time travel\n")
 			fmt.Println()
 		}
 
