@@ -231,7 +231,7 @@ func (s *Service) gcBranch(ctx context.Context, branch *wal.Branch, liveChildren
 		if err := s.wal.RecordReclaimFloor(ctx, branch.ID, collection, cutoff); err != nil {
 			return nil, err
 		}
-		removed, err := s.wal.DeleteDataEntriesUpTo(branch.ID, collection, cutoff)
+		removed, err := s.wal.DeleteDataEntriesUpToContext(ctx, branch.ID, collection, cutoff)
 		if err != nil {
 			return nil, fmt.Errorf("failed to delete entries for %s: %w", collection, err)
 		}

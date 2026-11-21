@@ -877,17 +877,73 @@ func (s *Service) LatestLSNAtOrBefore(projectID, branchID string, at time.Time, 
 // kept — they are tiny and carry branch/project lineage. Callers are
 // responsible for the coverage argument (see the gc package).
 func (s *Service) DeleteDataEntriesUpTo(branchID, collection string, cutoff int64) (int64, error) {
-	ctx := context.Background()
-	res, err := s.collection.DeleteMany(ctx, bson.M{
+	return s.DeleteDataEntriesUpToContext(context.Background(), branchID, collection, cutoff)
+}
+
+// reclaimBatchSize is how many entries one deletion transaction removes.
+var reclaimBatchSize = 1000
+
+// SetReclaimBatchSizeForTest changes the deletion batch size and returns a
+// function that restores it. Tests use it to interrupt a reclaim between
+// batches; production code never calls it.
+func SetReclaimBatchSizeForTest(n int) (restore func()) {
+	previous := reclaimBatchSize
+	reclaimBatchSize = n
+	return func() { reclaimBatchSize = previous }
+}
+
+// DeleteDataEntriesUpToContext deletes oldest first, in transactions of
+// reclaimBatchSize entries: each batch holds the lowest LSNs still present
+// and is removed whole or not at all. However the deletion stops, a removed
+// entry therefore never leaves an older entry of the same range behind, so a
+// document's surviving rows are always its newest ones. A single DeleteMany
+// gave no such order: an interrupted run could remove a document's newer row
+// and keep an older one, which a single-document read then returned as the
+// current state (issues 155 and 168). Running the deletion again finishes it.
+func (s *Service) DeleteDataEntriesUpToContext(ctx context.Context, branchID, collection string, cutoff int64) (int64, error) {
+	filter := bson.M{
 		"branch_id":  branchID,
 		"collection": collection,
 		"operation":  bson.M{"$in": []OperationType{OpPut, OpDelete}},
 		"lsn":        bson.M{"$lte": cutoff},
-	})
-	if err != nil {
-		return 0, err
 	}
-	return res.DeletedCount, nil
+	find := options.Find().
+		SetSort(bson.D{{Key: "lsn", Value: 1}}).
+		SetProjection(bson.M{"_id": 1}).
+		SetHint(bson.D{{Key: "branch_id", Value: 1}, {Key: "collection", Value: 1}, {Key: "lsn", Value: 1}})
+	var removed int64
+	for {
+		cursor, err := s.collection.Find(ctx, filter, find.SetLimit(int64(reclaimBatchSize)))
+		if err != nil {
+			return removed, err
+		}
+		var batch []struct {
+			ID interface{} `bson:"_id"`
+		}
+		if err := cursor.All(ctx, &batch); err != nil {
+			return removed, err
+		}
+		if len(batch) == 0 {
+			return removed, nil
+		}
+		ids := make(bson.A, len(batch))
+		for i, row := range batch {
+			ids[i] = row.ID
+		}
+		var deleted int64
+		_, err = s.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+			res, err := s.collection.DeleteMany(sc, bson.M{"_id": bson.M{"$in": ids}})
+			if err != nil {
+				return nil, err
+			}
+			deleted = res.DeletedCount
+			return nil, nil
+		})
+		if err != nil {
+			return removed, err
+		}
+		removed += deleted
+	}
 }
 
 // DeleteBranchEntries removes every entry belonging to a branch. Only safe
