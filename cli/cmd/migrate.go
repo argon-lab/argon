@@ -18,19 +18,6 @@ func migrateReportJSON(project, projectID string, branchesVisited, entriesRewrit
 	}
 }
 
-// Aliases for callers/tests that use a different name for the same shape.
-func migrateProjectJSON(project, projectID string, branchesVisited, entriesRewritten, entriesRemoved int) map[string]any {
-	return migrateReportJSON(project, projectID, branchesVisited, entriesRewritten, entriesRemoved)
-}
-
-func migrateWalReportJSON(project, projectID string, branchesVisited, entriesRewritten, entriesRemoved int) map[string]any {
-	return migrateReportJSON(project, projectID, branchesVisited, entriesRewritten, entriesRemoved)
-}
-
-func migrateJSON(project, projectID string, branchesVisited, entriesRewritten, entriesRemoved int) map[string]any {
-	return migrateReportJSON(project, projectID, branchesVisited, entriesRewritten, entriesRemoved)
-}
-
 var migrateCmd = &cobra.Command{
 	Use:   "migrate-wal",
 	Short: "Migrate a project's WAL from schema v1 to v2",
