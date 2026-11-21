@@ -206,8 +206,11 @@ func (m *suiteModel) write(op suiteOp, b *suiteBranch) error {
 				return err
 			}
 			posts = append(posts, raw)
-			if err := bson.Unmarshal(raw, &docs[i]); err != nil {
-				return err
+			// Convert the top level only: nested values stay bson.D, so the
+			// writer sees the field order this step chose.
+			docs[i] = make(bson.M, len(d))
+			for _, e := range d {
+				docs[i][e.Key] = e.Value
 			}
 		}
 		lsns, err = w.PutMany(m.t.Context(), suiteCollection, docs)
