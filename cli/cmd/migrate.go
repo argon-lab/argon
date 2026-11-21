@@ -7,6 +7,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// migrateReportJSON is the JSON shape of `argon migrate-wal -o json`.
+func migrateReportJSON(project, projectID string, branchesVisited, entriesRewritten, entriesRemoved int) map[string]any {
+	return map[string]any{
+		"project":           project,
+		"project_id":        projectID,
+		"branches_visited":  branchesVisited,
+		"entries_rewritten": entriesRewritten,
+		"entries_removed":   entriesRemoved,
+	}
+}
+
 var migrateCmd = &cobra.Command{
 	Use:   "migrate-wal",
 	Short: "Migrate a project's WAL from schema v1 to v2",
@@ -37,6 +48,10 @@ The migration is idempotent: running it again finds nothing to rewrite.`,
 		result, err := services.Migrate.MigrateProject(context.Background(), project.ID)
 		if err != nil {
 			return fmt.Errorf("migration failed: %w", err)
+		}
+
+		if jsonOutput(cmd) {
+			return writeJSON(cmd, migrateReportJSON(project.Name, project.ID, result.BranchesVisited, result.EntriesRewritten, result.EntriesRemoved))
 		}
 
 		fmt.Printf("Done.\n")

@@ -17,6 +17,7 @@ func TestGCAndRestoreAcceptJSONOutput(t *testing.T) {
 		{"restore preview", restorePreviewCmd},
 		{"restore reset", restoreResetCmd},
 		{"restore branch", restoreBranchCmd},
+		{"migrate wal", migrateCmd},
 	} {
 		flag := tc.command.Flags().Lookup("output")
 		if flag == nil {
