@@ -29,7 +29,7 @@ func NormalizeBasePath(path string) (string, error) {
 			return "", fmt.Errorf("base path %q has an empty, . or .. segment", path)
 		}
 		for _, r := range segment {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-._~", r)) {
+			if !unreserved(r) {
 				return "", fmt.Errorf("base path %q may contain only letters, digits, -._~ and /", path)
 			}
 		}
@@ -72,4 +72,13 @@ func withBase(index []byte, base string) []byte {
 		return index
 	}
 	return []byte(strings.Replace(page, "<head>", `<head>`+"\n    "+`<base href="`+base+`/">`, 1))
+}
+
+// unreserved reports whether r is an RFC 3986 unreserved character.
+func unreserved(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	}
+	return strings.ContainsRune("-._~", r)
 }
