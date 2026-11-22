@@ -21,7 +21,7 @@ func startSlowBody(t *testing.T, endpoint string) net.Conn {
 	addr := strings.TrimSuffix(strings.TrimPrefix(endpoint, "http://"), "/mcp")
 	conn, err := net.Dial("tcp", addr)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 	_, err = fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"jsonrpc\":", addr)
 	require.NoError(t, err)
 	return conn

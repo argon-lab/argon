@@ -44,7 +44,7 @@ func serveOnFailingListener(t *testing.T) (*failingListener, <-chan error) {
 	t.Helper()
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	t.Cleanup(func() { inner.Close() })
+	t.Cleanup(func() { _ = inner.Close() })
 	l := &failingListener{Listener: inner, fail: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
