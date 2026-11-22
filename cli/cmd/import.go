@@ -56,6 +56,10 @@ type ImportResult struct {
 	ConsistentLSN         int64               `json:"consistent_lsn,omitempty"`
 	ConsistentClusterTime *walcli.ClusterTime `json:"consistent_cluster_time,omitempty"`
 	SourceImagesEnabled   []string            `json:"source_images_enabled,omitempty"`
+
+	// IndexNotes names collections whose index definitions were not
+	// recorded, for example because the source user lacks listIndexes.
+	IndexNotes []string `json:"index_notes,omitempty"`
 }
 
 // importCmd represents the import command
@@ -497,6 +501,9 @@ func printImportResult(result *ImportResult, dryRun bool) error {
 		fmt.Printf("\n📁 Imported Collections:\n")
 		for _, coll := range result.Collections {
 			fmt.Printf("   • %s\n", coll)
+		}
+		for _, note := range result.IndexNotes {
+			fmt.Printf("Note: %s\n", note)
 		}
 
 		fmt.Printf("\n🚀 Your data now has time travel capabilities!\n")

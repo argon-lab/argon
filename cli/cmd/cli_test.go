@@ -240,6 +240,11 @@ func TestCLIPinnedWorkflowJSON(t *testing.T) {
 	assertCaptureStopped()
 	call("pin", "list", "-p", project)
 	sandbox := call("pin", "sandbox", "-p", project, "--name", "baseline", "--as", "candidate")
+	for _, key := range []string{"indexes", "index_notes"} {
+		if _, ok := sandbox[key]; !ok {
+			t.Fatalf("pin sandbox JSON has no %q: %v", key, sandbox)
+		}
+	}
 	uriValue := sandbox["connection_string"].(string)
 	physical := strings.Split(strings.Split(uriValue, "://")[1], "/")[1]
 	physical = strings.Split(physical, "?")[0]
