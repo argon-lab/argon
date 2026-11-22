@@ -745,10 +745,10 @@ func (r *Router) undoRange(c *gin.Context) {
 			abortErr(c, http.StatusBadRequest, fmt.Errorf("merge_plan_id selects the merge's own changes; it cannot be combined with from_lsn, to_lsn or actor"))
 			return
 		}
-		var target string
-		target, plan, err = r.services.BuildMergeUndoPlan(c.Request.Context(), body.MergePlanID)
-		if err == nil && target != branchID {
-			err = fmt.Errorf("merge plan %s was not applied to this branch", body.MergePlanID)
+		_, plan, err = r.services.BuildMergeUndoPlan(c.Request.Context(), body.MergePlanID, branchID)
+		if errors.Is(err, walcli.ErrMergePlanNotFound) {
+			abortErr(c, http.StatusNotFound, err)
+			return
 		}
 	} else {
 		if body.FromLSN <= 0 {

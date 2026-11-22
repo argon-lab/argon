@@ -97,6 +97,13 @@ func (s *Service) BuildMergePlan(branch *wal.Branch, planID string, fromLSN int6
 	if planID == "" || fromLSN <= 0 {
 		return nil, fmt.Errorf("merge plan %q has no recorded merge position; it was applied by a release that did not record one, so undo it by LSN range", planID)
 	}
+	if changes == 0 {
+		// The merge changed nothing, so there is nothing to revert.
+		return &Plan{BranchID: branch.ID, FromLSN: fromLSN, ToLSN: branch.HeadLSN, Actor: "merge plan " + planID, HeadLSN: branch.HeadLSN}, nil
+	}
+	if fromLSN <= branch.HeadLSN && branch.IsDiscardedForRead(fromLSN, branch.HeadLSN) {
+		return nil, fmt.Errorf("merge plan %s was discarded by a restore reset of branch %s; nothing of it remains to undo", planID, branch.Name)
+	}
 	selected := func(entry *wal.Entry) bool {
 		if entry.TxnID == "merge:"+planID {
 			return true
@@ -109,6 +116,9 @@ func (s *Service) BuildMergePlan(branch *wal.Branch, planID string, fromLSN int6
 		return nil, err
 	}
 	if found < changes {
+		if !branch.IsLive() {
+			return nil, fmt.Errorf("branch %s holds %d of the merge's %d changes; the rest are no longer in its history", branch.Name, found, changes)
+		}
 		return nil, fmt.Errorf("capture has recorded %d of the merge's %d changes on branch %s; let capture catch up (or start it) and try again", found, changes, branch.Name)
 	}
 	return plan, nil

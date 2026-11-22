@@ -352,7 +352,12 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 				}
 				batch = append(batch, entry)
 			}
-			lastSafeToken = append(lastSafeToken[:0], stream.ResumeToken()...)
+			// An event that records nothing (such as the create of a
+			// collection the merge brings) does not move the resume point
+			// past an open merge marker: a restart must read the marker again.
+			if entry != nil || !merging.open {
+				lastSafeToken = append(lastSafeToken[:0], stream.ResumeToken()...)
+			}
 			if len(batch) < maxBatch || (len(batch) > 0 && batch[len(batch)-1].TxnID != "") {
 				continue
 			}

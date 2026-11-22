@@ -319,6 +319,10 @@ func (s *Services) WriterFor(projectName, branchName string) (*walwriter.Writer,
 	return writer, nil
 }
 
+// ErrMergePlanNotFound answers an undo by a merge plan that does not exist or
+// was not applied to the branch named.
+var ErrMergePlanNotFound = errors.New("merge plan not found")
+
 // UndoPlan is an undo plan, for callers outside the module.
 type UndoPlan = undo.Plan
 
@@ -341,14 +345,24 @@ func (s *Services) BuildUndoPlan(branchID string, fromLSN, toLSN int64, actor st
 // was merged into, and returns that branch's ID with the plan. Capture is
 // drained first, so a merge into a checked-out branch is undone only once
 // all of it is recorded.
-func (s *Services) BuildMergeUndoPlan(ctx context.Context, planID string) (string, *undo.Plan, error) {
+//
+// onBranch, when set, is the branch the caller is undoing on: a plan that
+// was not applied to it is reported as ErrMergePlanNotFound, before anything
+// about the plan is read out or capture is drained.
+func (s *Services) BuildMergeUndoPlan(ctx context.Context, planID, onBranch string) (string, *undo.Plan, error) {
 	id, err := primitive.ObjectIDFromHex(planID)
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid merge plan id %q", planID)
+		return "", nil, ErrMergePlanNotFound
 	}
 	mergePlan, err := s.Merge.GetPlan(ctx, id)
 	if err != nil {
-		return "", nil, err
+		return "", nil, ErrMergePlanNotFound
+	}
+	if onBranch != "" && mergePlan.TargetBranchID != onBranch {
+		return "", nil, ErrMergePlanNotFound
+	}
+	if mergePlan.WriteBack != nil {
+		return "", nil, fmt.Errorf("merge plan %s was written back to the database its target follows; undo it there", planID)
 	}
 	if mergePlan.Status != merge.StatusApplied {
 		return "", nil, fmt.Errorf("merge plan %s is %s, not applied: there is nothing to undo", planID, mergePlan.Status)
