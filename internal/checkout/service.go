@@ -2,10 +2,9 @@
 // "mongod as compute". A checked-out branch gets a physical database that
 // applications connect to with any unmodified MongoDB driver: queries,
 // indexes, aggregation and transactions are executed by mongod itself
-// instead of an in-process reimplementation. The WAL remains the versioned
-// source of truth; while a branch is live, its WAL is fed from the
-// database's change stream (see the ingest package) rather than the SDK
-// write path.
+// itself. The WAL remains the versioned source of truth; while a branch is
+// live, its WAL is fed from the database's change stream (see the ingest
+// package), and walwriter refuses it.
 package checkout
 
 import (

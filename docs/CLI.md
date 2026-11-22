@@ -4,9 +4,8 @@ Every command talks to `MONGODB_URI` (default `mongodb://localhost:27017`);
 metadata lives in the `argon_wal` database. Shared flags: `-p/--project`,
 `-b/--branch` (default `main`). Commands that advertise `-o/--output` support
 `table|json`; unsupported formats fail before work begins. JSON produces one
-value on stdout and diagnostics go to stderr. Projects/branches, sandbox, pin,
-diff/merge, undo, checkout/connect/release, history, snapshot, doctor and status
-all support JSON. The former global `--api-key`, `--project-id` and `--config`
+value on stdout and diagnostics go to stderr. Every command whose help lists
+`-o/--output` supports JSON. The former global `--api-key`, `--project-id` and `--config`
 options were removed because they did not affect execution. Configure MongoDB
 through `MONGODB_URI`; configure server auth through `ARGON_API_TOKEN`.
 
@@ -15,7 +14,7 @@ through `MONGODB_URI`; configure server auth through `ARGON_API_TOKEN`.
 ```
 argon projects create <name>                   project + main branch
 argon projects list
-argon branches create <name> -p P [--from B]   instant — a pointer, no copy
+argon branches create <name> -p P [--from B]   a pointer; copies no documents
 argon branches list   -p P
 argon branches delete <name> -p P              refused for main, branches with
                                                live children, pinned branches
@@ -33,13 +32,19 @@ argon release  -p P -b B      drop the physical db; history stays
 argon proxy [--listen 127.0.0.1:27018] [--allow-remote]
                               stable URIs: mongodb://host/<project>~<branch>;
                               non-loopback listeners need --allow-remote
-argon console [--port 1818]   local web console (REST API + UI), opens browser
+argon console [--host 127.0.0.1] [--port 1818] [--no-browser]
+                              local web console (REST API + UI)
 ```
 
 While a branch is checked out, its history is fed by `watch` (or the
 API/MCP servers' ingesters); SDK writes to it are refused — one source of
 truth. `checkout` and `connect` return a connection string only for the
 branch's own physical database.
+
+A checkout also builds the secondary indexes recorded for its branch, so
+unique constraints hold as on the source. A TTL index is built without its
+expiry and an index the data violates is skipped; results report `indexes`
+and `index_notes`. See [indexes in checkouts](OPERATIONS.md#indexes-in-checkouts).
 
 ## Import ("git clone")
 
@@ -49,7 +54,7 @@ argon import database --uri U --database D --project P --online [--follow [--all
 argon import database --uri U --database D --project P --source-quiesced [--yes]
 argon import database --uri U --database D --project P --dry-run
 argon import cleanup --project P --yes   # only after stopping a crashed importer
-argon import status
+argon import status -p P
 ```
 
 Imports auto-snapshot, so reads never replay the whole import. A real import
@@ -110,7 +115,8 @@ replica-set ID, each connection must prove the same ID. Otherwise following
 and resync match on the set name and at least one member host.
 
 `merge check`, `--write-back` and `--enable-source-images` require a replica-set
-ID recorded at import. Separate deployments can report the same set name and member
+ID, or a TLS-verified MongoDB Atlas connection (M0, Flex), recorded at import;
+see [MongoDB Atlas as a source](OPERATIONS.md#mongodb-atlas-as-a-source). Separate deployments can report the same set name and member
 hosts. For a project bound by name and hosts, detach it with
 `argon source detach -p P --yes`, then import the source online into a new
 project as a user allowed to run `replSetGetConfig`, such as one with the
@@ -397,8 +403,7 @@ argon mcp [--read-only] [--disable-tools a,b]
                                     such as argon_merge_apply to keep them manual.
                                     Starts without a database and connects in the
                                     background (releases after 2.3.1)
-argon migrate-wal --project P [--dry-run]      v1 → v2 schema migration
-argon migrate-wal --project P --output json     # {"project": ..., "branches_visited": ...}
+argon migrate-wal -p P [-o json]   v1 → v2 schema migration (idempotent)
 argon status                        health and capture checks
 argon metrics [-o json]             branches, sandboxes, checkouts and newest LSN per project
 ```

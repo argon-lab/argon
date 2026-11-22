@@ -3,7 +3,7 @@ module github.com/argon-lab/argon/api/v2
 go 1.26.11
 
 require (
-	github.com/argon-lab/argon/v2 v2.11.1
+	github.com/argon-lab/argon/v2 v2.12.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/stretchr/testify v1.9.0
 	go.mongodb.org/mongo-driver v1.17.7
@@ -60,6 +60,7 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	golang.org/x/arch v0.3.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/crypto/x509roots/fallback v0.0.0-20261115193255-739070949446 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect

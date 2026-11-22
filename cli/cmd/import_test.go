@@ -101,3 +101,24 @@ func TestCLIOnlineImportPreviewAndDryRun(t *testing.T) {
 		}
 	}
 }
+
+// The engine's import result carries index_notes; the CLI result must keep
+// them, or a source user without listIndexes imports with no visible note.
+func TestConvertToImportResultKeepsIndexNotes(t *testing.T) {
+	note := `collection "orders": the source user may not run listIndexes; checkouts build only _id`
+	got := convertToImportResult(map[string]any{"project_id": "p", "index_notes": []string{note}})
+	if !slices.Equal(got.IndexNotes, []string{note}) {
+		t.Fatalf("index notes lost: %#v", got.IndexNotes)
+	}
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := back["index_notes"]; !ok {
+		t.Fatalf("JSON output has no index_notes: %s", out)
+	}
+}

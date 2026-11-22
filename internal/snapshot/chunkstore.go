@@ -18,8 +18,9 @@ import (
 // their chunks.
 //
 // The MongoDB implementation keeps chunks in a collection, which works on
-// any deployment with zero extra infrastructure; object-storage backends
-// (S3/GCS) can implement the same interface when WAL segments move there.
+// any deployment with zero extra infrastructure. S3 (chunkstore_s3.go) and
+// filesystem (chunkstore_fs.go) backends implement the same interface; a
+// GCS backend is planned.
 type ChunkStore interface {
 	// Put stores data and returns its content address.
 	Put(ctx context.Context, data []byte) (string, error)

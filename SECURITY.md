@@ -30,12 +30,14 @@ vulnerability. The details are in
 - `argon proxy` is a router, not an authentication layer. It listens on
   loopback by default and forwards every connection to the upstream MongoDB,
   which is responsible for authenticating clients.
-- Connection strings returned for checked-out branches and sandboxes carry
-  the deployment's own MongoDB credentials. A sandbox isolates data, not
-  access: it is not a boundary between mutually untrusted clients, and its TTL
-  does not revoke credentials.
-- The anonymous demo mode scopes each visitor to one project and never returns
-  native connection strings.
+- By default, connection strings returned for checked-out branches and
+  sandboxes carry the engine's own MongoDB credentials; such a sandbox
+  isolates data, not access. `argon sandbox create --credential` (REST and
+  MCP: `credential: true`) issues a MongoDB user limited to that sandbox's
+  database instead. Discard or a sweep revokes it; expiry alone does not.
+- The anonymous demo mode (`ARGON_DEMO_MODE=1`; the hosted instance is
+  paused) scopes each visitor to one project and never returns native
+  connection strings.
 
 Reports that one of these stated boundaries can be crossed are in scope, as
 are crashes or data corruption reachable from the network or from untrusted

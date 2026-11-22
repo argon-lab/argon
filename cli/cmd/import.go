@@ -56,6 +56,10 @@ type ImportResult struct {
 	ConsistentLSN         int64               `json:"consistent_lsn,omitempty"`
 	ConsistentClusterTime *walcli.ClusterTime `json:"consistent_cluster_time,omitempty"`
 	SourceImagesEnabled   []string            `json:"source_images_enabled,omitempty"`
+
+	// IndexNotes names collections whose index definitions were not
+	// recorded, for example because the source user lacks listIndexes.
+	IndexNotes []string `json:"index_notes,omitempty"`
 }
 
 // importCmd represents the import command
@@ -152,17 +156,19 @@ checks and estimates document counts without making changes.
 
 --enable-source-images is experimental and requires
 ARGON_EXPERIMENTAL_SOURCE=1. It changes the source's collections during an
-import and requires a user allowed to run replSetGetConfig, for example one
-with the clusterMonitor role. This lets Argon record the replica-set ID at
-import, which is also required for write-back. You can instead enable
+import and requires a replica-set ID recorded at import (a user allowed to run
+replSetGetConfig, for example one with the clusterMonitor role) or, on MongoDB
+Atlas M0 and Flex, a verified TLS connection. Write-back needs the same. You can instead enable
 changeStreamPreAndPostImages directly in MongoDB.
 
 --source-quiesced is for a database nobody writes to: stop its writers and
 DDL first and keep them stopped until this command finishes. The result is a
 one-time copy that does not follow the source.
 
-Either way only ordinary documents are copied, not indexes or collection
-options, and a failed import is cleaned up automatically, except for
+Either way only ordinary documents are copied. Secondary index definitions are
+recorded, and checkouts and sandboxes build them; if the source user lacks
+listIndexes, checkouts get only _id and the result says so. Collection options
+are not copied. A failed import is cleaned up automatically, except for
 --enable-source-images, which stays in effect on the source and is named in
 the error. The connection
 string is used for this command only and is never stored; it can also be
@@ -383,7 +389,6 @@ Example:
 		fmt.Printf("   Created: %s\n", project.CreatedAt.Format(time.RFC3339))
 		fmt.Printf("   WAL Range: LSN %d - %d\n", info.EarliestLSN, info.LatestLSN)
 		fmt.Printf("   Total Entries: %d\n", info.EntryCount)
-		fmt.Printf("   Status: ✅ Ready for time travel and branching\n")
 
 		return nil
 	},
@@ -412,7 +417,7 @@ func init() {
 	importDatabaseCmd.Flags().Bool("online", false, "Import a replica-set database while writes continue and leave main following it")
 	importDatabaseCmd.Flags().Bool("follow", false, "With --online: keep following the source in the foreground after the import")
 	importDatabaseCmd.Flags().Bool("allow-inexact", false, "With --follow: see argon source follow --allow-inexact")
-	importDatabaseCmd.Flags().Bool("enable-source-images", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). With --online, turn on changeStreamPreAndPostImages for the SOURCE collections (requires replSetGetConfig privilege)")
+	importDatabaseCmd.Flags().Bool("enable-source-images", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). With --online, turn on changeStreamPreAndPostImages for the SOURCE collections (requires replSetGetConfig, or a verified MongoDB Atlas connection)")
 	importDatabaseCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
 	importDatabaseCmd.Flags().Int("batch-size", 1000, "Number of documents to process in each batch")
 	importDatabaseCmd.Flags().StringP("output", "o", "table", "Output format: table, json")
@@ -498,8 +503,11 @@ func printImportResult(result *ImportResult, dryRun bool) error {
 		for _, coll := range result.Collections {
 			fmt.Printf("   • %s\n", coll)
 		}
+		for _, note := range result.IndexNotes {
+			fmt.Printf("Note: %s\n", note)
+		}
 
-		fmt.Printf("\n🚀 Your data now has time travel capabilities!\n")
+		fmt.Printf("\nImport complete. Next:\n")
 		fmt.Printf("   Create branches: argon branches create <name> -p %s\n", result.ProjectID)
 		fmt.Printf("   Time travel: argon time-travel info -p %s -b main\n", result.ProjectID)
 	}

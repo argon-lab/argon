@@ -137,7 +137,7 @@ exists, and give the reason in the entry.
 
 ### Model and fuzz tests
 
-Two tests search for failures instead of checking fixed cases:
+These tests search for failures instead of checking fixed cases:
 
 - `TestModel_BranchHistoryMatchesBookkeeping` runs random sequences of writes,
   resets, forks, pins, snapshots, GC and branch deletion against the engine
@@ -151,10 +151,20 @@ Two tests search for failures instead of checking fixed cases:
 
   If you change how history is read — discarded ranges, snapshot selection,
   GC — run a few hundred seeds, not just the default set.
-- `FuzzRewrite` feeds arbitrary bytes to the wire proxy's frame parser:
+- `TestCorrectnessModel` checks WAL writes, branches, native capture,
+  snapshots, GC, undo, time travel, diff and merge against an independent
+  model. A failure prints a minimized `ARGON_MODEL_TRACE`; replay it with:
 
   ```bash
-  go test ./internal/wireproxy -run '^$' -fuzz FuzzRewrite -fuzztime 60s
+  ARGON_MODEL_TRACE='…' go test ./tests/wal -run TestCorrectnessModel -count=1
+  ```
+- The `TestFault*` tests in `tests/wal/fault_*_test.go` interrupt capture,
+  checkout, snapshot creation, GC and write-back, and check what survives.
+- `FuzzRewrite` feeds arbitrary bytes to the wire proxy's frame parser. CI
+  runs a fixed number of inputs; locally you can run for a duration:
+
+  ```bash
+  go test ./internal/wireproxy -run '^$' -fuzz FuzzRewrite -fuzztime 300000x
   ```
 
 ### Two rules the tests enforce
@@ -275,7 +285,7 @@ Two tests search for failures instead of checking fixed cases:
 ### Python Code
 
 - Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/)
-- Use type hints for Python 3.8+
+- Use type hints for Python 3.10+
 - Format with `black`
 - Docstrings for all public functions:
   ```python
@@ -375,9 +385,6 @@ We value all contributions. Contributors are:
 ### Debugging
 
 ```bash
-# Enable debug logging
-export ARGON_LOG_LEVEL=debug
-
 # Run with race detector
 (cd cli && go run -race . console --no-browser)
 
@@ -399,9 +406,6 @@ go test ./tests/wal -run TestBranch -count=1
 
 # Update all dependencies
 go get -u ./...
-
-# Generate mocks
-go generate ./...
 
 # Check for security issues
 gosec ./...

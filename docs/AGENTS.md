@@ -50,7 +50,11 @@ by default, so capture has to be running or a `diff` has to follow within that
 time. Two cases still need `argon collections prepare` (or
 `changeStreamPreAndPostImages: {enabled: true}` at creation): older versions,
 and a document that is updated and then changed again inside one transaction on
-a collection created moments earlier. A sandbox is a full physical copy; the
+a collection created moments earlier. A sandbox is a full physical copy, and
+its checkout builds the parent's recorded secondary indexes, so unique
+constraints hold as on the source; a TTL index is built without its expiry,
+and results list skipped indexes in `index_notes`
+([indexes in checkouts](OPERATIONS.md#indexes-in-checkouts)); the
 [benchmarks](https://github.com/argon-lab/benchmarks) measure how long one takes
 to be ready as `sandbox_capture_ready_ms`. Then:
 
@@ -140,8 +144,8 @@ REST, MCP and the web console omit the approval digest.
 The server speaks the handshake-based MCP revisions 2024-11-05, 2025-03-26
 and 2025-06-18 and answers with the client's revision when it is one of
 them. The per-request protocol introduced in 2026-07-28 (`server/discover`,
-no `initialize`) is not implemented yet; clients that support both fall back
-to the handshake.
+no `initialize`) is not supported and not currently planned; clients that
+support both fall back to the handshake.
 
 ## REST control plane
 
@@ -267,15 +271,16 @@ asynchronous — run `argon watch` (or use API/MCP sandboxes) behind it.
 [examples/pinned_agents.py](../examples/pinned_agents.py) runs two deterministic
 agent proposals against one pin, writes through PyMongo, checks isolation,
 reviews both diffs, merges the approved discount and discards the rejected
-proposal. Start `argon console --no-browser`, install `pymongo`, then run:
+proposal. [examples/openai_agents_sandbox.py](../examples/openai_agents_sandbox.py)
+runs an OpenAI Agents SDK agent against a sandbox the same way.
+Start `argon console --no-browser`, install `pymongo`, then run:
 
 ```bash
 python3 examples/pinned_agents.py --api http://127.0.0.1:1818
 ```
 
 Set `ARGON_API_TOKEN` in the example's environment when the local server uses
-a bearer token. This requires your own engine; the hosted demo does not
-provide database credentials. For code that should only access its sandbox,
+a bearer token. This requires your own engine. For code that should only access its sandbox,
 use a URI issued by `sandbox create --credential` or provision a restricted
 MongoDB user yourself.
 

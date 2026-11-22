@@ -601,8 +601,9 @@ The source binding in `wal_sources` keeps the identity from import. Every
 connection to an ID-bound source must prove the same replica-set ID. A
 binding by set name and member hosts supports following and resync when
 the set name and at least one recorded member still match. Write-back and
-enabling source images require a recorded ID, since distinct deployments
-can report the same name and hosts. A network failure during
+enabling source images require a recorded ID, or a binding that recorded a
+TLS-verified MongoDB Atlas connection (`atlas_tls`), since distinct
+deployments can report the same name and hosts. A network failure during
 `replSetGetConfig` stops the identity check with an error.
 
 A snapshot read at a cluster time shows a document after everything that
@@ -787,8 +788,9 @@ stays `writing_back` and cannot be reused.
 ### Limits
 
 - Replica-set sources only. Sharded clusters are refused.
-- Write-back tests have not covered Atlas, deployments with access control,
-  multi-member elections, sharded sources or MongoDB versions other than 7.0.
+- Write-back is tested with access control, TLS, three-member elections,
+  MongoDB 6.0, 7.0 and 8.0, and MongoDB Atlas M0 and M10 (from 2.12.0).
+  Sharded sources are not tested.
 - Validators and collection options are not followed. Index builds and
   drops on the source are recorded for checkouts (from 2.11.0). Collection
   drops and renames end following until `argon source resync` is run; a
@@ -906,7 +908,7 @@ entries removed). Migration is idempotent.
 ## Capture and lifecycle prerequisites
 
 Use MongoDB 6+ as a writable replica set; the regression environment is MongoDB
-7.0.14. `argon doctor` checks real image/transaction permissions. Checkout
+7.0.45, and CI also runs MongoDB 6.0 and 8.0 sources and an 8.0 engine. `argon doctor` checks real image/transaction permissions. Checkout
 prepares materialized collections itself, and capture enables images on a
 collection the application creates as soon as it sees it.
 
@@ -954,8 +956,9 @@ outside the guarantee. Explicit discard intentionally removes the branch and
 its history, after pin/child preflight checks. Coordinate destructive lifecycle
 operations through one control-plane owner: checkout serialization is local
 to a Service, not a distributed lease for simultaneous first checkout across
-processes. Native URI credentials are deployment credentials, not per-sandbox
-security isolation.
+processes. Native URIs carry the engine's deployment credentials unless the
+sandbox was created with `--credential`, which issues a user scoped to its
+database.
 
 ## Known limitations and roadmap
 
@@ -1012,7 +1015,8 @@ Planned next:
 | `wal_pins` | Dataset pins (named immutable branch states) |
 | `wal_snapshot_chunks` | Content-addressed snapshot data |
 | `wal_ingest_state` | Durable capture boundary, actor, resume token and last health report; for a followed branch also its source position, consistent point and inexact ranges |
-| `wal_sources` | Which external database a branch follows: database, hosts, replica-set name and ID. No credentials |
+| `wal_sources` | Which external database a branch follows: database, hosts, replica-set name and ID, or `atlas_tls`. No credentials |
+| `wal_index_specs` | Secondary-index definitions recorded per branch and collection, built by checkouts |
 | `wal_merge_plans` | Merge plans; a written-back plan also records its source session and commit |
 | `wal_snapshot_locks` | Persistent publication/GC locks; see operations recovery |
 | `wal_reclaim_floors` | Per (branch, collection): the LSN at or below which GC has deleted entries |

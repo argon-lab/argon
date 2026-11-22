@@ -32,6 +32,14 @@ printed, and the command stays in the foreground until interrupted. Without
 --watch, run "argon watch" for the sandbox, or create it through "argon mcp"
 or "argon console", which manage capture themselves.
 
+With --credential, the connection string carries a MongoDB user that can read
+and write only this sandbox's database; discard or the sweep after its TTL
+revokes it. It needs an engine connection that enforces authentication and may
+create users, so it is refused when the engine's deployment is MongoDB Atlas.
+
+The checkout builds the parent's recorded secondary indexes, so unique
+constraints hold as on the source; index_notes lists any it skipped.
+
 Collections the agent creates are captured exactly while capture is running.
 Run "argon collections prepare" first only when writes to a new collection may
 wait longer than MongoDB's snapshot history (five minutes by default) before

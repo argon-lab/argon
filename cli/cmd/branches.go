@@ -8,7 +8,7 @@ import (
 
 var branchesCmd = &cobra.Command{
 	Use:   "branches",
-	Short: "Manage branches with instant creation",
+	Short: "Create, list and delete branches",
 	Long:  `Create branches with a metadata write; checkout materializes their data.`,
 }
 
@@ -55,10 +55,9 @@ var branchesCreateCmd = &cobra.Command{
 		if jsonOutput(cmd) {
 			return writeJSON(cmd, map[string]any{"branch": branch})
 		}
-		fmt.Printf("⚡ Created branch '%s' (a metadata write, no data copied)\n", branch.Name)
+		fmt.Printf("Created branch '%s' (a metadata write, no data copied)\n", branch.Name)
 		fmt.Printf("   Project: %s\n", projectName)
 		fmt.Printf("   Based on: %s\n", fromBranch)
-		fmt.Printf("   Ready for instant experimentation!\n")
 		fmt.Println()
 		fmt.Println("Next steps:")
 		fmt.Printf("  argon time-travel info --project %s --branch %s\n", projectName, branchName)
@@ -107,7 +106,6 @@ var branchesListCmd = &cobra.Command{
 			fmt.Printf("🌿 %s\n", branch.Name)
 			fmt.Printf("   LSN Range: %d → %d\n", branch.BaseLSN, branch.HeadLSN)
 			fmt.Printf("   Created: %v\n", branch.CreatedAt.Format("2006-01-02 15:04:05"))
-			fmt.Printf("   Features: ✅ Time travel, ✅ Instant creation\n")
 			fmt.Println()
 		}
 

@@ -154,6 +154,10 @@ type SourceInfo struct {
 	LastCapturedAt time.Time `json:"last_captured_at,omitempty"`
 	LastEventAt    time.Time `json:"last_event_at,omitempty"`
 	LastEventLagMS int64     `json:"last_event_lag_ms,omitempty"`
+	// WaitingSince is set while a running follower holds a change it has
+	// read but not stored: it waits for the source's next oplog entry, which
+	// on an idle source takes ten to twenty seconds.
+	WaitingSince *time.Time `json:"waiting_since,omitempty"`
 }
 
 // SourceOwner describes the run recorded as holding the followed branch's lease.
@@ -198,7 +202,7 @@ func openSource(ctx context.Context, binding *source.Binding, uri string) (*mong
 	if err != nil {
 		return nil, err
 	}
-	identity, err := source.Identify(ctx, client)
+	identity, err := source.IdentifyAt(ctx, client, uri)
 	if err == nil {
 		err = binding.Verify(identity)
 	}
@@ -228,11 +232,14 @@ func (s *Services) SourceStatus(ctx context.Context, projectName string) (*Sourc
 		HeadLSN: branch.HeadLSN, State: status.State, Error: status.Error, Health: *status.Health, InexactRanges: []InexactRange{},
 		LeaseExpired: status.SourceLeaseExpired, Unverified: status.SourceUnverified != nil,
 	}
-	if binding.ReplicaSetID == "" {
-		info.WriteBackUnavailableReason = "requires a replica-set ID recorded at import"
+	if binding.ReplicaSetID == "" && !binding.AtlasTLS {
+		info.WriteBackUnavailableReason = "requires a replica-set ID recorded at import, or an import over a verified TLS connection to MongoDB Atlas"
 	}
 	info.UpdatedAt, info.LastCapturedAt = status.UpdatedAt, status.LastCapturedAt
 	info.LastEventAt, info.LastEventLagMS = status.LastEventAt, status.LastEventLagMS
+	if since := status.WaitingSince; !since.IsZero() && status.State == "running" && !status.SourceLeaseExpired {
+		info.WaitingSince = &since
+	}
 	if owner := status.Owner; owner != nil {
 		info.Owner = &SourceOwner{Kind: owner.Kind, Host: owner.Host, PID: owner.PID, StartedAt: owner.StartedAt, HeartbeatAt: owner.HeartbeatAt}
 	}
@@ -552,7 +559,7 @@ func verifyPlanSource(plan *merge.Plan, binding *source.Binding) error {
 	if err := binding.RequireReplicaSetID(); err != nil {
 		return fmt.Errorf("write-back refused: %w", err)
 	}
-	if binding.ProjectID != plan.ProjectID || binding.Database != plan.FollowedDatabase || binding.ReplicaSetID != plan.FollowedReplicaSetID {
+	if binding.ProjectID != plan.ProjectID || binding.Database != plan.FollowedDatabase || binding.WriteIdentity() != plan.FollowedReplicaSetID {
 		return errors.New("the source binding has changed since preview; preview again with this version")
 	}
 	return nil

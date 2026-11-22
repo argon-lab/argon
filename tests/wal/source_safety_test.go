@@ -250,7 +250,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/importer/online.go:importOnline CatchUp",
 		"internal/importer/online.go:importOnline EnableImages",
 		"internal/importer/online.go:importOnline prepareOnline",
-		"internal/importer/online.go:prepareOnline Identify",
+		"internal/importer/online.go:prepareOnline IdentifyAt",
 		"internal/importer/online.go:prepareOnline PrimaryTime",
 		"internal/importer/online.go:prepareOnline ProbeStream",
 		"internal/importer/service.go:ImportDatabase DryRunOnline",
@@ -339,6 +339,8 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/project/wal/service.go:NewProjectService CreateMany",
 		"internal/snapshot/service.go:NewService NewServiceWithStore",
 		"internal/snapshot/service.go:NewServiceWithStore CreateMany",
+		// IdentifyAt adds a check of the connection string to Identify.
+		"internal/source/atlas.go:IdentifyAt Identify",
 		"internal/source/source.go:Bind InsertOne",
 		// Alters the source to enable images when requested.
 		"internal/source/source.go:EnableImages RunCommand",
@@ -373,7 +375,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"pkg/walcli/source.go:FollowSource Follow",
 		"pkg/walcli/source.go:FollowSource resyncSource",
 		"pkg/walcli/source.go:ResyncSource resyncSource",
-		"pkg/walcli/source.go:openSource Identify",
+		"pkg/walcli/source.go:openSource IdentifyAt",
 		"pkg/walcli/source.go:resyncSource Resync",
 	}, sites, "a database write or command was added to, or removed from, code that can hold a source connection; check what it is sent to, then update this list")
 }

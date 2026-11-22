@@ -218,9 +218,10 @@ var pinSandboxCmd = &cobra.Command{
 			return err
 		}
 		if jsonOutput(cmd) {
-			return writeJSON(cmd, map[string]any{"branch_id": info.BranchID, "name": info.BranchName, "connection_string": services.BranchConnectionString(info.PhysicalDB), "expires_at": info.ExpiresAt, "fork_lsn": lsn, "capture_managed": false})
+			return writeJSON(cmd, map[string]any{"branch_id": info.BranchID, "name": info.BranchName, "connection_string": services.BranchConnectionString(info.PhysicalDB), "expires_at": info.ExpiresAt, "fork_lsn": lsn, "capture_managed": false, "indexes": info.Indexes, "index_notes": info.IndexNotes})
 		}
-		fmt.Printf("Sandbox %q forked from pin %q (LSN %d)\n", info.BranchName, name, lsn)
+		fmt.Printf("Sandbox %q forked from pin %q (LSN %d), %d secondary index(es)\n", info.BranchName, name, lsn, info.Indexes)
+		printIndexNotes(cmd, info.IndexNotes)
 		fmt.Printf("Connect: %s\n", services.BranchConnectionString(info.PhysicalDB))
 		fmt.Printf("Expires: %s\n", info.ExpiresAt.Format(time.RFC3339))
 		fmt.Printf("Run \"argon watch -p %s -b %s\" to capture writes as history.\n", projectName, info.BranchName)

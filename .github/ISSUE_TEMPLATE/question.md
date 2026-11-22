@@ -16,6 +16,6 @@ What would you like to know about Argon?
 - Are you following any specific documentation or tutorial?
 
 **Environment**
-- Argon Version: [e.g. v1.0.0]
-- Deployment Method: [e.g. Docker, Kubernetes, Binary]
-- Use Case: [e.g. ML experiments, data versioning, A/B testing]
+- Argon Version: [e.g. 2.12.0]
+- Deployment Method: [e.g. npm, Homebrew, source build, Docker]
+- Use Case: [e.g. agent sandboxes, eval pins, following a production database]

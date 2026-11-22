@@ -34,9 +34,10 @@ the database it was imported from: its main branch follows that database.
 The source connection string is given to commands that contact the source
 (--uri, or the ARGON_SOURCE_URI environment variable) and is never stored.
 "argon merge apply <plan> --write-back --approve <digest>" writes the documents
-in a plan and requires a replica-set ID recorded at import.
-The --enable-source-images option also requires that ID and changes how the
-source stores writes. Both --enable-source-images and --auto-resync are
+in a plan and requires a replica-set ID recorded at import, or, on a MongoDB
+Atlas tier that hides the ID (M0, Flex), an import over a verified TLS connection.
+The --enable-source-images option also requires that ID, or the verified Atlas
+connection, and changes how the source stores writes. Both --enable-source-images and --auto-resync are
 experimental and require ARGON_EXPERIMENTAL_SOURCE=1. Operators can also enable
 changeStreamPreAndPostImages directly in MongoDB. Argon never drops,
 renames or rewrites the source database.`,
@@ -72,7 +73,8 @@ following stops as degraded. Two things avoid that:
                           documents for as long as the oplog keeps them. This
                           changes the source: MongoDB then stores a pre-image
                           of every updated or deleted document. The project
-                          must have recorded the replica-set ID at import.
+                          must have recorded the replica-set ID, or a verified
+                          MongoDB Atlas connection, at import.
                           Argon verifies the saved position and opens the
                           stream first. A degraded position must recover or
                           be resynced before the collections are altered.
@@ -209,6 +211,10 @@ func printSourceStatus(cmd *cobra.Command, info *walcli.SourceInfo) {
 	}
 	if !info.LastEventAt.IsZero() {
 		fmt.Fprintf(out, "  Last change: %s (stored %d ms after it happened)\n", info.LastEventAt.Format(time.RFC3339), info.LastEventLagMS)
+	}
+	if info.WaitingSince != nil {
+		fmt.Fprintf(out, "  Waiting:     a change made at %s has been read and is stored when the source writes again. On an idle source that takes 10 to 20 seconds; any other write to the source deployment ends the wait.\n",
+			info.WaitingSince.Format(time.RFC3339))
 	}
 	if info.ResyncUnfinished {
 		fmt.Fprintf(out, "  Resync:      UNFINISHED since %s. Main is between its last consistent state and the source's current one. If the run was interrupted, `argon source resync -p %s` completes it.\n",
@@ -369,7 +375,7 @@ func init() {
 	}
 	sourceFollowCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceFollowCmd.Flags().Bool("allow-inexact", false, "Continue past updates whose exact documents the source no longer serves, recording the range as inexact")
-	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID recorded at import)")
+	sourceFollowCmd.Flags().Bool("enable-source-images", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Turn on changeStreamPreAndPostImages for the SOURCE collections (requires a replica-set ID, or a verified MongoDB Atlas connection, recorded at import)")
 	sourceFollowCmd.Flags().Bool("auto-resync", false, "Experimental (requires ARGON_EXPERIMENTAL_SOURCE=1). Complete an unfinished resync or repair a source stream gap, then continue following")
 	sourceResyncCmd.Flags().String("uri", "", "Source connection string (default $"+walcli.SourceURIEnv+"); never stored")
 	sourceResyncCmd.Flags().Bool("force", false, "Resync even though following did not end as degraded")

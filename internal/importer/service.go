@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"github.com/argon-lab/argon/v2/internal/indexspec"
 	projectwal "github.com/argon-lab/argon/v2/internal/project/wal"
 	"github.com/argon-lab/argon/v2/internal/source"
@@ -119,8 +120,7 @@ func (s *ImportService) recordIndexes(ctx context.Context, collection *mongo.Col
 		return "", nil
 	}
 	specs, err := indexspec.FromCollection(ctx, collection)
-	var denied mongo.CommandError
-	if errors.As(err, &denied) && denied.Code == 13 {
+	if dberr.Unauthorized(err) {
 		return fmt.Sprintf("indexes of %s were not recorded: the source user lacks listIndexes, so checkouts build only the _id index", collection.Name()), nil
 	}
 	if err != nil {
@@ -424,9 +424,9 @@ func unsupportedCollectionType(name, collectionType string) error {
 
 // importCollection imports a single collection into the WAL system.
 // Imports write put entries directly (one batched append per batch of
-// documents) instead of going through the interceptor: the target project
-// is freshly created, so per-document duplicate checks and filter
-// resolution would be pure overhead.
+// documents) instead of going through walwriter: the target project is
+// freshly created, so its per-document pre-image lookups would be pure
+// overhead.
 func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Database, collectionName string, branch *wal.Branch, batchSize int) (int64, int64, error) {
 	collection := sourceDB.Collection(collectionName)
 

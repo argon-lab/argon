@@ -178,8 +178,13 @@ read, and `argon source status` shows which (`identity`):
   read the ID. Two deployments can present the same set name and member
   hosts, for example through a tunnel or in clusters with the same internal
   names. This check supports following and resync. Write-back and
-  `--enable-source-images` require an ID recorded at import, and
-  `argon source status` reports when the binding rules out write-back.
+  `--enable-source-images` require an ID, or a verified Atlas identity,
+  recorded at import, and `argon source status` reports when the binding
+  rules out write-back.
+- **The set name and TLS-verified Atlas hosts**, on Atlas tiers that refuse
+  `replSetGetConfig` (M0, Flex). This identity supports following, merge
+  check, write-back and source images; see
+  [MongoDB Atlas as a source](#mongodb-atlas-as-a-source).
 
 A network failure while reading `replSetGetConfig` aborts the preflight.
 
@@ -217,7 +222,9 @@ source online into a new project. Use a source user allowed to run
   between one and two check intervals if `periodicNoopIntervalSecs` was
   changed. Any other write to the source deployment ends this wait at once.
   The “stored N ms after it happened” time in `argon source status` includes
-  this wait.
+  this wait. While a change waits, `argon source status` shows a `Waiting:`
+  line with the time the change was made (`waiting_since` in JSON output),
+  so an unmoved head is not mistaken for a stuck follower.
 - **Exact mode preserves source documents.** An insert or replacement carries its
   document. An update's document is read from the source as of the update's
   own cluster time and stored byte for byte.
@@ -302,7 +309,7 @@ include the following.
     source's existing collections, so updates carry their own documents for
     as long as the oplog keeps them and no reads are needed. The option has
     its own experimental gate and requires `ARGON_EXPERIMENTAL_SOURCE=1`
-    and a replica-set ID at import. Operators can enable
+    and a replica-set ID or verified Atlas identity at import. Operators can enable
     `changeStreamPreAndPostImages` directly on MongoDB. MongoDB then stores
     a pre-image of every updated or deleted document in
     `config.system.preimages` until it expires with the oplog (or
@@ -456,6 +463,7 @@ instead:
 
 ```sh
 argon merge preview -p myapp -b <sandbox> --output json
+argon merge check <plan-id>        # optional: unique-key collisions with the source
 argon merge apply <plan-id> --write-back --approve <approval_digest>
 ```
 
@@ -464,7 +472,8 @@ keyfile and TLS with a private CA, and a separate engine with a non-root
 account. Three-member tests step down the source primary during follow,
 online copy and an open write-back transaction. The version matrix pairs
 6.0.28 and 8.0.38 sources with a 7.0.45 engine and a 7.0.45 source with an
-8.0.38 engine. Atlas itself and sharded sources remain untested.
+8.0.38 engine. Atlas is covered in [MongoDB Atlas as a source](#mongodb-atlas-as-a-source);
+sharded sources remain untested.
 
 #### Ordinary apply versus write-back
 
@@ -614,9 +623,11 @@ name order, and undo can restore fields in name order, as in 2.8.0.
 - If a document's only prior WAL row is stored under a key the single-key read
   misses, a programmatic write records no pre-image and undo deletes the
   document. [#154](https://github.com/argon-lab/argon/issues/154)
-- If a snapshot covers a reclaimed WAL row but an older row remains, a
-  programmatic write can record the older row as its pre-image and undo
-  restores that older value. [#155](https://github.com/argon-lab/argon/issues/155)
+- Fixed in 2.11.0: an interrupted garbage collection could leave an older
+  row behind a reclaimed newer one, so a programmatic write recorded that
+  row as its pre-image. Run `argon gc` once after upgrading; until then such
+  a history still reads the older row.
+  [#155](https://github.com/argon-lab/argon/issues/155)
 
 ### What Argon can never do to a source
 
@@ -638,6 +649,81 @@ transaction body (single-document insert, replace and delete), the `collMod`
 of `--enable-source-images`, and read-only commands (`hello`,
 `replSetGetConfig`, `find`, `collStats`). The list pins where such calls are,
 not what a future one would do; a reviewer still has to look.
+
+### MongoDB Atlas as a source
+
+From 2.12.0 an Atlas cluster can be imported, followed and written back to
+with the engine and its sandboxes running elsewhere, for example on a
+self-managed replica set. This was tested on a free M0 and a dedicated M10
+cluster running MongoDB 8.0, with least-privilege custom roles.
+
+**How the source is identified.** Atlas's shared tiers (M0, Flex) refuse
+`replSetGetConfig`, so the replica-set ID cannot be recorded there. In its
+place Argon accepts a connection that reaches Atlas with full TLS
+verification:
+
+- every seed host and every member the cluster reports is under
+  `mongodb.net`;
+- TLS is on, the driver checks each server certificate and host name, and
+  the connection string sets no `tlsInsecure`, `tlsAllowInvalidCertificates`,
+  `tlsAllowInvalidHostnames`, `tlsDisableOCSPEndpointCheck` or custom
+  `tlsCAFile`;
+- every TLS handshake of the connection also verifies against the Mozilla
+  root program that Argon ships, not only against the machine's trust store.
+
+Only Atlas can obtain a certificate for those hosts from a public authority,
+so a tunnel or another deployment cannot stand in for the cluster. The third
+condition matters on machines that trust a private root (a corporate root,
+`mkcert`, `SSL_CERT_FILE`): such a root could issue a certificate for an
+Atlas host name, and it is not accepted for this identity. Behind a
+TLS-inspecting proxy, reading and following still work, but a shared-tier
+source cannot be written to. After the connection is identified as Atlas,
+any later handshake that does not verify against those roots is refused. The import records this
+(`argon source status` shows "replica-set name and TLS-verified MongoDB
+Atlas hosts"), and every later command must connect the same way, or it is
+refused. A dedicated tier that allows `replSetGetConfig` records the ID as
+before.
+
+**Roles.** Create a custom role on the source database in the Atlas UI
+(Database Access, Custom Roles) or with the Atlas Admin API. Atlas spells the
+actions in capitals. No cluster action is needed:
+
+| Command | Atlas custom role actions on the source database |
+| --- | --- |
+| `import database --online` | `FIND`, `CHANGE_STREAM`, `LIST_COLLECTIONS`; add `LIST_INDEXES` so that sandboxes get the source's indexes |
+| `source follow` | `FIND`, `CHANGE_STREAM` |
+| `merge check` | `FIND`, `LIST_INDEXES` |
+| `merge apply --write-back` | `FIND`, `LIST_COLLECTIONS`, `INSERT`, `UPDATE`, `REMOVE` |
+| `--enable-source-images` | the import or follow actions plus `COLL_MOD` |
+
+**What was tested on M0 and M10:**
+
+- Each role above was given to its own user and worked.
+- Each role with one action removed was refused, with an error naming what
+  was missing, and the source was left unchanged.
+- Without `LIST_INDEXES`, the import still completed and its `index_notes`
+  named the collection.
+- An Atlas connection string with `tlsInsecure=true` was refused for a
+  project imported over a verified connection.
+
+**Limits:**
+
+- Atlas returns its own error code (8000) for missing privileges on shared
+  tiers; Argon treats it like `Unauthorized`.
+- On an idle dedicated cluster the import and the last followed change take
+  up to about ten seconds longer, until Atlas advances the cluster time.
+- `argon sandbox create --credential` needs `createUser` on the engine's
+  deployment, which Atlas never allows. Keep the engine on a deployment you
+  administer, or create sandbox users in the Atlas UI or Admin API.
+- Atlas Search indexes are not secondary indexes and are not built in
+  sandboxes.
+- Running the engine itself on Atlas was not part of these tests.
+- The identity rests on host names under `mongodb.net`. Other Atlas services
+  under that domain (Data Federation, Stream Processing) present valid
+  certificates too; they answer as sharded clusters or not as the imported
+  replica set, which import and every later check refuse. A cluster deleted
+  and recreated under the same name in the same project can reuse its host
+  names; on a shared tier, treat that as a new source and import again.
 
 ### Source permissions
 
@@ -833,12 +919,11 @@ not deterministic. The v2 materializer refuses v1 data entries with an
 error naming the fix:
 
 ```bash
-argon migrate-wal --project myapp --dry-run
 argon migrate-wal --project myapp
 ```
 
 Migration rewrites entries in place (parents before children, LSNs
-preserved), is idempotent, and needs no downtime for readers of already-
+preserved), is idempotent (running it again finds nothing to rewrite), and needs no downtime for readers of already-
 migrated branches.
 
 ## Monitoring

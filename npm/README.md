@@ -23,20 +23,20 @@ npx --yes --allow-scripts=argonctl argonctl --version
 
 ## Usage
 
-Use MongoDB 7 or newer configured as a replica set. A standalone MongoDB server cannot provide the change streams and transactions Argon requires.
+Use MongoDB 6 or newer (a current supported patch) configured as a replica set. A standalone MongoDB server cannot provide the change streams and transactions Argon requires.
 
 ```bash
 export MONGODB_URI='mongodb://localhost:27017/?replicaSet=rs0'
 
 argon projects create my-app
-argon branches create feature-x --project my-app
-argon time-travel info --project my-app --branch feature-x
+argon sandbox create -p my-app --ttl 1h --watch   # prints a connection string
+argon diff -p my-app -b <sandbox>                 # in another terminal
 
 # Start the MCP server for an MCP client.
 argon mcp
 ```
 
-Native writes require the API server, MCP server, or a running `argon ingest` process to capture history. `time-travel info` lists available history; use `time-travel query --project my-app --branch feature-x --lsn <LSN> --collection <collection>` to read a retained version.
+Native writes are captured by `argon console`, the API server, `argon mcp`, or a running `argon watch -p <project> -b <branch>` (`sandbox create --watch` runs it for you). See the [quick start](https://github.com/argon-lab/argon/blob/master/docs/QUICK_START.md) for a full review, merge and undo.
 
 ## Building from source
 

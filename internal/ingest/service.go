@@ -20,6 +20,7 @@ import (
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/checkout"
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"github.com/argon-lab/argon/v2/internal/indexspec"
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
@@ -64,8 +65,7 @@ func (s *Service) refreshIndexes(ctx context.Context, branch *wal.Branch, src *m
 	for _, name := range onSource {
 		present[name] = true
 		specs, err := indexspec.FromCollection(ctx, src.Collection(name))
-		var denied mongo.CommandError
-		if errors.As(err, &denied) && denied.Code == 13 {
+		if dberr.Unauthorized(err) {
 			return nil
 		}
 		if err != nil {
@@ -500,7 +500,8 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 
 	case "drop", "dropDatabase", "rename":
 		// Collection-level DDL carries no document images; representing it
-		// needs dedicated WAL operations (roadmap). Loud, not silent:
+		// would need dedicated WAL operations, which do not exist. Loud,
+		// not silent:
 		return nil, &CaptureError{Message: fmt.Sprintf("%s on %s is not captured; branch history is incomplete", event.OperationType, event.NS.Collection)}
 	case "create":
 		if err := s.ensurePrePostImages(ctx, physical, event.NS.Collection); err != nil {
