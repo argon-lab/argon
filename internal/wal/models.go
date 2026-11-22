@@ -382,3 +382,11 @@ func (b *Branch) CollectionStart(collection string, at int64) int64 {
 	}
 	return 0
 }
+
+// MergeMarkerCollection is where a merge into a checked-out branch writes a
+// marker, in the same transaction and before its changes, so that capture can
+// attribute that transaction's writes to the merge ("merge:<source>", with
+// the plan in metadata merge_plan) rather than to the checkout's own actor.
+// The merge deletes the marker in the same transaction, and capture records
+// neither event.
+const MergeMarkerCollection = "__argon_merge_markers"

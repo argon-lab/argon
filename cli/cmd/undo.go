@@ -4,8 +4,28 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/argon-lab/argon/v2/pkg/walcli"
 	"github.com/spf13/cobra"
 )
+
+type undoPlan = walcli.UndoPlan
+
+// requireBranchInProject refuses a merge plan whose target is outside the
+// project the command was given.
+func requireBranchInProject(services *walcli.Services, projectName, branchID string) error {
+	project, err := services.Projects.GetProjectByName(projectName)
+	if err != nil {
+		return err
+	}
+	branch, err := services.Branches.GetBranchByID(branchID)
+	if err != nil {
+		return err
+	}
+	if branch.ProjectID != project.ID {
+		return fmt.Errorf("merge plan's target branch %s is not in project %s", branch.Name, projectName)
+	}
+	return nil
+}
 
 var undoCmd = &cobra.Command{
 	Use:   "undo",
@@ -18,6 +38,12 @@ it is audited and can be undone in turn.
 With --actor, only that actor's writes are reverted; documents another
 actor modified afterwards are reported as conflicts and skipped.
 
+With --merge <plan-id>, exactly the changes that merge plan applied are
+reverted, on the branch it was merged into, including a checked-out branch
+whose merged writes capture recorded. Later writes to the same documents are
+reported as conflicts and skipped. The undo is refused while capture has not
+recorded the whole merge.
+
 Use "argon time-travel info" to find LSNs, and --dry-run to preview.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName, _ := cmd.Flags().GetString("project")
@@ -26,25 +52,45 @@ Use "argon time-travel info" to find LSNs, and --dry-run to preview.`,
 		toLSN, _ := cmd.Flags().GetInt64("to-lsn")
 		actor, _ := cmd.Flags().GetString("actor")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
-		if projectName == "" {
-			return fmt.Errorf("--project is required")
-		}
-		if fromLSN <= 0 {
-			return fmt.Errorf("--from-lsn is required")
+		mergePlan, _ := cmd.Flags().GetString("merge")
+		if mergePlan != "" {
+			if fromLSN != 0 || toLSN != 0 || actor != "" || branchName != "" {
+				return fmt.Errorf("--merge selects the merge's own changes on the branch it was merged into; it cannot be combined with --branch, --from-lsn, --to-lsn or --actor")
+			}
+		} else {
+			if projectName == "" {
+				return fmt.Errorf("--project is required")
+			}
+			if fromLSN <= 0 {
+				return fmt.Errorf("--from-lsn is required")
+			}
 		}
 
 		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
 		}
-		branchID, err := resolveBranch(services, projectName, branchName)
-		if err != nil {
-			return err
-		}
-
-		plan, err := services.BuildUndoPlan(branchID, fromLSN, toLSN, actor)
-		if err != nil {
-			return fmt.Errorf("failed to plan undo: %w", err)
+		var branchID string
+		var plan *undoPlan
+		if mergePlan != "" {
+			branchID, plan, err = services.BuildMergeUndoPlan(context.Background(), mergePlan)
+			if err != nil {
+				return fmt.Errorf("failed to plan undo: %w", err)
+			}
+			if projectName != "" {
+				if err := requireBranchInProject(services, projectName, branchID); err != nil {
+					return err
+				}
+			}
+		} else {
+			branchID, err = resolveBranch(services, projectName, branchName)
+			if err != nil {
+				return err
+			}
+			plan, err = services.BuildUndoPlan(branchID, fromLSN, toLSN, actor)
+			if err != nil {
+				return fmt.Errorf("failed to plan undo: %w", err)
+			}
 		}
 
 		if !jsonOutput(cmd) {
@@ -97,5 +143,6 @@ func init() {
 	undoCmd.Flags().Int64("to-lsn", 0, "End of the range (default: branch head)")
 	undoCmd.Flags().String("actor", "", "Only revert writes by this actor")
 	undoCmd.Flags().Bool("dry-run", false, "Preview without applying")
+	undoCmd.Flags().String("merge", "", "Revert exactly the changes of this applied merge plan")
 	rootCmd.AddCommand(undoCmd)
 }

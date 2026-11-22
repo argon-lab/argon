@@ -114,6 +114,14 @@ type Plan struct {
 	Strategy       string             `bson:"strategy,omitempty" json:"strategy,omitempty"`
 	CreatedAt      time.Time          `bson:"created_at" json:"created_at"`
 	AppliedAt      *time.Time         `bson:"applied_at,omitempty" json:"applied_at,omitempty"`
+	// MergeLSN is the LSN of the merge's OpMerge record and MergeFromLSN
+	// the first LSN its changes can hold: the first of the WAL entries it
+	// appended, or the merge record itself for a checked-out target, whose
+	// changes capture records after it. MergeChanges is how many changes it
+	// applied. Together they let an undo select exactly this merge.
+	MergeLSN     int64 `bson:"merge_lsn,omitempty" json:"merge_lsn,omitempty"`
+	MergeFromLSN int64 `bson:"merge_from_lsn,omitempty" json:"merge_from_lsn,omitempty"`
+	MergeChanges int   `bson:"merge_changes,omitempty" json:"merge_changes,omitempty"`
 	// WriteBack is set once the plan was claimed for writing to the external
 	// database its target follows; see writeback.go.
 	WriteBack *WriteBackRecord `bson:"write_back,omitempty" json:"write_back,omitempty"`
@@ -712,14 +720,19 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 			return nil, err
 		}
 
+		var fromLSN int64
 		if target.IsLive() {
-			if err := s.applyPhysical(sc, target, changes); err != nil {
+			if err := s.applyPhysical(sc, target, changes, mergeMarker{
+				ID: "merge:" + plan.ID.Hex(), Actor: "merge:" + source.Name, PlanID: plan.ID.Hex(),
+			}); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := s.applyWAL(sc, target, source, changes, "merge:"+plan.ID.Hex()); err != nil {
+			first, err := s.applyWAL(sc, target, source, changes, "merge:"+plan.ID.Hex())
+			if err != nil {
 				return nil, err
 			}
+			fromLSN = first
 		}
 		mergeRecord := &wal.Entry{
 			ProjectID: target.ProjectID, BranchID: target.ID,
@@ -734,13 +747,17 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 		if err != nil {
 			return nil, fmt.Errorf("failed to record merge: %w", err)
 		}
+		if fromLSN == 0 {
+			fromLSN = lsn
+		}
 		if !target.IsLive() {
 			if err := s.branches.CompareAndSetHead(sc, target.ID, target.HeadLSN, lsn); err != nil {
 				return nil, err
 			}
 		}
 		_, err = s.plans.UpdateOne(sc, bson.M{"_id": plan.ID, "status": "applying"},
-			bson.M{"$set": bson.M{"status": StatusApplied, "strategy": strategy, "applied_at": time.Now()}})
+			bson.M{"$set": bson.M{"status": StatusApplied, "strategy": strategy, "applied_at": time.Now(),
+				"merge_lsn": lsn, "merge_from_lsn": fromLSN, "merge_changes": len(changes)}})
 		return nil, err
 	})
 	if err != nil {
@@ -749,7 +766,7 @@ func (s *Service) Apply(ctx context.Context, planID primitive.ObjectID, strategy
 	return &ApplyResult{Applied: len(changes), ConflictsResolved: resolved}, nil
 }
 
-func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, changes []Change, txnID string) error {
+func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, changes []Change, txnID string) (firstLSN int64, err error) {
 	entries := make([]*wal.Entry, 0, len(changes))
 	for _, c := range changes {
 		e := &wal.Entry{ProjectID: target.ProjectID, BranchID: target.ID,
@@ -763,16 +780,37 @@ func (s *Service) applyWAL(ctx context.Context, target, source *wal.Branch, chan
 		}
 		entries = append(entries, e)
 	}
-	_, err := s.wal.AppendBatchContext(ctx, entries)
-	return err
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	lsns, err := s.wal.AppendBatchContext(ctx, entries)
+	if err != nil || len(lsns) == 0 {
+		return 0, err
+	}
+	return lsns[0], nil
 }
 
-func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes []Change) error {
+// mergeMarker is the document a merge into a checked-out branch writes to
+// wal.MergeMarkerCollection, so that capture attributes the transaction's
+// writes to the merge.
+type mergeMarker struct {
+	ID     string `bson:"_id"`
+	Actor  string `bson:"actor"`
+	PlanID string `bson:"plan_id"`
+}
+
+func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes []Change, marker mergeMarker) error {
 	own, err := target.OwnDatabase()
 	if err != nil {
 		return err
 	}
 	physical := s.client.Database(own)
+	// The marker comes first, so capture reads it before the changes of the
+	// same transaction, and goes last, so nothing of it remains.
+	markers := physical.Collection(wal.MergeMarkerCollection)
+	if _, err := markers.InsertOne(ctx, marker); err != nil {
+		return fmt.Errorf("failed to mark the merge for capture: %w", err)
+	}
 	for _, c := range changes {
 		coll := physical.Collection(c.Collection)
 		currentRaw, err := coll.FindOne(ctx, bson.M{"_id": c.ID}).Raw()
@@ -816,6 +854,9 @@ func (s *Service) applyPhysical(ctx context.Context, target *wal.Branch, changes
 		} else if _, err := coll.ReplaceOne(ctx, bson.M{"_id": c.ID}, c.DocumentRaw, options.Replace().SetUpsert(true)); err != nil {
 			return err
 		}
+	}
+	if _, err := markers.DeleteOne(ctx, bson.M{"_id": marker.ID}); err != nil {
+		return fmt.Errorf("failed to remove the merge's capture marker: %w", err)
 	}
 	return nil
 }

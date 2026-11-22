@@ -216,7 +216,7 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 		return err
 	}
 	for _, collection := range collections {
-		if collection == barrierCollection {
+		if collection == barrierCollection || collection == wal.MergeMarkerCollection {
 			continue
 		}
 		if err := s.ensurePrePostImages(ctx, physical, collection); err != nil {
@@ -252,6 +252,15 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 	lastSafeToken := append(bson.Raw(nil), stream.ResumeToken()...)
 	var transactionStartToken bson.Raw
 	transactionBarrier := ""
+	// merging is the merge whose marker opened the transaction being read;
+	// its writes are attributed to the merge instead of the capture actor.
+	// open stays set from the marker's insert to its delete, the
+	// transaction's last write: until then no resume point past the marker is
+	// saved, even when a cursor batch ends between it and the changes.
+	var merging struct {
+		txn, actor, plan string
+		open             bool
+	}
 	flushCanceled := func() error {
 		complete, token := completePrefix(batch, lastSafeToken, transactionStartToken)
 		return s.flush(branch, complete, token)
@@ -265,6 +274,23 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 			var marker changeEvent
 			if err := bson.Unmarshal(stream.Current, &marker); err != nil {
 				return err
+			}
+			if marker.NS.Collection == wal.MergeMarkerCollection {
+				// A merge into this checked-out branch marks its transaction
+				// first. The marker is not data. The safe resume point stays
+				// before it, so a restart inside the transaction reads the
+				// marker again.
+				switch {
+				case marker.OperationType == "insert" && marker.txnID() != "":
+					actor, _ := marker.FullDocument.Lookup("actor").StringValueOK()
+					plan, _ := marker.FullDocument.Lookup("plan_id").StringValueOK()
+					if actor != "" {
+						merging.txn, merging.actor, merging.plan, merging.open = marker.txnID(), actor, plan, true
+					}
+				case marker.txnID() == merging.txn:
+					merging.open = false
+				}
+				continue
 			}
 			if marker.NS.Collection == barrierCollection {
 				var acknowledgements []string
@@ -305,6 +331,13 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 			}
 			if entry != nil {
 				entry.Actor = cfg.actor
+				if entry.TxnID != "" && entry.TxnID == merging.txn {
+					entry.Actor = merging.actor
+					if entry.Metadata == nil {
+						entry.Metadata = map[string]interface{}{}
+					}
+					entry.Metadata["merge_plan"] = merging.plan
+				}
 				// Never publish a head inside a multi-document transaction. Once
 				// the size target is reached, finish the group before flushing.
 				if len(batch) >= maxBatch && batch[len(batch)-1].TxnID != "" && batch[len(batch)-1].TxnID != entry.TxnID {
@@ -335,7 +368,7 @@ func (s *Service) runStream(ctx context.Context, branchID string, cfg runConfig,
 		// An empty server batch is not a transaction-end signal. A later
 		// database marker proves the complete committed group precedes it,
 		// including groups spanning cursor batches. Resume tokens stay opaque.
-		if len(batch) > 0 && batch[len(batch)-1].TxnID != "" {
+		if (len(batch) > 0 && batch[len(batch)-1].TxnID != "") || merging.open {
 			if transactionBarrier == "" {
 				transactionBarrier = primitive.NewObjectID().Hex()
 				if _, err := physical.Collection(barrierCollection).InsertOne(ctx, bson.M{"_id": transactionBarrier, "internal": true}); err != nil {

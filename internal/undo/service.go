@@ -81,17 +81,53 @@ type Plan struct {
 // BuildPlan computes the compensations for undoing [fromLSN, toLSN] on a
 // branch, optionally restricted to one actor's writes.
 func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor string) (*Plan, error) {
+	selected := func(entry *wal.Entry) bool { return actor == "" || entry.Actor == actor }
+	plan, _, err := s.buildPlan(branch, fromLSN, toLSN, actor, selected)
+	return plan, err
+}
+
+// BuildMergePlan computes the compensations that undo one applied merge:
+// the entries its plan wrote, from fromLSN (the plan's MergeFromLSN) to the
+// branch head. Into a branch that is not checked out, the merge appended them
+// itself (transaction "merge:<plan>"). Into a checked-out branch, capture
+// recorded them with the plan in metadata merge_plan. Later writes to the
+// same documents are reported as conflicts. The plan is refused while fewer
+// than changes entries are recorded, so a merge is never partly undone.
+func (s *Service) BuildMergePlan(branch *wal.Branch, planID string, fromLSN int64, changes int) (*Plan, error) {
+	if planID == "" || fromLSN <= 0 {
+		return nil, fmt.Errorf("merge plan %q has no recorded merge position; it was applied by a release that did not record one, so undo it by LSN range", planID)
+	}
+	selected := func(entry *wal.Entry) bool {
+		if entry.TxnID == "merge:"+planID {
+			return true
+		}
+		plan, _ := entry.Metadata["merge_plan"].(string)
+		return plan == planID
+	}
+	plan, found, err := s.buildPlan(branch, fromLSN, 0, "merge plan "+planID, selected)
+	if err != nil {
+		return nil, err
+	}
+	if found < changes {
+		return nil, fmt.Errorf("capture has recorded %d of the merge's %d changes on branch %s; let capture catch up (or start it) and try again", found, changes, branch.Name)
+	}
+	return plan, nil
+}
+
+// buildPlan undoes the selected entries in [fromLSN, toLSN] and reports how
+// many selected data entries it found. label names the selection in the plan.
+func (s *Service) buildPlan(branch *wal.Branch, fromLSN, toLSN int64, label string, selected func(*wal.Entry) bool) (*Plan, int, error) {
 	if toLSN == 0 {
 		toLSN = branch.HeadLSN
 	}
 	if fromLSN <= 0 || fromLSN > toLSN {
-		return nil, fmt.Errorf("invalid undo range [%d, %d]", fromLSN, toLSN)
+		return nil, 0, fmt.Errorf("invalid undo range [%d, %d]", fromLSN, toLSN)
 	}
 	if toLSN > branch.HeadLSN {
-		return nil, fmt.Errorf("undo range end %d is beyond branch head %d", toLSN, branch.HeadLSN)
+		return nil, 0, fmt.Errorf("undo range end %d is beyond branch head %d", toLSN, branch.HeadLSN)
 	}
 	if fromLSN <= branch.BaseLSN {
-		return nil, fmt.Errorf("undo range start %d is at or below the branch fork point %d: undo operates on the branch's own history", fromLSN, branch.BaseLSN)
+		return nil, 0, fmt.Errorf("undo range start %d is at or below the branch fork point %d: undo operates on the branch's own history", fromLSN, branch.BaseLSN)
 	}
 
 	// An undo restores each document to its state just before the range,
@@ -100,21 +136,22 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 	// write, and the plan would restore the wrong state.
 	floors, err := s.wal.ReclaimFloors(branch.ID)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	for collection, floor := range floors {
 		if floor >= fromLSN {
-			return nil, fmt.Errorf("%w: undo from LSN %d reaches entries of collection %q at or below LSN %d that were deleted; start above LSN %d",
+			return nil, 0, fmt.Errorf("%w: undo from LSN %d reaches entries of collection %q at or below LSN %d that were deleted; start above LSN %d",
 				wal.ErrHistoryReclaimed, fromLSN, collection, floor, floor)
 		}
 	}
 
 	entries, err := s.wal.GetBranchEntries(branch.ID, "", fromLSN, branch.HeadLSN)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load range: %w", err)
+		return nil, 0, fmt.Errorf("failed to load range: %w", err)
 	}
 
-	plan := &Plan{BranchID: branch.ID, FromLSN: fromLSN, ToLSN: toLSN, Actor: actor, HeadLSN: branch.HeadLSN}
+	plan := &Plan{BranchID: branch.ID, FromLSN: fromLSN, ToLSN: toLSN, Actor: label, HeadLSN: branch.HeadLSN}
+	found := 0
 
 	type docKey struct{ collection, id string }
 	oldest := make(map[docKey]*wal.Entry)
@@ -132,13 +169,13 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 		if len(image) > 0 {
 			docID, err := wal.DocumentIDFromImage(image)
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			id = wal.DocumentIDString(docID)
 		}
 		key := docKey{entry.Collection, id}
 
-		if entry.LSN > toLSN || (actor != "" && entry.Actor != actor) {
+		if entry.LSN > toLSN || !selected(entry) {
 			// A write not selected for undo must survive, including later
 			// writes by the same actor when the selected range ends earlier.
 			if _, ours := oldest[key]; ours && !conflicted[key] {
@@ -152,6 +189,7 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 			}
 			continue
 		}
+		found++
 		if _, seen := oldest[key]; !seen {
 			oldest[key] = entry
 		}
@@ -165,11 +203,11 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 		case len(entry.PreImage) > 0:
 			var pre bson.M
 			if err := wal.UnmarshalDocument(entry.PreImage, &pre); err != nil {
-				return nil, fmt.Errorf("failed to decode pre-image for %s/%s: %w", key.collection, key.id, err)
+				return nil, 0, fmt.Errorf("failed to decode pre-image for %s/%s: %w", key.collection, key.id, err)
 			}
 			id, err := wal.DocumentIDFromImage(entry.PreImage)
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			pre["_id"] = id
 			plan.Compensations = append(plan.Compensations, Compensation{
@@ -190,11 +228,11 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 			}
 			var post bson.M
 			if err := wal.UnmarshalDocument(entry.PostImage, &post); err != nil {
-				return nil, fmt.Errorf("failed to decode post-image for %s/%s: %w", key.collection, key.id, err)
+				return nil, 0, fmt.Errorf("failed to decode post-image for %s/%s: %w", key.collection, key.id, err)
 			}
 			id, err := wal.DocumentIDFromImage(entry.PostImage)
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			plan.Compensations = append(plan.Compensations, Compensation{
 				Collection: key.collection,
@@ -212,7 +250,7 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 		c := &plan.Compensations[i]
 		current, err := s.mat.MaterializeDocument(branch, c.Collection, c.DocumentID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load current state for undo: %w", err)
+			return nil, 0, fmt.Errorf("failed to load current state for undo: %w", err)
 		}
 		c.Before = current
 	}
@@ -226,7 +264,7 @@ func (s *Service) BuildPlan(branch *wal.Branch, fromLSN, toLSN int64, actor stri
 		return a.DocumentID < b.DocumentID
 	})
 	sort.Strings(plan.Unrecoverable)
-	return plan, nil
+	return plan, found, nil
 }
 
 // A missing pre-image is only evidence of insertion on a writer path that

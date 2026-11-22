@@ -135,6 +135,27 @@ func TestAPI_ControlPlaneFlow(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	assert.EqualValues(t, true, resp["dry_run"])
 
+	// Undo by merge plan: exactly the merge, and only on the branch it went into.
+	code, resp = do(t, router, "POST", "/api/v1/projects/api-test/branches/main/undo",
+		map[string]interface{}{"merge_plan_id": planID, "dry_run": true})
+	require.Equal(t, http.StatusOK, code, "%v", resp)
+	assert.EqualValues(t, 1, resp["compensations"])
+	code, resp = do(t, router, "POST", "/api/v1/projects/api-test/branches/main/undo",
+		map[string]interface{}{"merge_plan_id": planID, "from_lsn": 1})
+	require.Equal(t, http.StatusBadRequest, code, "%v", resp)
+	code, resp = do(t, router, "POST", "/api/v1/projects/api-test/branches/main/undo", map[string]interface{}{"dry_run": true})
+	require.Equal(t, http.StatusBadRequest, code, "%v", resp)
+	assert.Contains(t, resp["error"], "from_lsn")
+	code, resp = do(t, router, "POST", "/api/v1/projects/api-test/branches/main/undo",
+		map[string]interface{}{"merge_plan_id": planID})
+	require.Equal(t, http.StatusOK, code, "%v", resp)
+	assert.EqualValues(t, 1, resp["restored"].(float64)+resp["deleted"].(float64))
+	main, err = services.Branches.GetBranch(projectID, "main")
+	require.NoError(t, err)
+	state, err = services.Materializer.MaterializeCollection(main, "notes")
+	require.NoError(t, err)
+	assert.NotContains(t, state, "n1", "the merged document is gone again")
+
 	// Time travel info + snapshot.
 	code, _ = do(t, router, "GET", "/api/v1/projects/api-test/branches/main/time-travel", nil)
 	require.Equal(t, http.StatusOK, code)

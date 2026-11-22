@@ -28,6 +28,7 @@ import (
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"github.com/argon-lab/argon/v2/internal/walwriter"
 	"github.com/argon-lab/argon/v2/internal/wireproxy"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -318,6 +319,9 @@ func (s *Services) WriterFor(projectName, branchName string) (*walwriter.Writer,
 	return writer, nil
 }
 
+// UndoPlan is an undo plan, for callers outside the module.
+type UndoPlan = undo.Plan
+
 // BuildUndoPlan and ApplyUndoPlan wrap the undo service for CLI use (the
 // cli module cannot import internal packages).
 func (s *Services) BuildUndoPlan(branchID string, fromLSN, toLSN int64, actor string) (*undo.Plan, error) {
@@ -331,6 +335,38 @@ func (s *Services) BuildUndoPlan(branchID string, fromLSN, toLSN int64, actor st
 		return nil, err
 	}
 	return s.Undo.BuildPlan(branch, fromLSN, toLSN, actor)
+}
+
+// BuildMergeUndoPlan plans the undo of one applied merge, on the branch it
+// was merged into, and returns that branch's ID with the plan. Capture is
+// drained first, so a merge into a checked-out branch is undone only once
+// all of it is recorded.
+func (s *Services) BuildMergeUndoPlan(ctx context.Context, planID string) (string, *undo.Plan, error) {
+	id, err := primitive.ObjectIDFromHex(planID)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid merge plan id %q", planID)
+	}
+	mergePlan, err := s.Merge.GetPlan(ctx, id)
+	if err != nil {
+		return "", nil, err
+	}
+	if mergePlan.Status != merge.StatusApplied {
+		return "", nil, fmt.Errorf("merge plan %s is %s, not applied: there is nothing to undo", planID, mergePlan.Status)
+	}
+	drain, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := s.Ingest.Drain(drain, mergePlan.TargetBranchID); err != nil {
+		return "", nil, err
+	}
+	branch, err := s.Branches.GetBranchByID(mergePlan.TargetBranchID)
+	if err != nil {
+		return "", nil, err
+	}
+	plan, err := s.Undo.BuildMergePlan(branch, planID, mergePlan.MergeFromLSN, mergePlan.MergeChanges)
+	if err != nil {
+		return "", nil, err
+	}
+	return branch.ID, plan, nil
 }
 
 // ApplyUndoPlan executes a previously built plan.
