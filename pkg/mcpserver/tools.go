@@ -588,7 +588,7 @@ func toolPinSandbox(ctx context.Context, s *Server, args map[string]interface{})
 	if err := s.startIngester(info.BranchID, argString(args, "actor")); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf(
+	reply := fmt.Sprintf(
 		"Sandbox %q forked from pin %q (LSN %d).\n"+
 			"Connection string: %s\n"+
 			"Expires: %s\n"+
@@ -596,5 +596,9 @@ func toolPinSandbox(ctx context.Context, s *Server, args map[string]interface{})
 		info.BranchName, pin.Name, pin.LSN,
 		s.services.BranchConnectionString(info.PhysicalDB),
 		info.ExpiresAt.Format(time.RFC3339),
-	), nil
+	)
+	for _, note := range info.IndexNotes {
+		reply += "\nNote: " + note
+	}
+	return reply, nil
 }

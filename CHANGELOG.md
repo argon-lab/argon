@@ -34,6 +34,12 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Fixed
 
+- `argon import` dropped the engine's `index_notes`, so an import whose
+  source user lacked `listIndexes` gave no sign that checkouts would get
+  only `_id`; table and JSON output now show the notes. `argon pin sandbox`
+  JSON now reports `indexes` and `index_notes`, its table output prints the
+  index count and notes, and the MCP `argon_pin_sandbox` reply lists the
+  notes, as sandbox creation already did.
 - The npm launcher (`argonctl`) now passes SIGINT, SIGTERM and SIGHUP on to
   the Argon binary and exits with its status, or with the same signal.
   Before, a signal sent only to the launcher's process (by a supervisor, or
