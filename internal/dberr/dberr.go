@@ -23,3 +23,15 @@ func Unauthorized(err error) bool {
 	return server.HasErrorCode(13) ||
 		server.HasErrorCode(atlasError) && server.HasErrorMessage("not allowed to do action")
 }
+
+// AtlasRestriction reports whether MongoDB Atlas refused an operation for a
+// reason other than a missing privilege or an unsupported command: on the
+// free and Flex tiers this is how a tier limit is reported (databases,
+// collections, storage, data transfer), with the usage in the message.
+func AtlasRestriction(err error) bool {
+	var server mongo.ServerError
+	if !errors.As(err, &server) || !server.HasErrorCode(atlasError) {
+		return false
+	}
+	return !server.HasErrorMessage("not allowed to do action") && !server.HasErrorMessage("CMD_NOT_ALLOWED")
+}
