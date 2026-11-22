@@ -1,14 +1,22 @@
 name: Atlas
 
-# MongoDB Atlas as a followed source: online import, following, a sandbox,
-# write-back and the TLS identity, against a real Atlas cluster. The tests
-# are in tests/wal/source_atlas_test.go and skip without a connection string,
-# so ordinary CI cannot cover them.
+# MongoDB Atlas against a real cluster, both ways round:
+# - as a followed source: online import, following, a sandbox, write-back
+#   and the TLS identity (tests/wal/source_atlas_test.go);
+# - as the engine's own deployment: metadata and sandboxes on Atlas while it
+#   follows the CI replica set, plus argon doctor and argon mcp --http with
+#   MONGODB_URI on Atlas (tests/wal/engine_atlas_test.go, cli/cmd).
+# The tests skip without a connection string, so ordinary CI cannot cover
+# them.
 #
 # The connection string is the repository secret ARGON_TEST_ATLAS_SHARED_URI:
 # a database user on a free M0 cluster that holds nothing but these tests'
-# databases, with readWriteAnyDatabase. The tests create and drop databases
-# named follow_src_<id>, and write to follow_tick to move the stream on. GitHub's runners have no fixed address, so that
+# databases. As a source it needs readWriteAnyDatabase; as the engine's
+# deployment it also needs dbAdminAnyDatabase (Atlas admin covers both). The
+# tests create and drop databases named follow_src_<id>, argon_follow_meta_<id>,
+# argon_br_<id>, argon_cli_test_<id> and argon_doctor_*, and write to
+# follow_tick to move the stream on. ARGON_TEST_ATLAS_DEDICATED_URI, when set,
+# adds a dedicated-tier (M10+) cluster to the tests/wal runs. GitHub's runners have no fixed address, so that
 # cluster's IP access list allows 0.0.0.0/0; the password is what protects it.
 #
 # Secrets are not given to pull requests from forks. This runs on master,
@@ -27,6 +35,12 @@ on:
       - 'internal/dberr/**'
       - 'pkg/walcli/source*.go'
       - 'tests/wal/source_atlas*'
+      - 'tests/wal/engine_atlas*'
+      - 'internal/checkout/**'
+      - 'internal/sandbox/**'
+      - 'pkg/mcpserver/**'
+      - 'cli/cmd/doctor*'
+      - 'cli/cmd/mcp*'
       - 'tests/wal/source_follow_test.go'
       - 'go.mod'
       - 'go.sum'
@@ -51,6 +65,7 @@ jobs:
     timeout-minutes: 20
     env:
       ARGON_TEST_ATLAS_SHARED_URI: ${{ secrets.ARGON_TEST_ATLAS_SHARED_URI }}
+      ARGON_TEST_ATLAS_DEDICATED_URI: ${{ secrets.ARGON_TEST_ATLAS_DEDICATED_URI }}
     steps:
       - name: Check for the Atlas connection string
         id: secret
@@ -92,10 +107,29 @@ jobs:
       - name: Run the Atlas tests
         if: steps.secret.outputs.present == 'true'
         run: |
-          go test -v -count=1 -timeout 15m -run '^TestSourceAtlas' ./tests/wal 2>&1 | tee /tmp/atlas-tests.log
+          go test -v -count=1 -timeout 15m -run '^(TestSourceAtlas|TestEngineAtlas)' ./tests/wal 2>&1 | tee /tmp/atlas-tests.log
           grep -q -- '--- PASS: TestSourceAtlas' /tmp/atlas-tests.log
+          grep -q -- '--- PASS: TestEngineAtlas' /tmp/atlas-tests.log
           if grep -- '--- SKIP' /tmp/atlas-tests.log; then
             echo "::error::An Atlas test skipped although the connection string is set."
+            exit 1
+          fi
+
+      # The CLI with the engine's MONGODB_URI on Atlas: doctor's probe and
+      # usage line, and an agent loop over argon mcp --http.
+      - name: Run the CLI against Atlas
+        if: steps.secret.outputs.present == 'true'
+        working-directory: cli
+        env:
+          ARGON_TEST_MONGODB_URI: ${{ secrets.ARGON_TEST_ATLAS_SHARED_URI }}
+        run: |
+          tests='^(TestDoctorChecksCaptureBoundary|TestDoctorAtlasUsage|TestCLIMCPOverHTTP)$'
+          go test -v -count=1 -timeout 10m -run "$tests" ./cmd 2>&1 | tee /tmp/atlas-cli.log
+          for name in TestDoctorChecksCaptureBoundary TestDoctorAtlasUsage TestCLIMCPOverHTTP; do
+            grep -q -- "--- PASS: $name" /tmp/atlas-cli.log || { echo "::error::$name did not pass against Atlas."; exit 1; }
+          done
+          if grep -- '--- SKIP' /tmp/atlas-cli.log; then
+            echo "::error::A CLI test skipped although the connection string is set."
             exit 1
           fi
 
@@ -107,7 +141,8 @@ jobs:
         run: |
           docker run --rm -e URI="$ARGON_TEST_ATLAS_SHARED_URI" "$MONGODB_IMAGE" bash -c 'mongosh "$URI" --quiet --eval "
             for (const d of db.adminCommand({listDatabases: 1, nameOnly: true}).databases) {
-              if (!d.name.startsWith(\"follow_src_\") && d.name !== \"follow_tick\") continue;
+              const owned = [\"follow_src_\", \"argon_follow_meta_\", \"argon_br_\", \"argon_cli_test_\", \"argon_doctor_\"];
+              if (!owned.some(p => d.name.startsWith(p)) && d.name !== \"follow_tick\") continue;
               const target = db.getSiblingDB(d.name);
               for (const c of target.getCollectionNames()) target.getCollection(c).drop();
               print(\"removed \" + d.name);
