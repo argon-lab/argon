@@ -343,11 +343,14 @@ func normalizeOrigin(origin string) (normalized, host string, err error) {
 }
 
 // browserOriginSchemes are the schemes a browser puts in an Origin header
-// for a page that can make requests: web pages, extensions and webviews.
+// for a page that can make requests: web pages, extensions, webviews and
+// app shells.
 var browserOriginSchemes = map[string]bool{
 	"http": true, "https": true,
 	"chrome-extension": true, "moz-extension": true, "safari-web-extension": true,
 	"ms-browser-extension": true, "vscode-webview": true, "vscode-file": true,
+	// App shells that serve their pages from a custom scheme.
+	"tauri": true, "capacitor": true,
 }
 
 // originAllowed guards against DNS rebinding: a browser page on another

@@ -182,6 +182,11 @@ func NewLazy(connect Connector, in io.Reader, out io.Writer, opts ...Option) *Se
 func (s *Server) openEngine(life, wait context.Context) error {
 	s.engineMu.Lock()
 	if s.services != nil {
+		// A server served again, or a bare handler mounted again after
+		// Close, sweeps and resumes capture under its new lifetime.
+		if life.Err() == nil {
+			s.startSweeper(life)
+		}
 		s.engineMu.Unlock()
 		return nil
 	}
@@ -215,7 +220,11 @@ func (s *Server) openEngine(life, wait context.Context) error {
 	if err == nil {
 		// From here on this is the server New would have built.
 		s.services = services
-		s.startSweeper(life)
+		// A lifetime that ended while connecting (Close, or the server
+		// stopping) starts nothing; the next one will.
+		if life.Err() == nil {
+			s.startSweeper(life)
+		}
 	}
 	// Nothing is remembered on failure: the next call connects afresh.
 	attempt.err = err

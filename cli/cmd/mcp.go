@@ -114,11 +114,12 @@ func checkHTTPListen(addr, token string) error {
 	if _, _, err := net.SplitHostPort(addr); err != nil {
 		return fmt.Errorf("--http needs host:port, e.g. 127.0.0.1:8765: %v", err)
 	}
-	// A client cannot send a header value with surrounding whitespace or
-	// control characters, so such a token would lock every client out.
+	// A client cannot send a header value with whitespace, control
+	// characters or (browsers and Node) non-ASCII, so such a token would lock
+	// clients out.
 	for _, r := range token {
-		if r <= ' ' || r == 0x7f {
-			return errors.New("ARGON_MCP_TOKEN must not contain spaces or control characters (for example: openssl rand -hex 32)")
+		if r <= ' ' || r >= 0x7f {
+			return errors.New("ARGON_MCP_TOKEN must be printable ASCII without spaces (for example: openssl rand -hex 32)")
 		}
 	}
 	if len(token) > maxHTTPTokenLength {
