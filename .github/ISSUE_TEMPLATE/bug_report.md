@@ -26,10 +26,12 @@ Paste any error messages or logs here
 
 **Environment (please complete the following information):**
  - OS: [e.g. Ubuntu 22.04, macOS 13.0]
- - Argon Version: [e.g. v1.0.0]
- - Go Version: [e.g. 1.21]
- - MongoDB Version: [e.g. 6.0]
- - Python Version (if using Python SDK): [e.g. 3.11]
+ - Argon Version (`argon --version`): [e.g. 2.12.0]
+ - Install method: [npm / Homebrew / source build]
+ - Go Version (source builds only): [e.g. 1.26.11]
+ - MongoDB Version: [e.g. 8.0]
+ - Source database, if you import or follow one: [self-managed replica set / Atlas tier, e.g. M0, M10]
+ - argon-agents version and Python version (if used): [e.g. 0.3.0, 3.12]
 
 **Additional context**
 Add any other context about the problem here, including:

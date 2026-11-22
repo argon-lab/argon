@@ -203,7 +203,7 @@ func (b *Binding) Verify(id Identity) error {
 }
 
 const replicaSetIDRequired = "a replica-set ID is required because a tunnel or another deployment can present the same replica-set name and member host strings"
-const configReader = "a user allowed to run replSetGetConfig, for example one with the clusterMonitor role"
+const configReader = "a user allowed to run replSetGetConfig, for example one with the clusterMonitor role (on MongoDB Atlas M0 or Flex, which refuse it, connect over fully verified TLS to the cluster's mongodb.net hosts instead)"
 const reimportWithID = "stop any running follower, run `argon source detach -p <project> --yes`, then import online into a new project with " + configReader
 
 // RequireReplicaSetID refuses source writes unless the binding recorded an ID,

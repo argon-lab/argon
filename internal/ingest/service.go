@@ -500,7 +500,8 @@ func (s *Service) convertEvent(ctx context.Context, physical *mongo.Database, br
 
 	case "drop", "dropDatabase", "rename":
 		// Collection-level DDL carries no document images; representing it
-		// needs dedicated WAL operations (roadmap). Loud, not silent:
+		// would need dedicated WAL operations, which do not exist. Loud,
+		// not silent:
 		return nil, &CaptureError{Message: fmt.Sprintf("%s on %s is not captured; branch history is incomplete", event.OperationType, event.NS.Collection)}
 	case "create":
 		if err := s.ensurePrePostImages(ctx, physical, event.NS.Collection); err != nil {

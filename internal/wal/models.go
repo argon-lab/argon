@@ -183,8 +183,8 @@ type Branch struct {
 
 	// Checkout state (mongod-as-compute). A checked-out ("live") branch is
 	// materialized into a real MongoDB database that applications connect
-	// to directly; the WAL is fed from its change stream instead of the
-	// SDK write path.
+	// to directly; the WAL is fed from its change stream, and the
+	// programmatic writer (walwriter) refuses it.
 	PhysicalDB    string `bson:"physical_db,omitempty" json:"physical_db,omitempty"`
 	State         string `bson:"state,omitempty" json:"state,omitempty"` // "" | BranchStateLive
 	CheckedOutLSN int64  `bson:"checked_out_lsn,omitempty" json:"checked_out_lsn,omitempty"`
@@ -252,8 +252,8 @@ func (b *Branch) IsExpired(now time.Time) bool {
 const BranchStateLive = "live"
 
 // IsLive reports whether the branch is checked out into a physical
-// database (writes flow through mongod and the change-stream ingester, not
-// the SDK interceptor).
+// database (writes flow through mongod and the change-stream ingester;
+// walwriter refuses live branches).
 func (b *Branch) IsLive() bool {
 	return b.State == BranchStateLive
 }

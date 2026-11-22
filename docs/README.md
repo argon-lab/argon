@@ -17,8 +17,10 @@ Reading order:
    WAL, branches, snapshots, GC, merge, the consistency model stated
    honestly, known limitations.
 5. **[OPERATIONS.md](OPERATIONS.md)** — running it: replica-set
-   requirement, snapshot chunk stores (MongoDB/S3/filesystem), retention
-   and GC, migrating v1 data.
+   requirement, importing and following a source (including MongoDB
+   Atlas), write-back, sandbox credentials, indexes in checkouts, snapshot
+   chunk stores (MongoDB/S3/filesystem), retention and GC, migrating v1
+   data.
 6. **[PERFORMANCE.md](PERFORMANCE.md)** — a pointer, deliberately: every
    number lives in the reproducible
    [benchmark suite](https://github.com/argon-lab/benchmarks), nowhere

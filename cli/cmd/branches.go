@@ -55,7 +55,7 @@ var branchesCreateCmd = &cobra.Command{
 		if jsonOutput(cmd) {
 			return writeJSON(cmd, map[string]any{"branch": branch})
 		}
-		fmt.Printf("⚡ Created branch '%s' (a metadata write, no data copied)\n", branch.Name)
+		fmt.Printf("Created branch '%s' (a metadata write, no data copied)\n", branch.Name)
 		fmt.Printf("   Project: %s\n", projectName)
 		fmt.Printf("   Based on: %s\n", fromBranch)
 		fmt.Println()

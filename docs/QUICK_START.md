@@ -64,13 +64,13 @@ CLI commands connect directly to MongoDB and do not leave a background watcher
 or TTL worker behind. `sandbox create --watch` captures in the foreground for
 as long as it runs.
 
-Use `argon import database --online` to copy a replica-set database while
-writers keep running. Run `argon source follow -p myapp` to keep the imported
-`main` current. Online import and following, introduced in 2.6.0, are now
-available by default. Write-back is also available by default for reviewed
-plans targeting a followed source. Review the plan with
-`argon merge list -p myapp --output json`, then pass its `approval_digest`
-to `argon merge apply <plan-id> --write-back --approve <digest>`.
+Use `argon import database --online` to copy a replica-set database, or a
+MongoDB Atlas cluster (M0 included), while writers keep running. Run
+`argon source follow -p myapp` to keep the imported `main` current. To write a
+reviewed plan back to that source, inspect it with
+`argon merge list -p myapp --output json`, optionally run
+`argon merge check <plan-id>` to catch unique-key collisions, then pass its
+`approval_digest` to `argon merge apply <plan-id> --write-back --approve <digest>`.
 The experimental options `--auto-resync` and `--enable-source-images` are off
 by default and each requires `ARGON_EXPERIMENTAL_SOURCE=1`. See
 [importing existing data](OPERATIONS.md#importing-existing-data) and the
@@ -86,8 +86,12 @@ argon import database --uri "$MONGODB_URI" --database myapp --project myapp --so
 argon sandbox create -p myapp --ttl 1h --watch --actor agent:run-1
 ```
 
-`--watch` needs 2.3.0 or newer. Without it, `sandbox create` returns at once and
-you run `argon watch -p myapp -b <sandbox> --actor agent:run-1` yourself.
+Without `--watch`, `sandbox create` returns at once and you run
+`argon watch -p myapp -b <sandbox> --actor agent:run-1` yourself. Add
+`--credential` to hand the agent a MongoDB user that can reach only this
+sandbox's database ([requirements](OPERATIONS.md#exposure-and-credentials)).
+The sandbox also gets the parent's secondary indexes, so unique constraints
+hold as on the source.
 
 Collections that came from the parent are ready for exact capture. A
 collection the agent creates is captured exactly too while capture is running

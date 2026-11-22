@@ -36,8 +36,8 @@ The source connection string is given to commands that contact the source
 "argon merge apply <plan> --write-back --approve <digest>" writes the documents
 in a plan and requires a replica-set ID recorded at import, or, on a MongoDB
 Atlas tier that hides the ID (M0, Flex), an import over a verified TLS connection.
-The --enable-source-images option also requires that ID and changes how the
-source stores writes. Both --enable-source-images and --auto-resync are
+The --enable-source-images option also requires that ID, or the verified Atlas
+connection, and changes how the source stores writes. Both --enable-source-images and --auto-resync are
 experimental and require ARGON_EXPERIMENTAL_SOURCE=1. Operators can also enable
 changeStreamPreAndPostImages directly in MongoDB. Argon never drops,
 renames or rewrites the source database.`,
@@ -73,7 +73,8 @@ following stops as degraded. Two things avoid that:
                           documents for as long as the oplog keeps them. This
                           changes the source: MongoDB then stores a pre-image
                           of every updated or deleted document. The project
-                          must have recorded the replica-set ID at import.
+                          must have recorded the replica-set ID, or a verified
+                          MongoDB Atlas connection, at import.
                           Argon verifies the saved position and opens the
                           stream first. A degraded position must recover or
                           be resynced before the collections are altered.

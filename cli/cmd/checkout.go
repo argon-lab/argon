@@ -37,7 +37,8 @@ var checkoutCmd = &cobra.Command{
 that any unmodified MongoDB driver can connect to: queries, indexes,
 aggregation and transactions all run on mongod itself. While checked
 out, feed the WAL by running "argon watch" so direct writes keep
-versioned history; SDK writes to a checked-out branch are rejected.
+versioned history. Argon's programmatic writer refuses a checked-out
+branch; write through a MongoDB driver.
 
 Repeating checkout on a live branch returns its existing database and
 preserves pending direct writes. Stop writers before release.`,
