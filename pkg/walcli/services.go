@@ -319,6 +319,23 @@ func (s *Services) WriterFor(projectName, branchName string) (*walwriter.Writer,
 	return writer, nil
 }
 
+// MergePlanTarget returns the branch a merge plan targets, or
+// ErrMergePlanNotFound, without reading anything else about it.
+func (s *Services) MergePlanTarget(ctx context.Context, planID string) (string, error) {
+	id, err := primitive.ObjectIDFromHex(planID)
+	if err != nil {
+		return "", ErrMergePlanNotFound
+	}
+	plan, err := s.Merge.GetPlan(ctx, id)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return "", ErrMergePlanNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return plan.TargetBranchID, nil
+}
+
 // ErrMergePlanNotFound answers an undo by a merge plan that does not exist or
 // was not applied to the branch named.
 var ErrMergePlanNotFound = errors.New("merge plan not found")
@@ -355,8 +372,11 @@ func (s *Services) BuildMergeUndoPlan(ctx context.Context, planID, onBranch stri
 		return "", nil, ErrMergePlanNotFound
 	}
 	mergePlan, err := s.Merge.GetPlan(ctx, id)
-	if err != nil {
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		return "", nil, ErrMergePlanNotFound
+	}
+	if err != nil {
+		return "", nil, err
 	}
 	if onBranch != "" && mergePlan.TargetBranchID != onBranch {
 		return "", nil, ErrMergePlanNotFound

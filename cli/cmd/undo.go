@@ -73,14 +73,22 @@ Use "argon time-travel info" to find LSNs, and --dry-run to preview.`,
 		var branchID string
 		var plan *undoPlan
 		if mergePlan != "" {
-			branchID, plan, err = services.BuildMergeUndoPlan(context.Background(), mergePlan, "")
-			if err != nil {
-				return fmt.Errorf("failed to plan undo: %w", err)
-			}
+			onBranch := ""
 			if projectName != "" {
-				if err := requireBranchInProject(services, projectName, branchID); err != nil {
+				// Check the project before draining capture or reading
+				// anything else about the plan.
+				target, err := services.MergePlanTarget(context.Background(), mergePlan)
+				if err != nil {
+					return fmt.Errorf("failed to plan undo: %w", err)
+				}
+				if err := requireBranchInProject(services, projectName, target); err != nil {
 					return err
 				}
+				onBranch = target
+			}
+			branchID, plan, err = services.BuildMergeUndoPlan(context.Background(), mergePlan, onBranch)
+			if err != nil {
+				return fmt.Errorf("failed to plan undo: %w", err)
 			}
 		} else {
 			branchID, err = resolveBranch(services, projectName, branchName)

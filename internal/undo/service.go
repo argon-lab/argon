@@ -99,10 +99,17 @@ func (s *Service) BuildMergePlan(branch *wal.Branch, planID string, fromLSN int6
 	}
 	if changes == 0 {
 		// The merge changed nothing, so there is nothing to revert.
-		return &Plan{BranchID: branch.ID, FromLSN: fromLSN, ToLSN: branch.HeadLSN, Actor: "merge plan " + planID, HeadLSN: branch.HeadLSN}, nil
+		return &Plan{BranchID: branch.ID, FromLSN: min(fromLSN, branch.HeadLSN), ToLSN: branch.HeadLSN, Actor: "merge plan " + planID, HeadLSN: branch.HeadLSN}, nil
 	}
-	if fromLSN <= branch.HeadLSN && branch.IsDiscardedForRead(fromLSN, branch.HeadLSN) {
-		return nil, fmt.Errorf("merge plan %s was discarded by a restore reset of branch %s; nothing of it remains to undo", planID, branch.Name)
+	// A restore reset that discarded the merge's position leaves nothing of
+	// it on the branch's timeline, whether or not anything was written since.
+	for _, r := range branch.EffectiveDiscardedRanges() {
+		if fromLSN >= r.From && fromLSN <= r.To {
+			return nil, fmt.Errorf("merge plan %s was discarded by a restore reset of branch %s; nothing of it remains to undo", planID, branch.Name)
+		}
+	}
+	if fromLSN > branch.HeadLSN && branch.IsLive() {
+		return nil, fmt.Errorf("capture has recorded 0 of the merge's %d changes on branch %s; let capture catch up (or start it) and try again", changes, branch.Name)
 	}
 	selected := func(entry *wal.Entry) bool {
 		if entry.TxnID == "merge:"+planID {
