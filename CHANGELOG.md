@@ -94,6 +94,24 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Fixed
 
+- Creating a branch or sandbox under a name that is in use always answers
+  "branch already exists". Creates of one name that arrived together (two
+  agents over `argon mcp --http` or REST, or a client that retried) used to
+  give all but one a raw MongoDB `E11000 duplicate key` error naming the
+  metadata database, and each left a `create_branch` record in the WAL for
+  a branch that was never made. The record and the branch are now written
+  in one transaction.
+  ([#220](https://github.com/argon-lab/argon/issues/220))
+- The name of a deleted branch or discarded sandbox can be used again. It
+  failed with the same `E11000` error, because the name index also covered
+  deleted branches. The index now covers live branches only
+  (`project_id_1_name_1_live`), and the old one (`project_id_1_name_1`) is
+  dropped when a metadata database is opened. Upgrade every process that
+  shares a metadata database: a release up to 2.12.0 that connects
+  afterwards creates the old index again, or fails to start with a
+  duplicate-key error once a name has been reused. This release drops the
+  old index again when a create runs into it.
+
 - `argon import` dropped the engine's `index_notes`, so an import whose
   source user lacked `listIndexes` gave no sign that checkouts would get
   only `_id`; table and JSON output now show the notes. `argon pin sandbox`
