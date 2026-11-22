@@ -73,7 +73,6 @@ func TestReviewTrailingSlashRedirectKeepsBasePath(t *testing.T) {
 	assert.True(t, strings.HasPrefix(rec.Header().Get("Location"), "/p/acme/"), "Location %q", rec.Header().Get("Location"))
 }
 
-
 func TestReviewNormalizeBasePathEdges(t *testing.T) {
 	for in, want := range map[string]string{"//": "", "/p/acme//": "/p/acme", "/...": "/...", "/~u": "/~u"} {
 		got, err := NormalizeBasePath(in)
