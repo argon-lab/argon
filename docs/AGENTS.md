@@ -144,8 +144,8 @@ REST, MCP and the web console omit the approval digest.
 The server speaks the handshake-based MCP revisions 2024-11-05, 2025-03-26
 and 2025-06-18 and answers with the client's revision when it is one of
 them. The per-request protocol introduced in 2026-07-28 (`server/discover`,
-no `initialize`) is not implemented yet; clients that support both fall back
-to the handshake.
+no `initialize`) is not supported and not currently planned; clients that
+support both fall back to the handshake.
 
 ## REST control plane
 
