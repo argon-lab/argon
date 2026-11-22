@@ -216,6 +216,13 @@ argon undo -p P -b B --from-lsn N [--to-lsn M] [--actor A] [--dry-run]
     history. --actor filters a recorded label; later unselected writes
     are conflicts and skipped. Missing images are reported as unrecoverable.
 
+argon undo --merge PLAN-ID [-p P] [--dry-run]
+    Revert exactly what one applied merge plan changed, on the branch it was
+    merged into, including a checked-out branch (capture records a merge's
+    writes as actor "merge:<source>" with the plan in metadata merge_plan).
+    Later writes to those documents are conflicts and skipped; refused while
+    capture has not recorded the whole merge.
+
 argon restore preview -p P -b B (--lsn N | --time RFC3339)
 argon restore reset   -p P -b B (--lsn N | --time RFC3339) [--backup NAME]
     First stop writers and release a live branch. Rewind the head: discarded entries stay

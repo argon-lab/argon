@@ -726,16 +726,37 @@ func (r *Router) undoRange(c *gin.Context) {
 		return
 	}
 	var body struct {
-		FromLSN int64  `json:"from_lsn" binding:"required"`
+		FromLSN int64  `json:"from_lsn"`
 		ToLSN   int64  `json:"to_lsn"`
 		Actor   string `json:"actor"`
 		DryRun  bool   `json:"dry_run"`
+		// MergePlanID undoes exactly the changes that applied merge plan
+		// made on this branch, instead of an LSN range.
+		MergePlanID string `json:"merge_plan_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		abortErr(c, http.StatusBadRequest, err)
 		return
 	}
-	plan, err := r.services.BuildUndoPlan(branchID, body.FromLSN, body.ToLSN, body.Actor)
+	var plan *walcli.UndoPlan
+	var err error
+	if body.MergePlanID != "" {
+		if body.FromLSN != 0 || body.ToLSN != 0 || body.Actor != "" {
+			abortErr(c, http.StatusBadRequest, fmt.Errorf("merge_plan_id selects the merge's own changes; it cannot be combined with from_lsn, to_lsn or actor"))
+			return
+		}
+		_, plan, err = r.services.BuildMergeUndoPlan(c.Request.Context(), body.MergePlanID, branchID)
+		if errors.Is(err, walcli.ErrMergePlanNotFound) {
+			abortErr(c, http.StatusNotFound, err)
+			return
+		}
+	} else {
+		if body.FromLSN <= 0 {
+			abortErr(c, http.StatusBadRequest, fmt.Errorf("from_lsn (or merge_plan_id) is required"))
+			return
+		}
+		plan, err = r.services.BuildUndoPlan(branchID, body.FromLSN, body.ToLSN, body.Actor)
+	}
 	if err != nil {
 		abortErr(c, http.StatusBadRequest, err)
 		return
