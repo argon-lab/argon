@@ -205,7 +205,7 @@ or [an OpenAI Agents SDK agent in a sandbox](examples/openai_agents_sandbox.py).
 ## For AI agents
 
 ```bash
-claude mcp add argon -- argon mcp        # 13 tools: sandbox, diff, merge, undo, pins
+claude mcp add argon -- argon mcp        # 14 tools: sandbox, diff, merge, undo, pins
 # Install the published Python SDK and LangGraph adapter.
 python3 -m pip install 'argon-agents[langgraph]==0.3.0'
 ```

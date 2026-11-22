@@ -32,8 +32,10 @@ argon release  -p P -b B      drop the physical db; history stays
 argon proxy [--listen 127.0.0.1:27018] [--allow-remote]
                               stable URIs: mongodb://host/<project>~<branch>;
                               non-loopback listeners need --allow-remote
-argon console [--host 127.0.0.1] [--port 1818] [--no-browser]
-                              local web console (REST API + UI)
+argon console [--host 127.0.0.1] [--port 1818] [--no-browser] [--base-path /p/acme]
+                              local web console (REST API + UI); --base-path
+                              (or ARGON_CONSOLE_BASE_PATH) serves it behind a
+                              reverse proxy under that path
 ```
 
 While a branch is checked out, its history is fed by `watch` (or the
@@ -401,7 +403,7 @@ argon gc -p P [--retention 168h] [--dry-run]
 argon mcp [--read-only] [--disable-tools a,b] [--http addr [--allow-origin o]]
                                     MCP server over stdio, or Streamable HTTP at
                                     http://addr/mcp with ARGON_MCP_TOKEN as bearer
-                                    token (13 tools); withhold tools
+                                    token (14 tools); withhold tools
                                     such as argon_merge_apply to keep them manual.
                                     Starts without a database and connects in the
                                     background (releases after 2.3.1)

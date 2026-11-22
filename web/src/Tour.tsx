@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "./api";
 import { Button } from "./ui";
+import { basePath } from "./basePath";
 
 const DONE_KEY = "argon.tour.done";
 
@@ -130,7 +131,7 @@ export default function Tour({
       step.page === "branch" && branch
         ? `/p/${project}/b/${branch}`
         : `/p/${project}`;
-    if (window.location.pathname !== target) navigate(target);
+    if (window.location.pathname !== basePath + target) navigate(target);
     const clear = highlight(step.anchor);
     return clear;
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { basePath } from "./basePath";
 const EVENTS = [
   "demo_entered",
   "first_diff",
@@ -20,7 +21,7 @@ export function track(event: Event) {
     const key = `argon.funnel.${event}`;
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, "1");
-    void fetch("/api/v1/events", {
+    void fetch(basePath + "/api/v1/events", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ event }),

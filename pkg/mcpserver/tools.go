@@ -17,6 +17,7 @@ var toolHandlers = map[string]toolHandler{
 	"argon_sandbox_create":  toolSandboxCreate,
 	"argon_sandbox_discard": toolSandboxDiscard,
 	"argon_sandbox_keep":    toolSandboxKeep,
+	"argon_sandbox_extend":  toolSandboxExtend,
 	"argon_branch_list":     toolBranchList,
 	"argon_connect":         toolConnect,
 	"argon_diff":            toolDiff,
@@ -47,6 +48,7 @@ var toolTraits = map[string]traits{
 	"argon_pin_sandbox":     {title: "Create a sandbox from a pin"},
 	"argon_connect":         {title: "Check out a branch and get its connection string", idempotent: true},
 	"argon_sandbox_keep":    {title: "Keep a sandbox", idempotent: true},
+	"argon_sandbox_extend":  {title: "Extend a sandbox", idempotent: true},
 	"argon_snapshot_create": {title: "Snapshot a branch", idempotent: true},
 	"argon_pin_create":      {title: "Pin a branch state"},
 	"argon_merge_preview":   {title: "Prepare a merge plan"},
@@ -134,6 +136,15 @@ func toolDescriptors() []map[string]interface{} {
 			"inputSchema": schema([]string{"project", "branch"}, map[string]interface{}{
 				"project": str("Project name"),
 				"branch":  str("Sandbox branch name"),
+			}),
+		},
+		{
+			"name":        "argon_sandbox_extend",
+			"description": "Push a sandbox's expiry to ttl_minutes from now. Use it when your work needs more time; merge or discard the sandbox when done.",
+			"inputSchema": schema([]string{"project", "branch", "ttl_minutes"}, map[string]interface{}{
+				"project":     str("Project name"),
+				"branch":      str("Sandbox name"),
+				"ttl_minutes": num("Minutes from now until the sandbox expires"),
 			}),
 		},
 		{
@@ -332,6 +343,26 @@ func toolSandboxKeep(ctx context.Context, s *Server, args map[string]interface{}
 		return "", err
 	}
 	return "TTL removed; the branch is permanent now.", nil
+}
+
+func toolSandboxExtend(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {
+	minutes, ok := argNumber(args, "ttl_minutes")
+	if !ok || minutes <= 0 {
+		return "", fmt.Errorf("ttl_minutes must be a positive number")
+	}
+	branch := argString(args, "branch")
+	if branch == "" {
+		return "", fmt.Errorf("branch is required")
+	}
+	_, branchID, err := s.resolveBranchID(argString(args, "project"), branch)
+	if err != nil {
+		return "", err
+	}
+	expires, err := s.services.Sandbox.Extend(ctx, branchID, time.Duration(minutes*float64(time.Minute)))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Sandbox %q now expires at %s.", branch, expires.UTC().Format(time.RFC3339)), nil
 }
 
 func toolBranchList(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {

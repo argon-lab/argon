@@ -19,6 +19,7 @@ var (
 	consolePort      int
 	consoleHost      string
 	consoleNoBrowser bool
+	consoleBasePath  string
 )
 
 var consoleCmd = &cobra.Command{
@@ -35,19 +36,30 @@ Set ARGON_API_TOKEN to require a bearer token on the API, or
 ARGON_READ_ONLY=1 to serve a look-but-don't-touch instance. Without a
 token the console answers only to localhost and loopback addresses; set
 ARGON_ALLOWED_HOSTS (comma-separated hostnames) when a tunnel or reverse
-proxy presents it under another name.`,
+proxy presents it under another name.
+
+Behind a reverse proxy that mounts the console under a path, e.g.
+https://cloud.example.com/p/acme/, pass --base-path /p/acme (or set
+ARGON_CONSOLE_BASE_PATH). The page then loads its assets, routes and API
+calls under that path. The server answers with or without the prefix, so
+the proxy may strip it or forward it unchanged.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		addr := fmt.Sprintf("%s:%d", consoleHost, consolePort)
-		if err := server.ValidateListenAddress(addr, server.OptionsFromEnv()); err != nil {
+		opts := server.OptionsFromEnv()
+		if cmd.Flags().Changed("base-path") {
+			opts.BasePath = consoleBasePath
+		}
+		if err := server.ValidateListenAddress(addr, opts); err != nil {
 			return err
 		}
+		base, _ := server.NormalizeBasePath(opts.BasePath)
 		services, err := newCommandServices(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to connect to MongoDB: %w", err)
 		}
-		router := server.NewRouter(services)
+		router := server.NewRouterWith(services, opts)
 
-		url := "http://" + addr
+		url := "http://" + addr + base + "/"
 		srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 10 * time.Second}
 		errc := make(chan error, 1)
 		go func() {
@@ -104,5 +116,6 @@ func init() {
 	consoleCmd.Flags().IntVar(&consolePort, "port", 1818, "port to listen on")
 	consoleCmd.Flags().StringVar(&consoleHost, "host", "127.0.0.1", "address to bind")
 	consoleCmd.Flags().BoolVar(&consoleNoBrowser, "no-browser", false, "do not open the browser")
+	consoleCmd.Flags().StringVar(&consoleBasePath, "base-path", "", "path prefix a reverse proxy serves the console under, e.g. /p/acme (default: ARGON_CONSOLE_BASE_PATH)")
 	rootCmd.AddCommand(consoleCmd)
 }

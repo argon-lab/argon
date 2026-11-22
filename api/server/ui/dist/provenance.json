@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "source": "web/",
-  "source_sha256": "2c5069c6bd72d4cdec449e2b684c94cc8a7e43bdcceec259d113efb10e2d16c5",
-  "source_file_count": 23,
+  "source_sha256": "cc8cda1591d8bf5fd6dca61b799bb32bf7f119b5153d9967dc54551b963943bd",
+  "source_file_count": 24,
   "source_hash_algorithm": "sha256 of sorted UTF-8 relative path + NUL + file bytes + NUL; excludes node_modules, dist, .git, .env*, .DS_Store",
   "package_lock_sha256": "e07fefa2e27bd0e0c7ccee03d7193b9e1cce1f72aaa3b4fddf3c304c4fbbd54e",
   "assets_sha256": {
-    "assets/index-BVLx-rP0.js": "055b1a80d1e7bea04ff2c78901c482bae2e8cdc6f0859b38b53fb28dd75315d6",
     "assets/index-D82AQHUL.css": "0c094510092e178bb6518784e1d5fa2cbf539d089036f4a1970951344b3611d2",
-    "index.html": "00db9f02c88023129b41241829e3d3b2831b0cb91c0ff1d62eaea9e1afef71ea"
+    "assets/index-nZ0jnZDD.js": "741307f5e98df8adefff179250a17081840c331e5d181f6920c11317423f495c",
+    "index.html": "a3d7a310c4f640f44393f4d897c399bc0f1fdc426dedbce2c946870d7cd11bd4"
   }
 }

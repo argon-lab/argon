@@ -54,6 +54,6 @@ func (r *Router) mountUI() {
 		// visitor keeps running a stale bundle (and pointing at asset
 		// hashes a newer deploy no longer serves).
 		c.Header("Cache-Control", "no-cache")
-		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", withBase(index, r.opts.BasePath))
 	})
 }

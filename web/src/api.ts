@@ -1,3 +1,4 @@
+import { basePath } from "./basePath";
 // Typed client for the engine's REST control plane. Same-origin by
 // default (the engine serves this SPA); a different origin and a bearer
 // token can be set in localStorage for development against a remote API.
@@ -157,7 +158,9 @@ function stored(key: string): string | null {
     return null;
   }
 }
-const base = stored("argon.api") ?? "";
+// API calls go under the path the console is served from (see basePath.ts),
+// unless a development override points elsewhere.
+const base = stored("argon.api") ?? basePath;
 const token = stored("argon.token");
 // A renewal supersedes every request started under the previous cookie.
 // Query cancellation alone cannot prevent a late response from arriving.
