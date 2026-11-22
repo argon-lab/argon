@@ -45,7 +45,9 @@ func TestDoctorChecksCaptureBoundary(t *testing.T) {
 	}()
 	probeDatabases := func() []string {
 		t.Helper()
-		names, err := client.ListDatabaseNames(ctx, bson.M{"name": bson.M{"$regex": "^argon_doctor_[0-9a-f]{24}$"}})
+		// Atlas accepts only a plain regex or string for the name filter,
+		// not the {$regex: ...} operator form.
+		names, err := client.ListDatabaseNames(ctx, bson.M{"name": primitive.Regex{Pattern: "^argon_doctor_[0-9a-f]{24}$"}})
 		if err != nil {
 			t.Fatal(err)
 		}
