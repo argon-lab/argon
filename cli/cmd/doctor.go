@@ -165,6 +165,27 @@ func formatAtlasUsage(databases, collections int, bytes int64) string {
 	return fmt.Sprintf("%d databases, %d collections, %.1f MB of data and indexes (the free M0 allows 100 databases, 500 collections and 0.5 GB)", databases, collections, float64(bytes)/1e6)
 }
 
+// probeCleanupStep bounds each step of the probe's cleanup.
+const probeCleanupStep = 5 * time.Second
+
+// dropProbeCollections removes every collection of the probe's own database,
+// for a user that is refused dropDatabase.
+func dropProbeCollections(ctx context.Context, physical *mongo.Database) error {
+	if !strings.HasPrefix(physical.Name(), "argon_doctor_") {
+		return fmt.Errorf("%s is not a probe database", physical.Name())
+	}
+	names, err := physical.ListCollectionNames(ctx, bson.D{})
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := physical.Collection(name).Drop(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // checkCaptureBoundary is a variable so tests can stand in for a deployment
 // whose hello reply has no operationTime.
 var checkCaptureBoundary = walcli.CheckCaptureBoundary
@@ -173,17 +194,65 @@ func probeCapture(ctx context.Context, client *mongo.Client) (probeErr error) {
 	suffix := primitive.NewObjectID().Hex()
 	physical := client.Database("argon_doctor_" + suffix)
 	metadata := client.Database(metadataDatabase()).Collection("doctor_" + suffix)
+	// What the probe may have created, so that cleanup neither skips it nor
+	// reports something that never existed. Each is set before the command
+	// that creates it: a command that failed may still have taken effect.
+	physicalMayExist, metadataMayExist := true, false
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := physical.Drop(cleanup); err != nil && probeErr == nil {
-			probeErr = fmt.Errorf("remove temporary physical database: %w", err)
+		// Each step has its own time, so one that stalls does not take the
+		// others' away, and the two drops run side by side, so a deployment
+		// that has stopped answering holds the command for one step's time
+		// rather than one after another.
+		step := func(run func(context.Context) error) error {
+			cleanup, cancel := context.WithTimeout(context.Background(), probeCleanupStep)
+			defer cancel()
+			return run(cleanup)
 		}
-		if err := metadata.Drop(cleanup); err != nil && probeErr == nil {
-			probeErr = fmt.Errorf("remove temporary metadata collection: %w", err)
+		metadataDropped := make(chan error, 1)
+		if metadataMayExist {
+			go func() {
+				metadataDropped <- step(func(c context.Context) error { return metadata.Drop(c) })
+			}()
+		} else {
+			metadataDropped <- nil
+		}
+		var left []string
+		if physicalMayExist {
+			// Called by name, not passed as a value, so the audit of drop
+			// sites (TestSource_DestructiveCallsAreConfined) sees it.
+			if err := step(func(c context.Context) error { return physical.Drop(c) }); err != nil {
+				if walcli.IsUnauthorized(err) {
+					// A user that may not drop databases may still drop the
+					// collections it created, and a database with no
+					// collections is gone. The refusal is still the probe's
+					// result: the engine drops a database for every sandbox
+					// and checkout it removes.
+					if emptyErr := step(func(c context.Context) error { return dropProbeCollections(c, physical) }); emptyErr != nil {
+						left = append(left, fmt.Sprintf("the probe's database %s could not be emptied either (%v): drop it by hand", physical.Name(), emptyErr))
+					}
+				} else {
+					// Not a refusal (a timeout, a lost connection): dropping
+					// its collections would fail the same way.
+					left = append(left, fmt.Sprintf("the probe's database %s may be left behind (%v): drop it by hand", physical.Name(), err))
+				}
+				if probeErr == nil {
+					probeErr = fmt.Errorf("remove temporary physical database: %w", err)
+				}
+			}
+		}
+		if err := <-metadataDropped; err != nil {
+			left = append(left, fmt.Sprintf("the probe's metadata collection %s.%s could not be removed (%v): drop it by hand", metadata.Database().Name(), metadata.Name(), err))
+			if probeErr == nil {
+				probeErr = fmt.Errorf("remove temporary metadata collection: %w", err)
+			}
+		}
+		if len(left) > 0 {
+			probeErr = fmt.Errorf("%w; %s", probeErr, strings.Join(left, "; "))
 		}
 	}()
 	if err := physical.RunCommand(ctx, bson.D{{Key: "create", Value: "probe"}, {Key: "changeStreamPreAndPostImages", Value: bson.M{"enabled": true}}}).Err(); err != nil {
+		// A refused create made nothing; any other failure may have.
+		physicalMayExist = !walcli.IsUnauthorized(err)
 		return fmt.Errorf("create collection with exact images: %w", err)
 	}
 	// Checkout stores an operationTime from hello as the point its writes are
@@ -196,9 +265,18 @@ func probeCapture(ctx context.Context, client *mongo.Client) (probeErr error) {
 	if err != nil {
 		return fmt.Errorf("open change stream: %w", err)
 	}
-	defer func() { _ = stream.Close(context.Background()) }()
+	defer func() {
+		// Bounded like a cleanup step: closing sends killCursors, which a
+		// deployment that has stopped answering would hold for the driver's
+		// own, much longer, timeout.
+		closing, cancel := context.WithTimeout(context.Background(), probeCleanupStep)
+		defer cancel()
+		_ = stream.Close(closing)
+	}()
 	// Collections must exist before the transaction on all supported versions.
+	metadataMayExist = true
 	if _, err := metadata.InsertOne(ctx, bson.M{"_id": "setup"}); err != nil {
+		metadataMayExist = !walcli.IsUnauthorized(err)
 		return fmt.Errorf("write metadata: %w", err)
 	}
 	session, err := client.StartSession()
