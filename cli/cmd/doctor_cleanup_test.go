@@ -39,6 +39,34 @@ func TestDoctorProbeCleansUpWhenDropDatabaseIsRefused(t *testing.T) {
 	}).Err(); err != nil {
 		t.Fatal(err)
 	}
+	// The probe databases on the deployment before this run, and those that
+	// appeared since.
+	existing := map[string]bool{}
+	probeDatabases := func() []string {
+		all, err := admin.ListDatabaseNames(context.Background(), bson.D{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, name := range all {
+			if probeDatabaseName.MatchString(name) {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	for _, name := range probeDatabases() {
+		existing[name] = true
+	}
+	added := func() []string {
+		var names []string
+		for _, name := range probeDatabases() {
+			if !existing[name] {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
 	metadataName := "argon_dt_" + id
 	t.Setenv("ARGON_METADATA_DB", metadataName)
 	defer func() {
@@ -46,11 +74,9 @@ func TestDoctorProbeCleansUpWhenDropDatabaseIsRefused(t *testing.T) {
 		defer done()
 		_ = admin.Database("admin").RunCommand(cleanup, bson.D{{Key: "dropUser", Value: user}}).Err()
 		_ = admin.Database(metadataName).Drop(cleanup)
-		names, _ := admin.ListDatabaseNames(cleanup, bson.D{})
-		for _, name := range names {
-			if probeDatabaseName.MatchString(name) {
-				_ = admin.Database(name).Drop(cleanup)
-			}
+		// Only what this run added: another run's probe database may be in use.
+		for _, name := range added() {
+			_ = admin.Database(name).Drop(cleanup)
 		}
 	}()
 
@@ -65,22 +91,6 @@ func TestDoctorProbeCleansUpWhenDropDatabaseIsRefused(t *testing.T) {
 	}
 	defer func() { _ = limited.Disconnect(context.Background()) }()
 
-	probeDatabases := func() []string {
-		t.Helper()
-		all, err := admin.ListDatabaseNames(ctx, bson.D{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var names []string
-		for _, name := range all {
-			if probeDatabaseName.MatchString(name) {
-				names = append(names, name)
-			}
-		}
-		return names
-	}
-	before := probeDatabases()
-
 	err = probeCapture(ctx, limited)
 	if err == nil || !walcli.IsUnauthorized(err) {
 		t.Fatalf("the probe must fail on the refused dropDatabase, got %v", err)
@@ -91,8 +101,8 @@ func TestDoctorProbeCleansUpWhenDropDatabaseIsRefused(t *testing.T) {
 	if strings.Contains(err.Error(), password) {
 		t.Fatal("the error must not carry the connection string")
 	}
-	if after := probeDatabases(); len(after) != len(before) {
-		t.Fatalf("the probe left a database behind: before %v, after %v", before, after)
+	if left := added(); len(left) != 0 {
+		t.Fatalf("the probe left a database behind: %v", left)
 	}
 	collections, err := admin.Database(metadataName).ListCollectionNames(ctx, bson.D{})
 	if err != nil {

@@ -191,29 +191,51 @@ func probeCapture(ctx context.Context, client *mongo.Client) (probeErr error) {
 	suffix := primitive.NewObjectID().Hex()
 	physical := client.Database("argon_doctor_" + suffix)
 	metadata := client.Database(metadataDatabase()).Collection("doctor_" + suffix)
+	// What the probe may have created, so that cleanup neither skips it nor
+	// reports something that never existed. Each is set before the command
+	// that creates it: a command that failed may still have taken effect.
+	physicalMayExist, metadataMayExist := true, false
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := physical.Drop(cleanup); err != nil {
-			// A user that may not drop databases may still drop the
-			// collections it created, and a database with no collections is
-			// gone. The refusal is still the probe's result: the engine
-			// drops a database for every sandbox and checkout it removes.
-			left := ""
-			if emptyErr := dropProbeCollections(cleanup, physical); emptyErr != nil {
-				left = fmt.Sprintf("; the probe's database %s could not be emptied either (%v): drop it by hand", physical.Name(), emptyErr)
-			}
-			if probeErr == nil {
-				probeErr = fmt.Errorf("remove temporary physical database: %w%s", err, left)
-			} else if left != "" {
-				probeErr = fmt.Errorf("%w%s", probeErr, left)
+		// Each step has its own time, so one that stalls does not take the
+		// others' away.
+		step := func(run func(context.Context) error) error {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return run(cleanup)
+		}
+		var left []string
+		if physicalMayExist {
+			// Called by name, not passed as a value, so the audit of drop
+			// sites (TestSource_DestructiveCallsAreConfined) sees it.
+			if err := step(func(c context.Context) error { return physical.Drop(c) }); err != nil {
+				// A user that may not drop databases may still drop the
+				// collections it created, and a database with no
+				// collections is gone. The refusal is still the probe's
+				// result: the engine drops a database for every sandbox and
+				// checkout it removes.
+				if emptyErr := step(func(c context.Context) error { return dropProbeCollections(c, physical) }); emptyErr != nil {
+					left = append(left, fmt.Sprintf("the probe's database %s could not be emptied either (%v): drop it by hand", physical.Name(), emptyErr))
+				}
+				if probeErr == nil {
+					probeErr = fmt.Errorf("remove temporary physical database: %w", err)
+				}
 			}
 		}
-		if err := metadata.Drop(cleanup); err != nil && probeErr == nil {
-			probeErr = fmt.Errorf("remove temporary metadata collection: %w", err)
+		if metadataMayExist {
+			if err := step(func(c context.Context) error { return metadata.Drop(c) }); err != nil {
+				left = append(left, fmt.Sprintf("the probe's metadata collection %s.%s could not be removed (%v): drop it by hand", metadata.Database().Name(), metadata.Name(), err))
+				if probeErr == nil {
+					probeErr = fmt.Errorf("remove temporary metadata collection: %w", err)
+				}
+			}
+		}
+		if len(left) > 0 {
+			probeErr = fmt.Errorf("%w; %s", probeErr, strings.Join(left, "; "))
 		}
 	}()
 	if err := physical.RunCommand(ctx, bson.D{{Key: "create", Value: "probe"}, {Key: "changeStreamPreAndPostImages", Value: bson.M{"enabled": true}}}).Err(); err != nil {
+		// A refused create made nothing; any other failure may have.
+		physicalMayExist = !walcli.IsUnauthorized(err)
 		return fmt.Errorf("create collection with exact images: %w", err)
 	}
 	// Checkout stores an operationTime from hello as the point its writes are
@@ -228,7 +250,9 @@ func probeCapture(ctx context.Context, client *mongo.Client) (probeErr error) {
 	}
 	defer func() { _ = stream.Close(context.Background()) }()
 	// Collections must exist before the transaction on all supported versions.
+	metadataMayExist = true
 	if _, err := metadata.InsertOne(ctx, bson.M{"_id": "setup"}); err != nil {
+		metadataMayExist = !walcli.IsUnauthorized(err)
 		return fmt.Errorf("write metadata: %w", err)
 	}
 	session, err := client.StartSession()

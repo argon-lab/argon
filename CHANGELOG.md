@@ -56,8 +56,9 @@ entry — a synchronization barrier, not in-proxy capture).
 - `argon doctor` no longer leaves its `argon_doctor_<id>` probe database
   behind when the engine's user may not drop databases: it drops the
   probe's collections instead, and still reports the refused `dropDatabase`
-  as the failure. If even that is refused, the error names the database to
-  remove by hand.
+  as the failure. Whatever it cannot remove, the database or its collection
+  in the metadata database, is named in the error for removal by hand, and
+  nothing that was never created is. Each cleanup step has its own timeout.
 - When MongoDB refuses `argon doctor`'s capture probe for lack of a
   privilege, the failure names the roles the engine's user needs:
   `readWriteAnyDatabase` and `dbAdminAnyDatabase`, with Atlas instructions

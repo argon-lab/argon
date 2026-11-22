@@ -286,9 +286,13 @@ jobs:
         run: |
           set -o pipefail
           go test -race -v -count=1 -run '^TestSandboxCredential' ./tests/wal ./pkg/mcpserver
-          (cd cli && go test -race -v -count=1 -run '^(TestSandboxCredential|TestDoctorProbeCleansUp)' ./cmd 2>&1 | tee /tmp/cli-auth.log)
-          # The doctor's cleanup needs this deployment's access control; a skip would pass quietly.
+          (cd cli && go test -race -v -count=1 -run '^(TestSandboxCredential|TestDoctorProbeCleansUp|TestReview)' ./cmd 2>&1 | tee /tmp/cli-auth.log)
+          # The doctor's cleanup tests need this deployment's access control; a skip would pass quietly.
           grep -q -- '--- PASS: TestDoctorProbeCleansUpWhenDropDatabaseIsRefused' /tmp/cli-auth.log
+          if grep -- '--- SKIP' /tmp/cli-auth.log; then
+            echo "::error::A test skipped although the authenticated deployment is available."
+            exit 1
+          fi
           (cd api && go test -race -v -count=1 -run '^TestSandboxCredential' ./server)
       - name: Remove authenticated deployment and volumes
         if: always()
