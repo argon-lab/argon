@@ -317,7 +317,11 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/merge/service.go:Apply UpdateOne",
 		"internal/merge/service.go:Apply WithTransaction",
 		"internal/merge/service.go:SavePlan InsertOne",
+		// A merge into a checked-out branch: its changes, and the capture
+		// marker it writes and removes in the same transaction.
 		"internal/merge/service.go:applyPhysical DeleteOne",
+		"internal/merge/service.go:applyPhysical DeleteOne",
+		"internal/merge/service.go:applyPhysical InsertOne",
 		"internal/merge/service.go:applyPhysical ReplaceOne",
 		// Argon's wal_merge_plans and the source write-back transaction.
 		"internal/merge/writeback.go:ApplyToSource UpdateOne",

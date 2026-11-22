@@ -24,7 +24,16 @@ entry — a synchronization barrier, not in-proxy capture).
   a sandbox's expiry to `ttl_minutes` (at most a year) from now, with the
   name, arguments and reply Argon Cloud's control plane uses for its own tool
   of that name.
-
+- A merge into a checked-out branch can be undone exactly. Capture records
+  the merge's writes as actor `merge:<source>`, as a merge into a branch that
+  is not checked out already does, with the plan in metadata `merge_plan`;
+  the merge marks its transaction for this in `__argon_merge_markers` and
+  removes the marker in the same transaction. An applied plan records
+  `merge_lsn`, `merge_from_lsn` and `merge_changes`. `argon undo --merge
+  <plan-id>` and REST `POST …/undo {"merge_plan_id": …}` revert exactly that
+  merge, reporting later writes to its documents as conflicts, and refuse
+  while capture has not recorded all of it. Plans applied by earlier
+  releases have no recorded position and are undone by LSN range as before.
 - `argon mcp --http <addr>` serves the MCP tools over the Streamable HTTP
   transport at `/mcp`, with a bearer token from `ARGON_MCP_TOKEN` (required
   on any non-loopback address), an Origin check against DNS rebinding, and

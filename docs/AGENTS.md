@@ -62,6 +62,7 @@ to be ready as `sandbox_capture_ready_ms`. Then:
 argon diff -p myapp -b <sandbox>              # review supported document changes
 argon merge preview/apply …                   # adopt it — a reviewable data PR
 argon undo … --actor <agent>                  # filter the branch actor label, conflict-aware
+argon undo --merge <plan-id>                  # revert exactly one applied merge
 argon sandbox discard …                       # or let the managed server sweep it
 ```
 
@@ -213,7 +214,7 @@ POST   /api/v1/projects/:p/branches/:b/merge-preview
 GET    /api/v1/merge-plans?project=:p
 GET    /api/v1/merge-plans/:id
 POST   /api/v1/merge-plans/:id/apply                   {strategy?}
-POST   /api/v1/projects/:p/branches/:b/undo            {from_lsn, to_lsn?, actor?, dry_run?}
+POST   /api/v1/projects/:p/branches/:b/undo            {from_lsn, to_lsn?, actor?, dry_run?} or {merge_plan_id, dry_run?}
 GET    /api/v1/projects/:p/branches/:b/entries         ?from_lsn&to_lsn&actor&collection&order&limit
 GET    /api/v1/projects/:p/branches/:b/time-travel
 GET    /api/v1/projects/:p/branches/:b/time-travel/query  ?lsn&collection&skip&limit
