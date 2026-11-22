@@ -39,7 +39,7 @@ func TestReviewUnauthenticatedKeepAliveIsNotHeldForever(t *testing.T) {
 
 	conn, err := net.Dial("tcp", listener.Addr().String())
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	body := `{"jsonrpc":"2.0","id":1,"method":"ping"}`
 	_, err = fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestReviewUnauthenticatedKeepAliveIsNotHeldForever(t *testing.T) {
 	resp, err := http.ReadResponse(reader, nil)
 	require.NoError(t, err)
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 
 	// The server's own bound for a silent client is ReadHeaderTimeout (10s).
@@ -161,7 +161,7 @@ func TestReviewProbesThatHold(t *testing.T) {
 			continue
 		}
 		ip := l.Addr().(*net.TCPAddr).IP
-		l.Close()
+		_ = l.Close()
 		assert.True(t, ip.IsLoopback(), "%s bound %s", addr, ip)
 	}
 
@@ -179,14 +179,14 @@ func TestReviewProbesThatHold(t *testing.T) {
 			}
 		}
 		_, _ = pw.Write([]byte(`"}`))
-		pw.Close()
+		_ = pw.Close()
 	}()
 	req, _ := http.NewRequest(http.MethodPost, server.URL, pr)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err == nil {
 		assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	pr.CloseWithError(os.ErrClosed)
 }

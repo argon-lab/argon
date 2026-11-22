@@ -17,8 +17,13 @@ entry — a synchronization barrier, not in-proxy capture).
   transport at `/mcp`, with a bearer token from `ARGON_MCP_TOKEN` (required
   on any non-loopback address), an Origin check against DNS rebinding, and
   the same restrictions and capture supervision as stdio. The Go package
-  gains `Server.HTTPHandler` and `Server.ServeHTTP`.
+  gains `Server.HTTPHandler`, `Server.ServeHTTP` and `Server.Close`.
   ([#213](https://github.com/argon-lab/argon/issues/213))
+- `argon mcp` over stdio now answers a line that is not JSON, or not a
+  JSON-RPC message, with JSON-RPC's parse or invalid-request error instead
+  of dropping it, and answers 2025-03-26 batches. A client's own responses
+  are ignored rather than answered with "method not found". A panic in
+  opening the engine is reported as a failed attempt.
 
 - `argon migrate-wal` accepts `-o json` and prints one object with
   `project`, `project_id`, `branches_visited`, `entries_rewritten` and

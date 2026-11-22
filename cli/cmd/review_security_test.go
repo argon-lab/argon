@@ -38,7 +38,7 @@ func TestReviewCheckHTTPListenRefusesATokenNoClientCanSend(t *testing.T) {
 			status := 0
 			if resp, err := http.DefaultClient.Do(req); err == nil {
 				status = resp.StatusCode
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			if listenErr == nil && status != http.StatusOK {
 				t.Fatalf("checkHTTPListen accepted token %q, yet a client sending exactly that token gets status %d (0 = client refused to send it)", token, status)

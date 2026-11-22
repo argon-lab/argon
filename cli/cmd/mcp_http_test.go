@@ -62,7 +62,7 @@ func (c *httpMCP) call(method string, params any) (int, map[string]any) {
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var reply map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&reply)
 	return resp.StatusCode, reply
@@ -87,7 +87,7 @@ func TestCLIMCPOverHTTP(t *testing.T) {
 	if uri == "" {
 		t.Skip("set ARGON_TEST_MONGODB_URI to run the MongoDB integration workflow")
 	}
-	t.Setenv("ARGON_METADATA_DB", "argon_cli_test_"+primitive.NewObjectID().Hex())
+	t.Setenv("ARGON_METADATA_DB", "argon_ct_"+primitive.NewObjectID().Hex()) // within Atlas's 38-byte limit
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))

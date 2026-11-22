@@ -171,14 +171,21 @@ claude mcp add --transport http argon http://127.0.0.1:8765/mcp \
   connection.
 - **Browsers.** Requests with an `Origin` header are accepted only from
   loopback origins and those named with `--allow-origin`, which guards a
-  local server against DNS rebinding.
+  local server against DNS rebinding. An allowed origin gets CORS headers.
+  `--allow-origin` takes an http or https origin, or an extension or webview
+  origin (`chrome-extension://…`, `vscode-webview://…`); give an
+  internationalised host in its punycode form, as browsers send it.
 - **Behaviour.** The tools, restrictions (`--read-only`,
   `--disable-tools`) and capture supervision are the same as over stdio.
   Ingesters belong to the server process, not to the request that started
   them. Each POST is answered with one `application/json` body. JSON-RPC
   batches are accepted for 2025-03-26 clients. The server keeps no sessions
   (no `Mcp-Session-Id`) and offers no server-initiated stream, so `GET`
-  gets 405. SIGINT or SIGTERM stops the listener and capture cleanly.
+  gets 405. On SIGINT or SIGTERM new requests get 503, calls in flight have
+  10 seconds before their context is canceled and their connection closed,
+  and capture stops after the last one returns; a second signal exits at
+  once. Idle connections close after 10 seconds, and a request body must
+  arrive within a minute (408 otherwise).
 
 ## REST control plane
 

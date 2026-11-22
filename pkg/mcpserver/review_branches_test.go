@@ -117,7 +117,9 @@ func TestReviewStdioTranscriptMatchesThePreviousDispatch(t *testing.T) {
 			assert.Contains(t, line, `"isError":true`)
 		}
 	}
-	assert.Equal(t, []string{"1", "3", "4", "5", "6", "7", "8", "9", "null", `"s"`}, ids, out.String())
+	// Since round 2 a line that is not JSON gets JSON-RPC's parse error
+	// (id null) instead of being dropped, as HTTP answers it.
+	assert.Equal(t, []string{"1", "3", "4", "5", "6", "7", "8", "9", "null", "null", `"s"`}, ids, out.String())
 }
 
 // HTTPHandler is exported and its tests mount it without ServeHTTP. Then
@@ -156,7 +158,10 @@ func TestReviewSweeperOutlivesTheRequestThatOpenedTheEngine(t *testing.T) {
 		s := NewLazy(e.connect, nil, nil)
 		srv := httptest.NewServer(s.HTTPHandler(HTTPConfig{}))
 		defer srv.Close()
-		defer func() { s.Close(); require.Eventually(t, func() bool { return sweepers() == 0 }, 10*time.Second, 10*time.Millisecond) }()
+		defer func() {
+			s.Close()
+			require.Eventually(t, func() bool { return sweepers() == 0 }, 10*time.Second, 10*time.Millisecond)
+		}()
 		check(t, srv.URL, e)
 	})
 }

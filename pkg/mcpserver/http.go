@@ -92,57 +92,21 @@ func (s *Server) HTTPHandler(cfg HTTPConfig) http.Handler {
 				http.Error(w, "message too large", http.StatusRequestEntityTooLarge)
 				return
 			}
+			var timeout net.Error
+			if errors.As(err, &timeout) && timeout.Timeout() {
+				http.Error(w, "the request body did not arrive within the read timeout", http.StatusRequestTimeout)
+				return
+			}
 			http.Error(w, "cannot read request body", http.StatusBadRequest)
 			return
 		}
-		raw := bytes.TrimSpace(body.Bytes())
-		if !json.Valid(raw) {
-			writeJSON(w, http.StatusBadRequest, replyError(json.RawMessage("null"), -32700, "parse error"))
-			return
-		}
-
-		if raw[0] == '[' {
-			var batch []json.RawMessage
-			if err := json.Unmarshal(raw, &batch); err != nil || len(batch) == 0 {
-				writeJSON(w, http.StatusBadRequest, replyError(json.RawMessage("null"), -32600, "invalid request: empty batch"))
-				return
-			}
-			// JSON-RPC answers each element on its own: a bad one gets its
-			// own error and does not keep the others from being answered.
-			var replies []*jsonRPCResponse
-			for _, element := range batch {
-				var req jsonRPCRequest
-				var resp *jsonRPCResponse
-				if err := json.Unmarshal(element, &req); err != nil {
-					resp = invalidRequest(nil)
-				} else {
-					resp = s.respond(r.Context(), &req)
-				}
-				if resp != nil {
-					replies = append(replies, resp)
-				}
-			}
-			if len(replies) == 0 {
-				// Only notifications and responses: accepted, no body.
-				w.WriteHeader(http.StatusAccepted)
-				return
-			}
-			writeJSON(w, http.StatusOK, replies)
-			return
-		}
-
-		var req jsonRPCRequest
-		if err := json.Unmarshal(raw, &req); err != nil || !req.isMessage() {
-			writeJSON(w, http.StatusBadRequest, invalidRequest(req.ID))
-			return
-		}
-		resp := s.respond(r.Context(), &req)
-		if resp == nil {
-			// A notification, or the client's response to a request.
+		reply, status := s.decode(r.Context(), body.Bytes())
+		if reply == nil {
+			// Only notifications and the client's responses: accepted.
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, status, reply)
 	})
 }
 
@@ -169,6 +133,13 @@ func (s *Server) Close() {
 	}
 	s.background.Wait()
 	s.stopAllIngesters()
+	// A handler mounted again, or a later ServeHTTP, starts afresh.
+	s.engineMu.Lock()
+	if s.closeDetached != nil {
+		s.detached, s.closeDetached = nil, nil
+		s.sweeping = false
+	}
+	s.engineMu.Unlock()
 }
 
 // ServeHTTP serves MCP at /mcp on the listener until ctx ends, then shuts
@@ -178,16 +149,20 @@ func (s *Server) ServeHTTP(ctx context.Context, listener net.Listener, cfg HTTPC
 	ctx, stop := s.start(ctx)
 	defer stop()
 	// Calls in flight when ctx ends get a grace period to finish before
-	// their context is canceled, and capture is stopped only after every
-	// one has returned, so nothing a call starts outlives the server.
+	// their context is canceled and their connections are closed, and
+	// capture is stopped only after every one has returned, so nothing a
+	// call starts outlives the server.
 	calls, cancelCalls := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelCalls()
-	var inFlight sync.WaitGroup
+	var tracker callTracker
 	handler := s.HTTPHandler(cfg)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		inFlight.Add(1)
-		defer inFlight.Done()
+		if !tracker.enter() {
+			http.Error(w, "the server is shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		defer tracker.leave()
 		handler.ServeHTTP(w, r)
 	}))
 	server := &http.Server{
@@ -197,29 +172,82 @@ func (s *Server) ServeHTTP(ctx context.Context, listener net.Listener, cfg HTTPC
 		ReadTimeout: time.Minute,
 		// An idle keep-alive connection, authenticated or not, is closed.
 		IdleTimeout:    10 * time.Second,
-		MaxHeaderBytes: 64 << 10,
+		MaxHeaderBytes: MaxHeaderBytes,
 		BaseContext:    func(net.Listener) context.Context { return calls },
 	}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
+	var served error
 	select {
-	case err := <-done:
-		cancelCalls()
-		inFlight.Wait()
-		return err
+	case served = <-done:
+		// The listener broke; connections it accepted must not keep serving.
 	case <-ctx.Done():
 	}
+	tracker.close()
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := server.Shutdown(shutdown); err != nil {
-		log.Printf("mcp: http shutdown: %v; canceling the calls still running", err)
+		log.Printf("mcp: http shutdown: %v; closing the connections still open and canceling their calls", err)
+		_ = server.Close()
 	}
 	cancelCalls()
-	inFlight.Wait()
-	if err := <-done; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	tracker.wait()
+	if served == nil {
+		served = <-done
+	}
+	if served != nil && !errors.Is(served, http.ErrServerClosed) {
+		return served
 	}
 	return nil
+}
+
+// MaxHeaderBytes bounds the request headers the HTTP transport reads, the
+// bearer token among them.
+const MaxHeaderBytes = 64 << 10
+
+// callTracker counts calls in flight. Once closed it refuses new ones, so
+// wait cannot miss a call that starts while it waits.
+type callTracker struct {
+	mu      sync.Mutex
+	n       int
+	closing bool
+	idle    *sync.Cond
+}
+
+func (c *callTracker) enter() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing {
+		return false
+	}
+	c.n++
+	return true
+}
+
+func (c *callTracker) leave() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n--
+	if c.n == 0 && c.idle != nil {
+		c.idle.Broadcast()
+	}
+}
+
+func (c *callTracker) close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closing = true
+}
+
+func (c *callTracker) wait() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.idle == nil {
+		c.idle = sync.NewCond(&c.mu)
+	}
+	for c.n > 0 {
+		c.idle.Wait()
+	}
 }
 
 // shutdownGrace is how long calls in flight may run on after the server is
@@ -260,25 +288,66 @@ func bearerMatches(header, token string) bool {
 }
 
 // NormalizeOrigin returns an origin as browsers send it: lower-case scheme
-// and host, no default port, no path. It refuses anything that is not a
-// plain http or https origin, such as a wildcard or a value with a path.
+// and host, no default port, no path, IPv6 in its canonical form. Schemes
+// other than http and https (chrome-extension://, vscode-webview://) are
+// kept as given, lower-cased. It refuses a wildcard, "null", a value with a
+// path, query or user info, a scheme browsers do not send (ftp, ws), and a
+// host that is not ASCII: give an
+// internationalised name in its punycode form, which is what browsers send.
 func NormalizeOrigin(origin string) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(origin))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
-		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || strings.Contains(origin, "*") {
-		return "", fmt.Errorf("%q is not an origin: give scheme and host, e.g. https://console.example.com", origin)
+	normalized, _, err := normalizeOrigin(origin)
+	return normalized, err
+}
+
+func normalizeOrigin(origin string) (normalized, host string, err error) {
+	refuse := func(why string) (string, string, error) {
+		return "", "", fmt.Errorf("%q is not an origin (%s): give scheme and host, e.g. https://console.example.com", origin, why)
+	}
+	trimmed := strings.TrimSpace(origin)
+	if trimmed == "" || strings.EqualFold(trimmed, "null") || strings.Contains(trimmed, "*") {
+		return refuse("empty, null or a wildcard")
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.Opaque != "" {
+		return refuse("no scheme or host")
+	}
+	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return refuse("it has user info, a path, a query or a fragment")
 	}
 	scheme, host, port := strings.ToLower(u.Scheme), strings.ToLower(u.Hostname()), u.Port()
+	if !browserOriginSchemes[scheme] {
+		return refuse("browsers send http, https or an extension or webview scheme")
+	}
+	if host == "" {
+		return refuse("no host")
+	}
+	for _, r := range host {
+		if r <= ' ' || r >= 0x7f || r == '%' {
+			return refuse("the host must be ASCII; give an internationalised name in punycode")
+		}
+	}
 	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
 		port = ""
 	}
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	}
+	hostport := host
+	if strings.Contains(hostport, ":") {
+		hostport = "[" + hostport + "]"
 	}
 	if port != "" {
-		host += ":" + port
+		hostport += ":" + port
 	}
-	return scheme + "://" + host, nil
+	return scheme + "://" + hostport, host, nil
+}
+
+// browserOriginSchemes are the schemes a browser puts in an Origin header
+// for a page that can make requests: web pages, extensions and webviews.
+var browserOriginSchemes = map[string]bool{
+	"http": true, "https": true,
+	"chrome-extension": true, "moz-extension": true, "safari-web-extension": true,
+	"ms-browser-extension": true, "vscode-webview": true, "vscode-file": true,
 }
 
 // originAllowed guards against DNS rebinding: a browser page on another
@@ -287,15 +356,16 @@ func originAllowed(origin string, allowed map[string]bool) bool {
 	if origin == "" {
 		return true
 	}
-	normalized, err := NormalizeOrigin(origin)
+	normalized, host, err := normalizeOrigin(origin)
 	if err != nil {
 		return false
 	}
 	if allowed[normalized] {
 		return true
 	}
-	u, _ := url.Parse(normalized)
-	host := u.Hostname()
+	if !strings.HasPrefix(normalized, "http://") && !strings.HasPrefix(normalized, "https://") {
+		return false
+	}
 	if host == "localhost" {
 		return true
 	}

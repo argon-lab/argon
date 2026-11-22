@@ -47,7 +47,7 @@ func reviewToolCall(ctx context.Context, endpoint string, id int, name string, a
 	if err != nil {
 		return "", false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var reply struct {
 		Result struct {
 			Content []struct {

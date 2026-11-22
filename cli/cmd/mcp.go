@@ -106,6 +106,10 @@ server-initiated stream: each POST is answered with one JSON body.`,
 // minHTTPTokenLength keeps a guessable token off a network listener.
 const minHTTPTokenLength = 32
 
+// maxHTTPTokenLength keeps the Authorization header well inside the
+// transport's header limit.
+const maxHTTPTokenLength = 4096
+
 func checkHTTPListen(addr, token string) error {
 	if _, _, err := net.SplitHostPort(addr); err != nil {
 		return fmt.Errorf("--http needs host:port, e.g. 127.0.0.1:8765: %v", err)
@@ -116,6 +120,9 @@ func checkHTTPListen(addr, token string) error {
 		if r <= ' ' || r == 0x7f {
 			return errors.New("ARGON_MCP_TOKEN must not contain spaces or control characters (for example: openssl rand -hex 32)")
 		}
+	}
+	if len(token) > maxHTTPTokenLength {
+		return fmt.Errorf("ARGON_MCP_TOKEN must be at most %d characters", maxHTTPTokenLength)
 	}
 	if token != "" && len(token) < minHTTPTokenLength {
 		return fmt.Errorf("ARGON_MCP_TOKEN must be at least %d characters (for example: openssl rand -hex 32)", minHTTPTokenLength)

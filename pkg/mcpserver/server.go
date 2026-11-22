@@ -16,12 +16,15 @@ package mcpserver
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -204,7 +207,7 @@ func (s *Server) openEngine(life, wait context.Context) error {
 	s.engineMu.Unlock()
 
 	attemptCtx, cancel := context.WithTimeout(life, s.connectTimeout)
-	services, err := s.connect(attemptCtx)
+	services, err := s.connectSafely(attemptCtx)
 	cancel()
 
 	s.engineMu.Lock()
@@ -219,6 +222,19 @@ func (s *Server) openEngine(life, wait context.Context) error {
 	close(attempt.done)
 	s.engineMu.Unlock()
 	return err
+}
+
+// connectSafely calls the Connector. A panic in it is reported as a failed
+// attempt, so the callers waiting on the attempt are answered and the next
+// call connects afresh instead of finding an attempt that never finishes.
+func (s *Server) connectSafely(ctx context.Context) (services *walcli.Services, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("mcp: the engine's connector panicked: %v\n%s", r, debug.Stack())
+			services, err = nil, fmt.Errorf("the engine's connector panicked: %v", r)
+		}
+	}()
+	return s.connect(ctx)
 }
 
 // connectAttempt is one call of the Connector, shared by every caller that
@@ -413,12 +429,9 @@ func (s *Server) Run(ctx context.Context) error {
 		if len(line) == 0 {
 			continue
 		}
-		var req jsonRPCRequest
-		if err := json.Unmarshal(line, &req); err != nil {
-			log.Printf("mcp: dropping unparseable message: %v", err)
-			continue
+		if reply, _ := s.decode(ctx, line); reply != nil {
+			s.writeValue(reply)
 		}
-		s.dispatch(ctx, &req)
 	}
 }
 
@@ -469,6 +482,52 @@ func (s *Server) lifetime(ctx context.Context) context.Context {
 }
 
 type detachedLifeKey struct{}
+
+// decode answers one transport message: a JSON-RPC message, or for
+// 2025-03-26 clients a batch of them. It returns what to send back (nil when
+// there is nothing to answer) and the HTTP status that goes with it. Both
+// transports use it, so stdio and HTTP answer the same input alike.
+func (s *Server) decode(ctx context.Context, raw []byte) (interface{}, int) {
+	raw = bytes.TrimSpace(raw)
+	if !json.Valid(raw) {
+		return replyError(json.RawMessage("null"), -32700, "parse error"), http.StatusBadRequest
+	}
+	if raw[0] == '[' {
+		var batch []json.RawMessage
+		if err := json.Unmarshal(raw, &batch); err != nil || len(batch) == 0 {
+			return replyError(json.RawMessage("null"), -32600, "invalid request: empty batch"), http.StatusBadRequest
+		}
+		// JSON-RPC answers each element on its own: a bad one gets its own
+		// error and does not keep the others from being answered.
+		var replies []*jsonRPCResponse
+		for _, element := range batch {
+			var req jsonRPCRequest
+			var resp *jsonRPCResponse
+			if err := json.Unmarshal(element, &req); err != nil {
+				// A type error still leaves a decoded id to answer to.
+				resp = invalidRequest(req.ID)
+			} else {
+				resp = s.respond(ctx, &req)
+			}
+			if resp != nil {
+				replies = append(replies, resp)
+			}
+		}
+		if len(replies) == 0 {
+			return nil, http.StatusAccepted
+		}
+		return replies, http.StatusOK
+	}
+	var req jsonRPCRequest
+	if err := json.Unmarshal(raw, &req); err != nil || !req.isMessage() {
+		return invalidRequest(req.ID), http.StatusBadRequest
+	}
+	resp := s.respond(ctx, &req)
+	if resp == nil {
+		return nil, http.StatusAccepted
+	}
+	return resp, http.StatusOK
+}
 
 // dispatch answers one request on the server's output stream.
 func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) {
@@ -583,7 +642,9 @@ func replyError(id json.RawMessage, code int, message string) *jsonRPCResponse {
 	return &jsonRPCResponse{JSONRPC: "2.0", ID: id, Error: &jsonRPCError{Code: code, Message: message}}
 }
 
-func (s *Server) write(resp *jsonRPCResponse) {
+func (s *Server) write(resp *jsonRPCResponse) { s.writeValue(resp) }
+
+func (s *Server) writeValue(resp interface{}) {
 	payload, err := json.Marshal(resp)
 	if err != nil {
 		log.Printf("mcp: failed to encode response: %v", err)
