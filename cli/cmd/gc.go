@@ -32,7 +32,7 @@ var gcCmd = &cobra.Command{
 	Short: "Reclaim WAL entries covered by snapshots and outside retention",
 	Long: `Deletes WAL entries that no reader can need anymore: entries at or
 below the newest snapshot that covers them, older than the retention
-window, and not pinned by a live child branch's fork point. History
+window, and not needed by a live child branch's fork point or by a pin. History
 without snapshot coverage is never deleted, no matter how old.
 
 Reclaiming entries ends time-travel, audit and undo below the cutoff —

@@ -1,3 +1,8 @@
+// Package config is deprecated: the write-ahead log is always on in Argon
+// v2, and nothing in Argon reads ENABLE_WAL or these feature switches. It is
+// kept only so existing imports keep compiling.
+//
+// Deprecated: no replacement is needed.
 package config
 
 import "os"

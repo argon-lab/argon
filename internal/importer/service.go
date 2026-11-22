@@ -424,9 +424,9 @@ func unsupportedCollectionType(name, collectionType string) error {
 
 // importCollection imports a single collection into the WAL system.
 // Imports write put entries directly (one batched append per batch of
-// documents) instead of going through the interceptor: the target project
-// is freshly created, so per-document duplicate checks and filter
-// resolution would be pure overhead.
+// documents) instead of going through walwriter: the target project is
+// freshly created, so its per-document pre-image lookups would be pure
+// overhead.
 func (s *ImportService) importCollection(ctx context.Context, sourceDB *mongo.Database, collectionName string, branch *wal.Branch, batchSize int) (int64, int64, error) {
 	collection := sourceDB.Collection(collectionName)
 

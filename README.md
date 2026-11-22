@@ -153,8 +153,9 @@ editable branch before write-back. Detach refuses while a recent claim is
 unsettled and reports older unsettled plans for inspection.
 Write-back and `--enable-source-images`
 require importing with a user allowed to run `replSetGetConfig`, such as one
-with the `clusterMonitor` role. Use `argon source status` to see which identity
-check applies. The MCP server and REST API do not offer write-back. Argon
+with the `clusterMonitor` role. On Atlas M0 and Flex, which refuse it, a
+TLS-verified `mongodb.net` connection identifies the source instead. Use
+`argon source status` to see which identity check applies. The MCP server and REST API do not offer write-back. Argon
 never drops, renames or rewrites a source database. See
 [the operations guide](docs/OPERATIONS.md#following-a-source-database).
 
@@ -198,7 +199,8 @@ Prefer clicking? `argon console` serves a local web console (UI + REST API),
 supervises capture, reaps expired sandboxes every minute, and opens your browser.
 The console's MIT-licensed source is in [web/](web/README.md); see the
 [rebuild instructions](CONTRIBUTING.md#console-source-and-reproducible-assets).
-For a complete managed workflow, run [the two-agent pinned dataset example](examples/pinned_agents.py).
+For a complete managed workflow, run [the two-agent pinned dataset example](examples/pinned_agents.py),
+or [an OpenAI Agents SDK agent in a sandbox](examples/openai_agents_sandbox.py).
 
 ## For AI agents
 
@@ -273,7 +275,8 @@ window can be reclaimed unless a pin protects it.
 |---|---|---|
 | **Sandboxes** | `argon sandbox create --ttl 1h [--credential]` | fork with a TTL and an optional MongoDB user scoped to the sandbox |
 | **Dataset pins** | `argon pin create` / `pin sandbox` | named captured states protected from GC and resets while the pin exists |
-| **Data PRs** | `argon merge preview/apply` | three-way merges as reviewable plans; conflicts never silent |
+| **Data PRs** | `argon merge preview/check/apply` | three-way merges as reviewable plans; conflicts never silent |
+| **Source following** | `argon import database --online` / `argon source follow` | import, follow and write back a live replica set or MongoDB Atlas cluster (M0 included) |
 | **Undo** | `argon undo --actor <a>` | revert a range or actor label; append-only, conflict-aware |
 | **Real databases** | `argon checkout` / `argon proxy` | any driver, real mongod; proxy serves stable `mongodb://host/<project>~<branch>` URIs |
 | **Write capture** | `argon watch` | exact change-stream images → history, one actor label per branch |
@@ -311,7 +314,7 @@ model, stated honestly: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | [CLI reference](docs/CLI.md) | every command |
 | [Agents](docs/AGENTS.md) | sandboxes, pins, MCP, REST API, argon-agents, proxy |
 | [Architecture](docs/ARCHITECTURE.md) | how it works and what it guarantees |
-| [Operations](docs/OPERATIONS.md) | deployment, chunk stores (S3/FS), GC, v1→v2 migration |
+| [Operations](docs/OPERATIONS.md) | deployment, following a source (incl. MongoDB Atlas), write-back, credentials, indexes, chunk stores, GC, v1→v2 migration |
 | [Performance](docs/PERFORMANCE.md) | every number lives in the [reproducible benchmarks](https://github.com/argon-lab/benchmarks) — none here, by policy |
 
 ## Community

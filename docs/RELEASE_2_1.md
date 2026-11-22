@@ -1,3 +1,7 @@
+> Historical note for the 2.1.x releases, kept for reference. Some limits
+> described here were lifted later; see [CHANGELOG.md](../CHANGELOG.md) for
+> the current behaviour.
+
 # Argon 2.1: correctness and workflow hardening
 
 Argon 2.1.0 was published on September 7, 2026 to address the project review.

@@ -17,6 +17,20 @@ entry — a synchronization barrier, not in-proxy capture).
   instant in their help and output, and drop the "Features: ✅ …" lines from
   their listings. A branch is a metadata write that copies no documents;
   the README and CLI reference now say that instead.
+- `argon import` no longer prints "Ready for time travel and branching" or
+  "Your data now has time travel capabilities!", and `branches create` drops
+  its ⚡. Import, source and sandbox help now say that index definitions are
+  recorded and built by checkouts, that an Atlas M0/Flex source is identified
+  by a verified TLS connection instead of a replica-set ID, and describe
+  `--credential`. The refusal for a source without a replica-set ID names the
+  Atlas alternative.
+- Documentation brought up to date with 2.12.0: Atlas identities in the CLI,
+  operations and architecture guides, `merge check` in the write-back steps,
+  `--credential` in SECURITY.md, indexes in the CLI and agents guides, the
+  `wal_index_specs` collection, and removed references to `migrate-wal
+  --dry-run`, `argon ingest` and `ARGON_LOG_LEVEL`, none of which exist.
+  The unused `internal/config` package is removed and `pkg/config` is marked
+  deprecated.
 
 ### Fixed
 

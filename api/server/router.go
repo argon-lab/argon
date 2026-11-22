@@ -1,4 +1,4 @@
-// Package main serves Argon's REST API — the control plane for language
+// Package server implements Argon's REST API — the control plane for language
 // SDKs (the Python agent adapters foremost): projects, branches, sandboxes,
 // checkout/connection strings, diff/merge, undo and time travel. The data
 // plane stays native MongoDB — clients write to branch databases through

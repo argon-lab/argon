@@ -178,8 +178,13 @@ read, and `argon source status` shows which (`identity`):
   read the ID. Two deployments can present the same set name and member
   hosts, for example through a tunnel or in clusters with the same internal
   names. This check supports following and resync. Write-back and
-  `--enable-source-images` require an ID recorded at import, and
-  `argon source status` reports when the binding rules out write-back.
+  `--enable-source-images` require an ID, or a verified Atlas identity,
+  recorded at import, and `argon source status` reports when the binding
+  rules out write-back.
+- **The set name and TLS-verified Atlas hosts**, on Atlas tiers that refuse
+  `replSetGetConfig` (M0, Flex). This identity supports following, merge
+  check, write-back and source images; see
+  [MongoDB Atlas as a source](#mongodb-atlas-as-a-source).
 
 A network failure while reading `replSetGetConfig` aborts the preflight.
 
@@ -304,7 +309,7 @@ include the following.
     source's existing collections, so updates carry their own documents for
     as long as the oplog keeps them and no reads are needed. The option has
     its own experimental gate and requires `ARGON_EXPERIMENTAL_SOURCE=1`
-    and a replica-set ID at import. Operators can enable
+    and a replica-set ID or verified Atlas identity at import. Operators can enable
     `changeStreamPreAndPostImages` directly on MongoDB. MongoDB then stores
     a pre-image of every updated or deleted document in
     `config.system.preimages` until it expires with the oplog (or
@@ -458,6 +463,7 @@ instead:
 
 ```sh
 argon merge preview -p myapp -b <sandbox> --output json
+argon merge check <plan-id>        # optional: unique-key collisions with the source
 argon merge apply <plan-id> --write-back --approve <approval_digest>
 ```
 
@@ -617,9 +623,11 @@ name order, and undo can restore fields in name order, as in 2.8.0.
 - If a document's only prior WAL row is stored under a key the single-key read
   misses, a programmatic write records no pre-image and undo deletes the
   document. [#154](https://github.com/argon-lab/argon/issues/154)
-- If a snapshot covers a reclaimed WAL row but an older row remains, a
-  programmatic write can record the older row as its pre-image and undo
-  restores that older value. [#155](https://github.com/argon-lab/argon/issues/155)
+- Fixed in 2.11.0: an interrupted garbage collection could leave an older
+  row behind a reclaimed newer one, so a programmatic write recorded that
+  row as its pre-image. Run `argon gc` once after upgrading; until then such
+  a history still reads the older row.
+  [#155](https://github.com/argon-lab/argon/issues/155)
 
 ### What Argon can never do to a source
 
@@ -911,12 +919,11 @@ not deterministic. The v2 materializer refuses v1 data entries with an
 error naming the fix:
 
 ```bash
-argon migrate-wal --project myapp --dry-run
 argon migrate-wal --project myapp
 ```
 
 Migration rewrites entries in place (parents before children, LSNs
-preserved), is idempotent, and needs no downtime for readers of already-
+preserved), is idempotent (running it again finds nothing to rewrite), and needs no downtime for readers of already-
 migrated branches.
 
 ## Monitoring
