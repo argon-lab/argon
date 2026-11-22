@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -44,7 +45,7 @@ The migration is idempotent: running it again finds nothing to rewrite.`,
 			return fmt.Errorf("project %q not found: %w", projectName, err)
 		}
 
-		fmt.Printf("Migrating WAL for project %q (%s)...\n", project.Name, project.ID)
+		fmt.Fprintf(os.Stderr, "Migrating WAL for project %q (%s)...\n", project.Name, project.ID)
 		result, err := services.Migrate.MigrateProject(context.Background(), project.ID)
 		if err != nil {
 			return fmt.Errorf("migration failed: %w", err)
