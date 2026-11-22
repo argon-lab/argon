@@ -343,7 +343,8 @@ func TestReviewDropFailsForAnotherReason(t *testing.T) {
 	if !d.exists(*name) {
 		t.Fatalf("%s is gone, the premise of this test is wrong", *name)
 	}
-	if !strings.Contains(err.Error(), "the probe's database "+*name+" could not be emptied either") {
+	// Not a refusal, so the collection-by-collection fallback is not tried.
+	if !strings.Contains(err.Error(), "the probe's database "+*name+" may be left behind") || !strings.Contains(err.Error(), "drop it by hand") {
 		t.Errorf("the database left behind is not named: %v", err)
 	}
 }
