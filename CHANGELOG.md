@@ -11,6 +11,13 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+### Added
+
+- `argon migrate-wal` accepts `-o json` and prints one object with
+  `project`, `project_id`, `branches_visited`, `entries_rewritten` and
+  `entries_removed`. Its progress line now goes to stderr.
+  ([#201](https://github.com/argon-lab/argon/pull/201), thanks @prascli)
+
 ### Changed
 
 - `argon projects` and `argon branches` no longer describe branching as
