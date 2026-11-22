@@ -87,7 +87,7 @@ agent's output deterministic.
 claude mcp add argon -- argon mcp
 ```
 
-Thirteen tools: sandbox create/discard/keep · branch list · connect ·
+Fourteen tools: sandbox create/discard/keep/extend · branch list · connect ·
 diff · merge preview/apply · undo · snapshot create · pin create/list/
 sandbox. The server runs a capture ingester for every sandbox it hands
 out — no extra process.

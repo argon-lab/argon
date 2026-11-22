@@ -326,7 +326,7 @@ func TestIntrospectionNeedsNoDatabase(t *testing.T) {
 	c.send(map[string]interface{}{"jsonrpc": "2.0", "method": "notifications/initialized"})
 	assert.Empty(t, c.result("ping", nil))
 	tools := c.tools()
-	require.Len(t, tools, 13)
+	require.Len(t, tools, 14)
 	assert.Equal(t, listedTools(t, newBareServer()), tools, "titles, annotations and schemas do not depend on a connection")
 	assert.NotNil(t, c.call("tools/call", map[string]interface{}{"name": "argon_no_such_tool"})["error"])
 	require.NoError(t, c.end())
@@ -343,7 +343,7 @@ func TestIntrospectionNeedsNoDatabase(t *testing.T) {
 
 	restricted := lazy(DisableTools("argon_merge_apply"))
 	tools = restricted.tools()
-	assert.Len(t, tools, 12)
+	assert.Len(t, tools, 13)
 	assert.NotContains(t, tools, "argon_merge_apply")
 	require.NoError(t, restricted.end())
 
@@ -369,7 +369,7 @@ func TestAToolCallReportsAnUnreachableDatabaseAndTheServerStaysUp(t *testing.T) 
 			assert.Contains(t, text, want)
 		}
 		assert.Empty(t, c.result("ping", nil), "the server answers after a failed call")
-		assert.Len(t, c.tools(), 13)
+		assert.Len(t, c.tools(), 14)
 		assert.EqualValues(t, attempt, attempts.Load(), "every call tries to connect again")
 	}
 	assert.Zero(t, sweepers(), "nothing runs in the background before a connection exists")
@@ -588,7 +588,7 @@ func TestBackgroundConnectionOpensTheEngineWithoutAToolCall(t *testing.T) {
 		server.reconnectDelay = 10 * time.Millisecond
 		return server
 	})
-	require.Len(t, c.tools(), 13, "introspection works while the database is still out of reach")
+	require.Len(t, c.tools(), 14, "introspection works while the database is still out of reach")
 
 	require.Eventually(t, func() bool {
 		server.engineMu.Lock()
@@ -611,7 +611,7 @@ func TestBackgroundConnectionStopsWithTheServer(t *testing.T) {
 		server.reconnectDelay = time.Hour
 		return server
 	})
-	require.Len(t, c.tools(), 13)
+	require.Len(t, c.tools(), 14)
 	done := make(chan error, 1)
 	go func() { done <- c.end() }()
 	select {
@@ -654,7 +654,7 @@ func TestARestartedServerResumesCaptureWithoutAToolCall(t *testing.T) {
 		server = NewLazy(e.connect, in, out, ConnectInBackground())
 		return server
 	})
-	require.Len(t, second.tools(), 13)
+	require.Len(t, second.tools(), 14)
 	require.Eventually(t, func() bool {
 		server.engineMu.Lock()
 		defer server.engineMu.Unlock()

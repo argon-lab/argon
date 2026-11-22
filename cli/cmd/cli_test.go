@@ -731,7 +731,7 @@ func (p *mcpProcess) close() error {
 var mcpToolNames = []string{
 	"argon_branch_list", "argon_connect", "argon_diff", "argon_merge_apply", "argon_merge_preview",
 	"argon_pin_create", "argon_pin_list", "argon_pin_sandbox", "argon_sandbox_create",
-	"argon_sandbox_discard", "argon_sandbox_keep", "argon_snapshot_create", "argon_undo",
+	"argon_sandbox_discard", "argon_sandbox_extend", "argon_sandbox_keep", "argon_snapshot_create", "argon_undo",
 }
 
 // A client that only wants to know what the server offers, such as a directory

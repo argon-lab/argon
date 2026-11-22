@@ -7,6 +7,9 @@ import react from "@vitejs/plugin-react";
 const apiOrigin = process.env.ARGON_API_ORIGIN ?? "http://127.0.0.1:1818";
 
 export default defineConfig({
+  // Relative asset URLs: the engine names the path the console is served
+  // under in <base href>, so they resolve behind a reverse proxy too.
+  base: "./",
   plugins: [react()],
   server: {
     proxy: {

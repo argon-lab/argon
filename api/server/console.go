@@ -63,11 +63,17 @@ type Options struct {
 	DemoTTL         time.Duration
 	DemoWriteLimit  int // writes per session per minute
 	DemoMaxProjects int // concurrent demo projects
+
+	// BasePath is the path prefix a reverse proxy serves the console under,
+	// e.g. "/p/acme" (see NormalizeBasePath); empty serves it at the root.
+	BasePath string
 }
 
 // OptionsFromEnv reads the server options from the environment:
 // ARGON_CORS_ORIGINS, ARGON_API_TOKEN, ARGON_READ_ONLY, ARGON_ALLOWED_HOSTS,
-// ARGON_TRUSTED_PROXIES, ARGON_DEMO_MODE, ARGON_DEMO_TTL_MINUTES.
+// ARGON_TRUSTED_PROXIES, ARGON_DEMO_MODE, ARGON_DEMO_TTL_MINUTES and
+// ARGON_CONSOLE_BASE_PATH (an invalid base path is left for
+// ValidateListenAddress to report).
 func OptionsFromEnv() Options {
 	envBool := func(name string) bool {
 		switch strings.ToLower(os.Getenv(name)) {
@@ -91,6 +97,7 @@ func OptionsFromEnv() Options {
 		TrustedProxies: os.Getenv("ARGON_TRUSTED_PROXIES"),
 		DemoMode:       envBool("ARGON_DEMO_MODE"),
 		DemoTTL:        ttl,
+		BasePath:       os.Getenv("ARGON_CONSOLE_BASE_PATH"),
 	}
 }
 
@@ -212,6 +219,9 @@ func ValidateListenAddress(addr string, opts Options) error {
 	local := host == "localhost" || (ip != nil && ip.IsLoopback())
 	if !local && opts.Token == "" && !opts.DemoMode {
 		return fmt.Errorf("public API binding requires ARGON_API_TOKEN (or explicit ARGON_DEMO_MODE); use 127.0.0.1 for local access")
+	}
+	if _, err := NormalizeBasePath(opts.BasePath); err != nil {
+		return err
 	}
 	return nil
 }

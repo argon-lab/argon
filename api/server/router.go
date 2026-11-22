@@ -51,6 +51,14 @@ func NewRouterWith(services *walcli.Services, opts Options) *Router {
 	if opts.Version == "" {
 		opts.Version = Version
 	}
+	// ValidateListenAddress reports an invalid base path to the operator;
+	// one that reaches here anyway is not written into the page.
+	if base, err := NormalizeBasePath(opts.BasePath); err == nil {
+		opts.BasePath = base
+	} else {
+		log.Printf("console: ignoring base path: %v", err)
+		opts.BasePath = ""
+	}
 	if opts.DemoMode {
 		if opts.DemoTTL <= 0 {
 			opts.DemoTTL = 60 * time.Minute
