@@ -943,6 +943,18 @@ The engine authenticates to MongoDB using `MONGODB_URI`. With the wire
 proxy, clients must set `authSource=admin` explicitly (the URI database is
 a branch alias, not a real database SCRAM can run against).
 
+**The engine's own user** needs `readWriteAnyDatabase` and
+`dbAdminAnyDatabase`: branches and sandboxes are databases it creates and
+drops, and exact change-stream images need `collMod`. With
+`readWriteAnyDatabase` alone, `argon doctor` fails at `capture_permissions`
+because it cannot drop its temporary database, and names these roles. On
+MongoDB Atlas, set them under Database & Network Access → Database Users →
+Edit → Specific Privileges, or use the built-in Atlas admin role; Atlas does
+not allow `createUser`, so `argon sandbox create --credential` is refused
+there. Checked with `argon doctor` against an access-controlled replica set
+(2026-11-22): `readWriteAnyDatabase` alone fails, both roles pass; on an
+Atlas M0 the engine passed with Atlas admin.
+
 A source connection string (`--uri`, `ARGON_SOURCE_URI`) is used for the
 command it is given to and is not written anywhere. Errors, status reports
 and stored documents show the source as scheme, hosts and database only;
