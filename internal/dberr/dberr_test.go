@@ -29,3 +29,24 @@ func TestUnauthorized(t *testing.T) {
 		}
 	}
 }
+
+func TestAtlasRestriction(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"collection limit", mongo.CommandError{Code: 8000, Name: "AtlasError", Message: "cannot create a new collection -- already using 500 collections of 500"}, true},
+		{"space quota, wrapped", fmt.Errorf("collection orders: %w", mongo.CommandError{Code: 8000, Name: "AtlasError", Message: "you are over your space quota, using 513 MB of 512 MB"}), true},
+		{"bulk write over quota", mongo.BulkWriteException{WriteErrors: []mongo.BulkWriteError{{WriteError: mongo.WriteError{Code: 8000, Message: "you are over your space quota"}}}}, true},
+		{"missing privilege is not a restriction", mongo.CommandError{Code: 8000, Name: "AtlasError", Message: "user is not allowed to do action [dropDatabase] on [x.]"}, false},
+		{"unsupported command is not a restriction", mongo.CommandError{Code: 8000, Name: "AtlasError", Message: "CMD_NOT_ALLOWED: createUser"}, false},
+		{"other server error", mongo.CommandError{Code: 11000, Message: "E11000 duplicate key"}, false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		if got := AtlasRestriction(c.err); got != c.want {
+			t.Errorf("%s: AtlasRestriction = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

@@ -26,6 +26,11 @@ entry — a synchronization barrier, not in-proxy capture).
   (or Atlas admin) when the deployment is MongoDB Atlas, where a missing
   privilege is reported as AtlasError 8000.
   ([#214](https://github.com/argon-lab/argon/issues/214))
+- On MongoDB Atlas, a checkout that the free or Flex tier refuses
+  (AtlasError 8000) now explains the tier limits and how to free space, and
+  `argon doctor` adds an `atlas_usage` line: databases, collections and data
+  plus index size, next to the M0 caps.
+  ([#215](https://github.com/argon-lab/argon/issues/215))
 - `argon projects` and `argon branches` no longer describe branching as
   instant in their help and output, and drop the "Features: ✅ …" lines from
   their listings. A branch is a metadata write that copies no documents;

@@ -209,9 +209,12 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"internal/checkout/service.go:dropPhysical",
 	}, drops, "a new database or collection drop must go through checkout's guarded dropPhysical")
 	require.Equal(t, []string{
-		// The doctor inspects the deployment and writes to its own probe databases.
+		// The doctor inspects the deployment and writes to its own probe
+		// databases. On Atlas it reads dbStats to show usage.
+		"cli/cmd/doctor.go:atlasUsage RunCommand",
 		"cli/cmd/doctor.go:inspectDeployment RunCommand",
 		"cli/cmd/doctor.go:inspectDeployment RunCommand",
+		"cli/cmd/doctor.go:inspectDeployment atlasUsage",
 		"cli/cmd/doctor.go:inspectDeployment probeCapture",
 		"cli/cmd/doctor.go:probeCapture Drop",
 		"cli/cmd/doctor.go:probeCapture Drop",

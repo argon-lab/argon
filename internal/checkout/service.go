@@ -17,6 +17,7 @@ import (
 	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
+	"github.com/argon-lab/argon/v2/internal/dberr"
 	"github.com/argon-lab/argon/v2/internal/indexspec"
 	"github.com/argon-lab/argon/v2/internal/materializer"
 	"github.com/argon-lab/argon/v2/internal/wal"
@@ -170,9 +171,20 @@ func (s *Service) Checkout(ctx context.Context, branchID string) (*Info, error) 
 	}
 	info, err := s.fill(ctx, branch, dbName, collections)
 	if err != nil {
-		return nil, s.removeUnfinished(branch, dbName, err)
+		return nil, s.removeUnfinished(branch, dbName, explainAtlasRestriction(err))
 	}
 	return info, nil
+}
+
+// explainAtlasRestriction says what to do when MongoDB Atlas refuses a
+// checkout on a tier limit. Atlas's own message, kept in the error, carries
+// the usage; the tier itself cannot be read from the database, so the limits
+// are named as those of the free tier.
+func explainAtlasRestriction(err error) error {
+	if !dberr.AtlasRestriction(err) {
+		return err
+	}
+	return fmt.Errorf("%w. MongoDB Atlas refused the checkout, which on a free or Flex cluster is a tier limit (the free M0 allows 100 databases, 500 collections and 0.5 GB of data in total). Each checkout copies the branch into a new database: free space with argon sandbox discard or by releasing branches you no longer need, or use a dedicated tier (M10 and up)", err)
 }
 
 // removeUnfinished drops the database a failed checkout had started to fill,

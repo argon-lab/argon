@@ -80,6 +80,18 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 	if !add("replica_set", hello.SetName+" primary", err) {
 		return
 	}
+	// On Atlas the free and Flex tiers cap databases, collections and data,
+	// and each checkout adds a database; the tier itself cannot be read
+	// from the database, so the usage is shown next to the free tier's caps.
+	if isAtlasDeployment(hello.Hosts) {
+		detail := "usage unavailable"
+		if dbs, colls, bytes, usageErr := atlasUsage(ctx, client); usageErr == nil {
+			detail = formatAtlasUsage(dbs, colls, bytes)
+		} else {
+			detail += ": " + usageErr.Error()
+		}
+		add("atlas_usage", detail, nil)
+	}
 	if probe {
 		err = explainProbeError(probeCapture(ctx, client), hello.Hosts)
 		if !add("capture_permissions", "temporary collections, exact images, capture boundary, change stream and transaction verified", err) {
@@ -102,16 +114,55 @@ func explainProbeError(err error, hosts []string) error {
 	if err == nil || !walcli.IsUnauthorized(err) {
 		return err
 	}
+	if isAtlasDeployment(hosts) {
+		return fmt.Errorf("%w; on MongoDB Atlas, give the engine's database user the built-in roles readWriteAnyDatabase and dbAdminAnyDatabase (Database & Network Access → Database Users → Edit → Specific Privileges), or Atlas admin; see docs/OPERATIONS.md, Authentication", err)
+	}
+	return fmt.Errorf("%w; grant the engine's MongoDB user readWriteAnyDatabase and dbAdminAnyDatabase; see docs/OPERATIONS.md, Authentication", err)
+}
+
+// isAtlasDeployment reports whether hello's hosts are MongoDB Atlas hosts.
+func isAtlasDeployment(hosts []string) bool {
 	for _, host := range hosts {
 		name := strings.ToLower(host)
 		if i := strings.LastIndex(name, ":"); i >= 0 {
 			name = name[:i]
 		}
 		if strings.HasSuffix(name, ".mongodb.net") {
-			return fmt.Errorf("%w; on MongoDB Atlas, give the engine's database user the built-in roles readWriteAnyDatabase and dbAdminAnyDatabase (Database & Network Access → Database Users → Edit → Specific Privileges), or Atlas admin; see docs/OPERATIONS.md, Authentication", err)
+			return true
 		}
 	}
-	return fmt.Errorf("%w; grant the engine's MongoDB user readWriteAnyDatabase and dbAdminAnyDatabase; see docs/OPERATIONS.md, Authentication", err)
+	return false
+}
+
+// atlasUsage counts what Atlas's free-tier limits count: user databases,
+// their collections, and data size as Atlas defines it (uncompressed BSON
+// plus indexes).
+func atlasUsage(ctx context.Context, client *mongo.Client) (databases, collections int, bytes int64, err error) {
+	names, err := client.ListDatabaseNames(ctx, bson.D{})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	for _, name := range names {
+		if name == "admin" || name == "local" || name == "config" {
+			continue
+		}
+		var stats struct {
+			Collections int     `bson:"collections"`
+			DataSize    float64 `bson:"dataSize"`
+			IndexSize   float64 `bson:"indexSize"`
+		}
+		if err := client.Database(name).RunCommand(ctx, bson.D{{Key: "dbStats", Value: 1}}).Decode(&stats); err != nil {
+			return 0, 0, 0, fmt.Errorf("dbStats on %s: %w", name, err)
+		}
+		databases++
+		collections += stats.Collections
+		bytes += int64(stats.DataSize + stats.IndexSize)
+	}
+	return databases, collections, bytes, nil
+}
+
+func formatAtlasUsage(databases, collections int, bytes int64) string {
+	return fmt.Sprintf("%d databases, %d collections, %.1f MB of data and indexes (the free M0 allows 100 databases, 500 collections and 0.5 GB)", databases, collections, float64(bytes)/1e6)
 }
 
 // checkCaptureBoundary is a variable so tests can stand in for a deployment
