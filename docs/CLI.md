@@ -398,8 +398,10 @@ argon gc -p P [--retention 168h] [--dry-run]
     Reclaim entries covered by snapshots, outside retention, and needed
     by no live child or pin. No snapshot → nothing is ever deleted.
 
-argon mcp [--read-only] [--disable-tools a,b]
-                                    MCP server over stdio (13 tools); withhold tools
+argon mcp [--read-only] [--disable-tools a,b] [--http addr [--allow-origin o]]
+                                    MCP server over stdio, or Streamable HTTP at
+                                    http://addr/mcp with ARGON_MCP_TOKEN as bearer
+                                    token (13 tools); withhold tools
                                     such as argon_merge_apply to keep them manual.
                                     Starts without a database and connects in the
                                     background (releases after 2.3.1)
