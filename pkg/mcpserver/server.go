@@ -117,6 +117,11 @@ type Server struct {
 	// before ingesters are stopped.
 	background sync.WaitGroup
 
+	// life is the context the server serves under, set when Run or
+	// ServeHTTP's lifecycle starts. The engine and what it starts (the
+	// sweeper, resumed capture) live under it rather than under one request.
+	life context.Context
+
 	in    io.Reader
 	outMu sync.Mutex
 	out   io.Writer
@@ -313,16 +318,8 @@ type jsonRPCResponse struct {
 // Run serves until the input closes or the context is canceled. Sandbox
 // ingesters started by this server stop with it.
 func (s *Server) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer func() { cancel(); s.background.Wait(); s.stopAllIngesters() }()
-	s.engineMu.Lock()
-	s.startSweeper(ctx)
-	s.engineMu.Unlock()
-	if s.connect != nil && s.eager {
-		background := make(chan struct{})
-		go func() { defer close(background); s.connectInBackground(ctx) }()
-		defer func() { cancel(); <-background }()
-	}
+	ctx, stop := s.start(ctx)
+	defer stop()
 
 	scanner := bufio.NewScanner(s.in)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -362,14 +359,56 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
+// start begins what a serving server runs besides answering requests: the
+// sweeper and, with ConnectInBackground, the background connection. The
+// returned stop ends them and the ingesters this server supervises.
+func (s *Server) start(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	s.engineMu.Lock()
+	s.life = ctx
+	s.startSweeper(ctx)
+	s.engineMu.Unlock()
+	background := make(chan struct{})
+	if s.connect != nil && s.eager {
+		go func() { defer close(background); s.connectInBackground(ctx) }()
+	} else {
+		close(background)
+	}
+	return ctx, func() {
+		cancel()
+		<-background
+		s.background.Wait()
+		s.stopAllIngesters()
+	}
+}
+
+// lifetime is the context the engine is opened under: the serving context
+// when one has started, so a request ending does not stop the sweeper.
+func (s *Server) lifetime(ctx context.Context) context.Context {
+	s.engineMu.Lock()
+	defer s.engineMu.Unlock()
+	if s.life != nil {
+		return s.life
+	}
+	return ctx
+}
+
+// dispatch answers one request on the server's output stream.
 func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) {
+	if resp := s.respond(ctx, req); resp != nil {
+		s.write(resp)
+	}
+}
+
+// respond answers one request. It returns nil for a notification.
+func (s *Server) respond(ctx context.Context, req *jsonRPCRequest) *jsonRPCResponse {
 	switch req.Method {
 	case "initialize":
 		var params struct {
 			ProtocolVersion string `json:"protocolVersion"`
 		}
 		_ = json.Unmarshal(req.Params, &params)
-		s.reply(req.ID, map[string]interface{}{
+		return reply(req.ID, map[string]interface{}{
 			"protocolVersion": negotiateProtocolVersion(params.ProtocolVersion),
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 			"serverInfo": map[string]interface{}{
@@ -379,16 +418,15 @@ func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) {
 		})
 	case "notifications/initialized", "notifications/cancelled":
 		// Notifications get no response.
+		return nil
 	case "ping":
-		s.reply(req.ID, map[string]interface{}{})
+		return reply(req.ID, map[string]interface{}{})
 	case "tools/list":
-		s.reply(req.ID, map[string]interface{}{"tools": s.offeredTools()})
+		return reply(req.ID, map[string]interface{}{"tools": s.offeredTools()})
 	case "tools/call":
-		s.handleToolCall(ctx, req)
+		return s.handleToolCall(ctx, req)
 	default:
-		if len(req.ID) != 0 {
-			s.replyError(req.ID, -32601, fmt.Sprintf("method %q not found", req.Method))
-		}
+		return replyError(req.ID, -32601, fmt.Sprintf("method %q not found", req.Method))
 	}
 }
 
@@ -397,74 +435,69 @@ type toolCallParams struct {
 	Arguments map[string]interface{} `json:"arguments"`
 }
 
-func (s *Server) handleToolCall(ctx context.Context, req *jsonRPCRequest) {
+func (s *Server) handleToolCall(ctx context.Context, req *jsonRPCRequest) *jsonRPCResponse {
 	var params toolCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		s.replyError(req.ID, -32602, fmt.Sprintf("invalid tools/call params: %v", err))
-		return
+		return replyError(req.ID, -32602, fmt.Sprintf("invalid tools/call params: %v", err))
 	}
 
 	handler, ok := toolHandlers[params.Name]
 	if !ok {
-		s.replyError(req.ID, -32602, fmt.Sprintf("unknown tool %q", params.Name))
-		return
+		return replyError(req.ID, -32602, fmt.Sprintf("unknown tool %q", params.Name))
 	}
 	// A withheld tool is refused even if the client calls it without
 	// having seen it listed.
 	if !s.offers(params.Name) {
-		s.replyError(req.ID, -32602, fmt.Sprintf("tool %q is not available: this server was started with it disabled", params.Name))
-		return
+		return replyError(req.ID, -32602, fmt.Sprintf("tool %q is not available: this server was started with it disabled", params.Name))
 	}
 	if params.Name == "argon_merge_apply" && params.Arguments["strategy"] != nil {
 		strategy, ok := params.Arguments["strategy"].(string)
 		if !ok {
-			s.replyToolError(req.ID, "strategy must be a string (theirs or ours)")
-			return
+			return replyToolError(req.ID, "strategy must be a string (theirs or ours)")
 		}
 		if err := walcli.ValidateMergeStrategy(strategy); err != nil {
-			s.replyToolError(req.ID, err.Error())
-			return
+			return replyToolError(req.ID, err.Error())
 		}
 	}
 
 	// Every tool works on the engine; nothing before this point does.
-	if err := s.openEngine(ctx); err != nil {
+	if err := s.openEngine(s.lifetime(ctx)); err != nil {
 		log.Printf("mcp: %s did not run: %v", params.Name, err)
-		s.replyToolError(req.ID, unavailable(err))
-		return
+		return replyToolError(req.ID, unavailable(err))
 	}
 
 	text, err := handler(ctx, s, params.Arguments)
 	if err != nil {
-		s.replyToolError(req.ID, err.Error())
-		return
+		return replyToolError(req.ID, err.Error())
 	}
-	s.reply(req.ID, map[string]interface{}{
+	return reply(req.ID, map[string]interface{}{
 		"content": []map[string]interface{}{{"type": "text", "text": text}},
 	})
 }
 
 // replyToolError answers a tool call that failed. Tool-level failures are
 // results with isError, not protocol errors.
-func (s *Server) replyToolError(id json.RawMessage, text string) {
-	s.reply(id, map[string]interface{}{
+func replyToolError(id json.RawMessage, text string) *jsonRPCResponse {
+	return reply(id, map[string]interface{}{
 		"content": []map[string]interface{}{{"type": "text", "text": text}},
 		"isError": true,
 	})
 }
 
-func (s *Server) reply(id json.RawMessage, result interface{}) {
+// reply builds a result. A message without an id is a notification and
+// gets no response, so reply returns nil for it.
+func reply(id json.RawMessage, result interface{}) *jsonRPCResponse {
 	if len(id) == 0 {
-		return
+		return nil
 	}
-	s.write(&jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: result})
+	return &jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: result}
 }
 
-func (s *Server) replyError(id json.RawMessage, code int, message string) {
+func replyError(id json.RawMessage, code int, message string) *jsonRPCResponse {
 	if len(id) == 0 {
-		return
+		return nil
 	}
-	s.write(&jsonRPCResponse{JSONRPC: "2.0", ID: id, Error: &jsonRPCError{Code: code, Message: message}})
+	return &jsonRPCResponse{JSONRPC: "2.0", ID: id, Error: &jsonRPCError{Code: code, Message: message}}
 }
 
 func (s *Server) write(resp *jsonRPCResponse) {

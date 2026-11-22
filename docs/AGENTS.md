@@ -15,7 +15,7 @@ Four surfaces, one engine — pick by integration point:
 | Surface | Start it | For |
 |---|---|---|
 | CLI | `argon sandbox`, `argon pin`, … | humans, scripts, CI |
-| MCP server | `argon mcp` (stdio) | Claude / Cursor / any MCP client |
+| MCP server | `argon mcp` (stdio, or `--http` for Streamable HTTP) | Claude / Cursor / any MCP client |
 | REST API + console | `argon console` (or `(cd api && go run .)`) | language SDKs, browsers |
 | Wire proxy | `argon proxy` | stable per-branch connection strings |
 
@@ -146,6 +146,39 @@ and 2025-06-18 and answers with the client's revision when it is one of
 them. The per-request protocol introduced in 2026-07-28 (`server/discover`,
 no `initialize`) is not supported and not currently planned; clients that
 support both fall back to the handshake.
+
+### Over HTTP
+
+`argon mcp --http <addr>` serves the same tools over MCP's Streamable HTTP
+transport at `http://<addr>/mcp`, for a client on another machine or a
+hosted control plane in front of the engine:
+
+```bash
+export ARGON_MCP_TOKEN=$(openssl rand -hex 32)
+argon mcp --http 127.0.0.1:8765 --disable-tools argon_merge_apply
+claude mcp add --transport http argon http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer $ARGON_MCP_TOKEN"
+```
+
+- **Token.** With `ARGON_MCP_TOKEN` set, a request without
+  `Authorization: Bearer <token>` gets 401. A token must be at least 32
+  characters. A loopback address may run without one. Any other address,
+  including `:8765` and `0.0.0.0`, needs one, and the server will not start
+  without it. The token is read from the environment, not a flag, so it
+  does not show in `ps`.
+- **TLS.** The server speaks plain HTTP. Off this machine, put it behind a
+  TLS-terminating proxy; the bearer token is only as private as the
+  connection.
+- **Browsers.** Requests with an `Origin` header are accepted only from
+  loopback origins and those named with `--allow-origin`, which guards a
+  local server against DNS rebinding.
+- **Behaviour.** The tools, restrictions (`--read-only`,
+  `--disable-tools`) and capture supervision are the same as over stdio.
+  Ingesters belong to the server process, not to the request that started
+  them. Each POST is answered with one `application/json` body. JSON-RPC
+  batches are accepted for 2025-03-26 clients. The server keeps no sessions
+  (no `Mcp-Session-Id`) and offers no server-initiated stream, so `GET`
+  gets 405. SIGINT or SIGTERM stops the listener and capture cleanly.
 
 ## REST control plane
 

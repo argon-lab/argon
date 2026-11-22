@@ -13,6 +13,13 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Added
 
+- `argon mcp --http <addr>` serves the MCP tools over the Streamable HTTP
+  transport at `/mcp`, with a bearer token from `ARGON_MCP_TOKEN` (required
+  on any non-loopback address), an Origin check against DNS rebinding, and
+  the same restrictions and capture supervision as stdio. The Go package
+  gains `Server.HTTPHandler` and `Server.ServeHTTP`.
+  ([#213](https://github.com/argon-lab/argon/issues/213))
+
 - `argon migrate-wal` accepts `-o json` and prints one object with
   `project`, `project_id`, `branches_visited`, `entries_rewritten` and
   `entries_removed`. Its progress line now goes to stderr.
