@@ -76,6 +76,11 @@ server-initiated stream: each POST is answered with one JSON body.`,
 			return mcpserver.NewLazy(connect, os.Stdin, os.Stdout, opts...).Run(context.Background())
 		}
 		origins, _ := cmd.Flags().GetStringSlice("allow-origin")
+		for _, origin := range origins {
+			if _, err := mcpserver.NormalizeOrigin(origin); err != nil {
+				return fmt.Errorf("--allow-origin: %w", err)
+			}
+		}
 		cfg := mcpserver.HTTPConfig{Token: os.Getenv("ARGON_MCP_TOKEN"), AllowedOrigins: origins}
 		if err := checkHTTPListen(addr, cfg.Token); err != nil {
 			return err
@@ -86,6 +91,9 @@ server-initiated stream: each POST is answered with one JSON body.`,
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		// The first signal stops the server gracefully: calls in flight
+		// finish and capture is stopped. A second one ends the process.
+		go func() { <-ctx.Done(); stop() }()
 		auth := "no token"
 		if cfg.Token != "" {
 			auth = "bearer token from ARGON_MCP_TOKEN"
@@ -99,6 +107,16 @@ server-initiated stream: each POST is answered with one JSON body.`,
 const minHTTPTokenLength = 32
 
 func checkHTTPListen(addr, token string) error {
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return fmt.Errorf("--http needs host:port, e.g. 127.0.0.1:8765: %v", err)
+	}
+	// A client cannot send a header value with surrounding whitespace or
+	// control characters, so such a token would lock every client out.
+	for _, r := range token {
+		if r <= ' ' || r == 0x7f {
+			return errors.New("ARGON_MCP_TOKEN must not contain spaces or control characters (for example: openssl rand -hex 32)")
+		}
+	}
 	if token != "" && len(token) < minHTTPTokenLength {
 		return fmt.Errorf("ARGON_MCP_TOKEN must be at least %d characters (for example: openssl rand -hex 32)", minHTTPTokenLength)
 	}
