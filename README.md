@@ -18,6 +18,13 @@
 Review what it changed, merge what you want, discard the rest. Git for MongoDB
 underneath: branch, diff, merge, time travel and undo. Any driver, real mongod.**
 
+**Your data can live on MongoDB Atlas.** From 2.12.0 Argon imports and follows
+an Atlas database, on the free M0 tier or a dedicated replica-set cluster such
+as M10, gives agents sandboxes of it, and writes reviewed changes back to
+Atlas. The engine and the sandboxes run on a MongoDB replica set you run;
+sharded clusters are not supported. See
+[MongoDB Atlas as a source](docs/OPERATIONS.md#mongodb-atlas-as-a-source).
+
 Three ideas, thirty seconds:
 
 1. **A sandbox is a real MongoDB database** — forked from a branch or a pinned
