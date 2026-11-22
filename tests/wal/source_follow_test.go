@@ -66,9 +66,21 @@ func newFollowFixture(t *testing.T, sourceURI string) *followFixture {
 
 func newFollowFixtureAt(t *testing.T, engineURI, sourceURI string) *followFixture {
 	t.Helper()
+	return newFollowFixtureNamed(t, engineURI, sourceURI, "argon_follow_meta_")
+}
+
+// newFollowFixtureNamed names the metadata database with the given prefix
+// and a short unique suffix. Atlas's shared tiers allow database names of
+// at most 38 bytes, which the default prefix and suffix exceed.
+func newFollowFixtureNamed(t *testing.T, engineURI, sourceURI, metadataPrefix string) *followFixture {
+	t.Helper()
 	ctx := context.Background()
 	id := fmt.Sprintf("%d_%d", time.Now().UnixNano(), followFixtureSeq.Add(1))
-	f := &followFixture{sourceURI: sourceURI, project: "shop-" + id, metadataName: "argon_follow_meta_" + id}
+	metadataName := metadataPrefix + id
+	if metadataPrefix != "argon_follow_meta_" {
+		metadataName = metadataPrefix + primitive.NewObjectID().Hex()
+	}
+	f := &followFixture{sourceURI: sourceURI, project: "shop-" + id, metadataName: metadataName}
 	services, err := walcli.NewServicesAt(engineURI, f.metadataName)
 	require.NoError(t, err)
 	services.SynchronousSnapshots()

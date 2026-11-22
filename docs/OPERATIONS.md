@@ -965,6 +965,18 @@ a checkout for a tier limit (AtlasError 8000), the error says so and how to
 free space: `argon sandbox discard`, releasing unused branches, or a
 dedicated tier (M10 and up).
 
+**The engine on Atlas.** Metadata, sandboxes and checkouts can all live on
+an Atlas cluster: set `MONGODB_URI` to it. Atlas's shared tiers (M0, Flex)
+allow database names of at most 38 bytes. The engine's own names fit
+(`argon_br_<24 hex>` is 33 bytes), but a long `ARGON_METADATA_DB` is
+refused with "Database name ... is too long". The Atlas workflow
+(`.github/workflows/atlas.yml`) runs daily against an M0 with the engine
+there while it follows another deployment: import, following, a sandbox,
+write-back, a restart that resumes following, `argon doctor`, and an agent
+loop over `argon mcp --http`. A dedicated tier (M10 and up) runs too when
+`ARGON_TEST_ATLAS_DEDICATED_URI` is set; it is not set by default because
+an M10 is billed while it runs.
+
 A source connection string (`--uri`, `ARGON_SOURCE_URI`) is used for the
 command it is given to and is not written anywhere. Errors, status reports
 and stored documents show the source as scheme, hosts and database only;
