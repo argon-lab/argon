@@ -20,6 +20,12 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Changed
 
+- When MongoDB refuses `argon doctor`'s capture probe for lack of a
+  privilege, the failure names the roles the engine's user needs:
+  `readWriteAnyDatabase` and `dbAdminAnyDatabase`, with Atlas instructions
+  (or Atlas admin) when the deployment is MongoDB Atlas, where a missing
+  privilege is reported as AtlasError 8000.
+  ([#214](https://github.com/argon-lab/argon/issues/214))
 - `argon projects` and `argon branches` no longer describe branching as
   instant in their help and output, and drop the "Features: ✅ …" lines from
   their listings. A branch is a metadata write that copies no documents;

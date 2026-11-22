@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -96,4 +97,39 @@ func TestDoctorChecksCaptureBoundary(t *testing.T) {
 			t.Fatalf("status should be healthy: %+v", report.Checks)
 		}
 	})
+}
+
+// A refused probe names the roles to grant, and says so in Atlas terms when
+// the deployment is Atlas. Atlas reports a missing privilege as AtlasError
+// 8000 rather than Unauthorized (13).
+func TestDoctorRoleHintForRefusedProbe(t *testing.T) {
+	atlasRefusal := mongo.CommandError{Code: 8000, Name: "AtlasError", Message: "user is not allowed to do action [dropDatabase] on [argon_doctor_x.]"}
+	selfManagedRefusal := mongo.CommandError{Code: 13, Name: "Unauthorized", Message: "not authorized on argon_doctor_x to execute command { dropDatabase: 1 }"}
+	wrapped := func(err error) error { return fmt.Errorf("remove temporary physical database: %w", err) }
+
+	atlas := explainProbeError(wrapped(atlasRefusal), []string{"ac-abc-shard-00-00.q4bf3vu.mongodb.net:27017"})
+	for _, want := range []string{"dropDatabase", "MongoDB Atlas", "readWriteAnyDatabase", "dbAdminAnyDatabase", "Atlas admin"} {
+		if !strings.Contains(atlas.Error(), want) {
+			t.Errorf("Atlas refusal hint lacks %q: %v", want, atlas)
+		}
+	}
+	var original mongo.CommandError
+	if !errors.As(atlas, &original) || original.Code != 8000 {
+		t.Error("the original error must stay wrapped")
+	}
+
+	selfManaged := explainProbeError(wrapped(selfManagedRefusal), []string{"localhost:27017"})
+	for _, want := range []string{"readWriteAnyDatabase", "dbAdminAnyDatabase"} {
+		if !strings.Contains(selfManaged.Error(), want) {
+			t.Errorf("refusal hint lacks %q: %v", want, selfManaged)
+		}
+	}
+	if strings.Contains(selfManaged.Error(), "Atlas") {
+		t.Errorf("a self-managed deployment gets no Atlas instructions: %v", selfManaged)
+	}
+
+	other := errors.New("capture probe did not observe its update")
+	if got := explainProbeError(other, []string{"ac-abc-shard-00-00.q4bf3vu.mongodb.net:27017"}); got != other {
+		t.Errorf("errors other than a refusal are returned unchanged, got %v", got)
+	}
 }

@@ -69,8 +69,9 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 		return
 	}
 	var hello struct {
-		SetName string `bson:"setName"`
-		Primary bool   `bson:"isWritablePrimary"`
+		SetName string   `bson:"setName"`
+		Primary bool     `bson:"isWritablePrimary"`
+		Hosts   []string `bson:"hosts"`
 	}
 	err = client.Database("admin").RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&hello)
 	if err == nil && (hello.SetName == "" || !hello.Primary) {
@@ -80,7 +81,7 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 		return
 	}
 	if probe {
-		err = probeCapture(ctx, client)
+		err = explainProbeError(probeCapture(ctx, client), hello.Hosts)
 		if !add("capture_permissions", "temporary collections, exact images, capture boundary, change stream and transaction verified", err) {
 			return
 		}
@@ -90,6 +91,27 @@ func inspectDeployment(ctx context.Context, probe bool) (report deploymentReport
 		add("capture_status", "", err)
 	}
 	return
+}
+
+// explainProbeError adds what to grant when MongoDB refused the capture probe
+// for lack of a privilege. The engine's user needs readWriteAnyDatabase and
+// dbAdminAnyDatabase (the deployment tests use exactly these): sandboxes are
+// databases it creates and drops, and exact images need collMod. On MongoDB
+// Atlas, readWriteAnyDatabase alone cannot drop a database.
+func explainProbeError(err error, hosts []string) error {
+	if err == nil || !walcli.IsUnauthorized(err) {
+		return err
+	}
+	for _, host := range hosts {
+		name := strings.ToLower(host)
+		if i := strings.LastIndex(name, ":"); i >= 0 {
+			name = name[:i]
+		}
+		if strings.HasSuffix(name, ".mongodb.net") {
+			return fmt.Errorf("%w; on MongoDB Atlas, give the engine's database user the built-in roles readWriteAnyDatabase and dbAdminAnyDatabase (Database & Network Access → Database Users → Edit → Specific Privileges), or Atlas admin; see docs/OPERATIONS.md, Authentication", err)
+		}
+	}
+	return fmt.Errorf("%w; grant the engine's MongoDB user readWriteAnyDatabase and dbAdminAnyDatabase; see docs/OPERATIONS.md, Authentication", err)
 }
 
 // checkCaptureBoundary is a variable so tests can stand in for a deployment
