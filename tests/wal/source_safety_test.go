@@ -204,6 +204,9 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 	drops, sites, err := confinedSourceCalls(root)
 	require.NoError(t, err)
 	require.Equal(t, []string{
+		// The doctor's own probe database: its collections when dropDatabase
+		// is refused, guarded by the argon_doctor_ name.
+		"cli/cmd/doctor.go:dropProbeCollections",
 		"cli/cmd/doctor.go:probeCapture",
 		"cli/cmd/doctor.go:probeCapture",
 		"internal/checkout/service.go:dropPhysical",
@@ -212,6 +215,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		// The doctor inspects the deployment and writes to its own probe
 		// databases. On Atlas it reads dbStats to show usage.
 		"cli/cmd/doctor.go:atlasUsage RunCommand",
+		"cli/cmd/doctor.go:dropProbeCollections Drop",
 		"cli/cmd/doctor.go:inspectDeployment RunCommand",
 		"cli/cmd/doctor.go:inspectDeployment RunCommand",
 		"cli/cmd/doctor.go:inspectDeployment atlasUsage",
@@ -224,6 +228,7 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"cli/cmd/doctor.go:probeCapture RunCommand",
 		"cli/cmd/doctor.go:probeCapture UpdateOne",
 		"cli/cmd/doctor.go:probeCapture WithTransaction",
+		"cli/cmd/doctor.go:probeCapture dropProbeCollections",
 		// Argon metadata indexes and checkout of a branch's own physical database.
 		"internal/branch/wal/service.go:NewBranchService CreateMany",
 		// User management targets the database derived from the branch ID.

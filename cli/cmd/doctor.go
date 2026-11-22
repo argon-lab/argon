@@ -165,6 +165,24 @@ func formatAtlasUsage(databases, collections int, bytes int64) string {
 	return fmt.Sprintf("%d databases, %d collections, %.1f MB of data and indexes (the free M0 allows 100 databases, 500 collections and 0.5 GB)", databases, collections, float64(bytes)/1e6)
 }
 
+// dropProbeCollections removes every collection of the probe's own database,
+// for a user that is refused dropDatabase.
+func dropProbeCollections(ctx context.Context, physical *mongo.Database) error {
+	if !strings.HasPrefix(physical.Name(), "argon_doctor_") {
+		return fmt.Errorf("%s is not a probe database", physical.Name())
+	}
+	names, err := physical.ListCollectionNames(ctx, bson.D{})
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := physical.Collection(name).Drop(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // checkCaptureBoundary is a variable so tests can stand in for a deployment
 // whose hello reply has no operationTime.
 var checkCaptureBoundary = walcli.CheckCaptureBoundary
@@ -176,8 +194,20 @@ func probeCapture(ctx context.Context, client *mongo.Client) (probeErr error) {
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := physical.Drop(cleanup); err != nil && probeErr == nil {
-			probeErr = fmt.Errorf("remove temporary physical database: %w", err)
+		if err := physical.Drop(cleanup); err != nil {
+			// A user that may not drop databases may still drop the
+			// collections it created, and a database with no collections is
+			// gone. The refusal is still the probe's result: the engine
+			// drops a database for every sandbox and checkout it removes.
+			left := ""
+			if emptyErr := dropProbeCollections(cleanup, physical); emptyErr != nil {
+				left = fmt.Sprintf("; the probe's database %s could not be emptied either (%v): drop it by hand", physical.Name(), emptyErr)
+			}
+			if probeErr == nil {
+				probeErr = fmt.Errorf("remove temporary physical database: %w%s", err, left)
+			} else if left != "" {
+				probeErr = fmt.Errorf("%w%s", probeErr, left)
+			}
 		}
 		if err := metadata.Drop(cleanup); err != nil && probeErr == nil {
 			probeErr = fmt.Errorf("remove temporary metadata collection: %w", err)
