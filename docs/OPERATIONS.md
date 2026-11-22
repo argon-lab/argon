@@ -955,6 +955,16 @@ there. Checked with `argon doctor` against an access-controlled replica set
 (2026-11-22): `readWriteAnyDatabase` alone fails, both roles pass; on an
 Atlas M0 the engine passed with Atlas admin.
 
+**Atlas free and Flex tiers** cap what a checkout can create: the free M0
+allows 100 databases, 500 collections and 0.5 GB of data and indexes in
+total, and each checkout or sandbox is a new database holding a full copy
+of its branch. On Atlas, `argon doctor` prints an `atlas_usage` line with
+the current counts next to those caps (the tier itself cannot be read from
+the database, so the caps shown are always the M0 ones). When Atlas refuses
+a checkout for a tier limit (AtlasError 8000), the error says so and how to
+free space: `argon sandbox discard`, releasing unused branches, or a
+dedicated tier (M10 and up).
+
 A source connection string (`--uri`, `ARGON_SOURCE_URI`) is used for the
 command it is given to and is not written anywhere. Errors, status reports
 and stored documents show the source as scheme, hosts and database only;

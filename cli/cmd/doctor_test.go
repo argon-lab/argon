@@ -133,3 +133,48 @@ func TestDoctorRoleHintForRefusedProbe(t *testing.T) {
 		t.Errorf("errors other than a refusal are returned unchanged, got %v", got)
 	}
 }
+
+func TestDoctorAtlasUsage(t *testing.T) {
+	if got := formatAtlasUsage(12, 45, 3_400_000); got != "12 databases, 45 collections, 3.4 MB of data and indexes (the free M0 allows 100 databases, 500 collections and 0.5 GB)" {
+		t.Errorf("formatAtlasUsage = %q", got)
+	}
+	if !isAtlasDeployment([]string{"ac-abc-shard-00-01.q4bf3vu.mongodb.net:27017"}) || isAtlasDeployment([]string{"localhost:27017"}) {
+		t.Error("isAtlasDeployment misclassifies hosts")
+	}
+
+	uri := os.Getenv("ARGON_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("set ARGON_TEST_MONGODB_URI to count usage on a real deployment")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Disconnect(context.Background()) }()
+	name := "argon_usage_" + primitive.NewObjectID().Hex()
+	db := client.Database(name)
+	defer func() { _ = db.Drop(context.Background()) }()
+	for _, c := range []string{"a", "b"} {
+		if _, err := db.Collection(c).InsertOne(ctx, bson.M{"v": strings.Repeat("x", 1000)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := struct{ dbs, colls int }{}
+	dbs, colls, bytes, err := atlasUsage(ctx, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.dbs, before.colls = dbs, colls
+	if dbs < 1 || colls < 2 || bytes < 2000 {
+		t.Errorf("usage %d databases, %d collections, %d bytes; want at least 1, 2, 2000", dbs, colls, bytes)
+	}
+	if _, err := client.Database(name).Collection("c").InsertOne(ctx, bson.M{"v": 1}); err != nil {
+		t.Fatal(err)
+	}
+	_, colls, _, err = atlasUsage(ctx, client)
+	if err != nil || colls != before.colls+1 {
+		t.Errorf("a new collection should count: before %d, after %d (%v)", before.colls, colls, err)
+	}
+}
