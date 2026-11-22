@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,8 @@ func doctorCheck(report deploymentReport, name string) (deploymentCheck, bool) {
 	}
 	return deploymentCheck{}, false
 }
+
+var probeDatabaseName = regexp.MustCompile(`^argon_doctor_[0-9a-f]{24}$`)
 
 func TestDoctorChecksCaptureBoundary(t *testing.T) {
 	uri := os.Getenv("ARGON_TEST_MONGODB_URI")
@@ -45,11 +48,17 @@ func TestDoctorChecksCaptureBoundary(t *testing.T) {
 	}()
 	probeDatabases := func() []string {
 		t.Helper()
-		// Atlas accepts only a plain regex or string for the name filter,
-		// not the {$regex: ...} operator form.
-		names, err := client.ListDatabaseNames(ctx, bson.M{"name": primitive.Regex{Pattern: "^argon_doctor_[0-9a-f]{24}$"}})
+		// Filtered here: Atlas's free tier refuses a name filter given as
+		// {$regex: ...} or as an anchored regex.
+		all, err := client.ListDatabaseNames(ctx, bson.D{})
 		if err != nil {
 			t.Fatal(err)
+		}
+		var names []string
+		for _, name := range all {
+			if probeDatabaseName.MatchString(name) {
+				names = append(names, name)
+			}
 		}
 		return names
 	}
