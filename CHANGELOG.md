@@ -17,11 +17,13 @@ entry — a synchronization barrier, not in-proxy capture).
   the console behind a reverse proxy that mounts it under a path: the page
   names the path in `<base href>`, and its assets, client routes and API
   calls resolve under it. The server answers with or without the prefix, so
-  a proxy may strip it or forward it. The console now loads its assets by
-  relative URL.
+  a proxy may strip it or forward it, and redirects keep the prefix. A base
+  path starting with `/api`, `/assets` or `/health` is refused. The console
+  now loads its assets by relative URL.
 - MCP tool `argon_sandbox_extend` (`project`, `branch`, `ttl_minutes`) pushes
-  a sandbox's expiry to `ttl_minutes` from now, with the name, arguments and
-  reply Argon Cloud's control plane uses for its own tool of that name.
+  a sandbox's expiry to `ttl_minutes` (at most a year) from now, with the
+  name, arguments and reply Argon Cloud's control plane uses for its own tool
+  of that name.
 
 - `argon mcp --http <addr>` serves the MCP tools over the Streamable HTTP
   transport at `/mcp`, with a bearer token from `ARGON_MCP_TOKEN` (required

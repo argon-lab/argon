@@ -41,14 +41,15 @@ type traits struct {
 }
 
 var toolTraits = map[string]traits{
-	"argon_branch_list":     {title: "List branches", readOnly: true, idempotent: true},
-	"argon_diff":            {title: "Diff a branch against its parent", readOnly: true, idempotent: true},
-	"argon_pin_list":        {title: "List dataset pins", readOnly: true, idempotent: true},
-	"argon_sandbox_create":  {title: "Create a sandbox"},
-	"argon_pin_sandbox":     {title: "Create a sandbox from a pin"},
-	"argon_connect":         {title: "Check out a branch and get its connection string", idempotent: true},
-	"argon_sandbox_keep":    {title: "Keep a sandbox", idempotent: true},
-	"argon_sandbox_extend":  {title: "Extend a sandbox", idempotent: true},
+	"argon_branch_list":    {title: "List branches", readOnly: true, idempotent: true},
+	"argon_diff":           {title: "Diff a branch against its parent", readOnly: true, idempotent: true},
+	"argon_pin_list":       {title: "List dataset pins", readOnly: true, idempotent: true},
+	"argon_sandbox_create": {title: "Create a sandbox"},
+	"argon_pin_sandbox":    {title: "Create a sandbox from a pin"},
+	"argon_connect":        {title: "Check out a branch and get its connection string", idempotent: true},
+	"argon_sandbox_keep":   {title: "Keep a sandbox", idempotent: true},
+	// Not idempotent: the expiry is counted from the time of each call.
+	"argon_sandbox_extend":  {title: "Extend a sandbox"},
 	"argon_snapshot_create": {title: "Snapshot a branch", idempotent: true},
 	"argon_pin_create":      {title: "Pin a branch state"},
 	"argon_merge_preview":   {title: "Prepare a merge plan"},
@@ -345,10 +346,17 @@ func toolSandboxKeep(ctx context.Context, s *Server, args map[string]interface{}
 	return "TTL removed; the branch is permanent now.", nil
 }
 
+// maxExtendMinutes bounds one extension to a year, well inside what a
+// time.Duration holds.
+const maxExtendMinutes = 365 * 24 * 60
+
 func toolSandboxExtend(ctx context.Context, s *Server, args map[string]interface{}) (string, error) {
 	minutes, ok := argNumber(args, "ttl_minutes")
 	if !ok || minutes <= 0 {
 		return "", fmt.Errorf("ttl_minutes must be a positive number")
+	}
+	if minutes > maxExtendMinutes {
+		return "", fmt.Errorf("ttl_minutes is too large: at most %d (a year); to keep a sandbox for good, use argon_sandbox_keep", maxExtendMinutes)
 	}
 	branch := argString(args, "branch")
 	if branch == "" {
