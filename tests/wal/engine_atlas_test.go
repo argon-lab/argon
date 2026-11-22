@@ -17,13 +17,14 @@ import (
 // they import. Atlas as a source is covered by TestSourceAtlas_*.
 //
 // Runs against every ARGON_TEST_ATLAS_* cluster that is set. Its databases
-// on Atlas are argon_follow_meta_<id> and argon_br_<id>; the fixture drops
+// on Atlas are argon_fm_<id> and argon_br_<id>; the fixture drops
 // them, and the Atlas workflow's cleanup step removes what a killed run left.
 func TestEngineAtlas_FollowSandboxWriteBack(t *testing.T) {
 	for name, atlas := range atlasSources(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
-			f := newFollowFixtureAt(t, atlas, metadataDeploymentURI)
+			// argon_fm_<24 hex> is 33 bytes, inside the 38 Atlas shared tiers allow.
+			f := newFollowFixtureNamed(t, atlas, metadataDeploymentURI, "argon_fm_")
 			orders := f.source.Collection("orders")
 			docs := make([]interface{}, 30)
 			for i := range docs {

@@ -30,7 +30,7 @@ func TestDoctorChecksCaptureBoundary(t *testing.T) {
 		t.Skip("set ARGON_TEST_MONGODB_URI to run the doctor probe against MongoDB")
 	}
 	t.Setenv("MONGODB_URI", uri)
-	t.Setenv("ARGON_METADATA_DB", "argon_doctor_test_"+primitive.NewObjectID().Hex())
+	t.Setenv("ARGON_METADATA_DB", "argon_dt_"+primitive.NewObjectID().Hex())
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))

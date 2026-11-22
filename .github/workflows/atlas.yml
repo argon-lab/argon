@@ -13,8 +13,9 @@ name: Atlas
 # a database user on a free M0 cluster that holds nothing but these tests'
 # databases. As a source it needs readWriteAnyDatabase; as the engine's
 # deployment it also needs dbAdminAnyDatabase (Atlas admin covers both). The
-# tests create and drop databases named follow_src_<id>, argon_follow_meta_<id>,
-# argon_br_<id>, argon_cli_test_<id> and argon_doctor_*, and write to
+# tests create and drop databases named follow_src_<id>, argon_fm_<id>,
+# argon_br_<id>, argon_ct_<id>, argon_dt_<id> and argon_doctor_<id> (Atlas's
+# shared tiers allow names of at most 38 bytes), and write to
 # follow_tick to move the stream on. ARGON_TEST_ATLAS_DEDICATED_URI, when set,
 # adds a dedicated-tier (M10+) cluster to the tests/wal runs. GitHub's runners have no fixed address, so that
 # cluster's IP access list allows 0.0.0.0/0; the password is what protects it.
@@ -141,7 +142,7 @@ jobs:
         run: |
           docker run --rm -e URI="$ARGON_TEST_ATLAS_SHARED_URI" "$MONGODB_IMAGE" bash -c 'mongosh "$URI" --quiet --eval "
             for (const d of db.adminCommand({listDatabases: 1, nameOnly: true}).databases) {
-              const owned = [\"follow_src_\", \"argon_follow_meta_\", \"argon_br_\", \"argon_cli_test_\", \"argon_doctor_\"];
+              const owned = [\"follow_src_\", \"argon_fm_\", \"argon_br_\", \"argon_ct_\", \"argon_dt_\", \"argon_doctor_\"];
               if (!owned.some(p => d.name.startsWith(p)) && d.name !== \"follow_tick\") continue;
               const target = db.getSiblingDB(d.name);
               for (const c of target.getCollectionNames()) target.getCollection(c).drop();
