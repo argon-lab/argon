@@ -74,6 +74,12 @@ const (
 	maxCachedAliases = 1024
 )
 
+// errMetadataUnavailable marks a command the proxy could not route because
+// its metadata store did not answer. That is a failure of the proxy, not a
+// missing namespace, and it is answered as one: drivers treat
+// NamespaceNotFound as success for commands such as drop.
+var errMetadataUnavailable = errors.New("argon's metadata is unavailable")
+
 // errMalformed marks a frame that cannot be a well-formed wire message.
 // The connection is dropped; nothing is forwarded upstream.
 var errMalformed = errors.New("malformed wire message")
@@ -276,8 +282,13 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 				continue
 			}
 			physical, err := p.resolve(alias)
+			if errors.Is(err, errMetadataUnavailable) {
+				// HostUnreachable: a failure every driver reports, and one
+				// they may retry, which is safe: nothing was forwarded.
+				return nil, buildErrorReply(requestID, 6, "HostUnreachable", err.Error()), nil
+			}
 			if err != nil {
-				return nil, buildErrorReply(requestID, err.Error()), nil
+				return nil, buildErrorReply(requestID, 26, "NamespaceNotFound", err.Error()), nil
 			}
 			doc[i].Value = physical
 			changed = true
@@ -335,12 +346,16 @@ func (p *Proxy) resolve(alias string) (string, error) {
 		case err != nil && !errors.Is(err, mongo.ErrNoDocuments):
 			// The metadata store did not answer. That is not a missing
 			// branch: fail this command and leave the cache as it is.
-			return "", fmt.Errorf("cannot check branch alias %q against its branch: %w", alias, err)
+			return "", fmt.Errorf("%w: cannot check branch alias %q against its branch: %v", errMetadataUnavailable, alias, err)
 		}
 		// The branch is gone or was released: resolve the name afresh.
 	}
 
 	branchID, physical, err := p.lookup(alias)
+	if errors.Is(err, errMetadataUnavailable) {
+		// Not an answer about the alias: nothing to remember.
+		return "", err
+	}
 	ttl := resolveTTL
 	if err != nil {
 		ttl = resolveErrorTTL
@@ -375,12 +390,18 @@ func (p *Proxy) lookup(alias string) (branchID, physicalDB string, err error) {
 		return "", "", fmt.Errorf("invalid branch alias %q (want project%sbranch)", alias, aliasSeparator)
 	}
 	projectID, err := p.projects.GetProjectIDByName(parts[0])
-	if err != nil {
+	if errors.Is(err, wal.ErrProjectNotFound) {
 		return "", "", fmt.Errorf("project %q not found", parts[0])
 	}
-	branch, err := p.branches.GetBranch(projectID, parts[1])
 	if err != nil {
+		return "", "", fmt.Errorf("%w: cannot look up project %q: %v", errMetadataUnavailable, parts[0], err)
+	}
+	branch, err := p.branches.GetBranch(projectID, parts[1])
+	if errors.Is(err, wal.ErrBranchNotFound) {
 		return "", "", fmt.Errorf("branch %q not found in project %q", parts[1], parts[0])
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("%w: cannot look up branch %q of project %q: %v", errMetadataUnavailable, parts[1], parts[0], err)
 	}
 	if !branch.IsLive() {
 		return "", "", fmt.Errorf("branch %q is not checked out; run argon checkout first", parts[1])
@@ -393,12 +414,12 @@ func (p *Proxy) lookup(alias string) (branchID, physicalDB string, err error) {
 
 // buildErrorReply synthesizes an OP_MSG {ok: 0} response so drivers get a
 // clean command error instead of a dropped connection.
-func buildErrorReply(requestID uint32, message string) []byte {
+func buildErrorReply(requestID uint32, code int32, codeName, message string) []byte {
 	doc, err := bson.Marshal(bson.D{
 		{Key: "ok", Value: 0},
 		{Key: "errmsg", Value: "argon proxy: " + message},
-		{Key: "code", Value: 26}, // NamespaceNotFound
-		{Key: "codeName", Value: "NamespaceNotFound"},
+		{Key: "code", Value: code},
+		{Key: "codeName", Value: codeName},
 	})
 	if err != nil {
 		return nil

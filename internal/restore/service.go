@@ -210,9 +210,14 @@ func (s *Service) GetRestorePreview(branchID string, targetLSN int64) (*RestoreP
 	}
 	discardedEntries := candidates[:0]
 	for _, entry := range candidates {
-		// Only writes count: a branch's own create record, or a merge's
-		// audit record, is not an operation a reset takes away.
-		if entry.IsData() && !branch.IsDiscardedForRead(entry.LSN, branch.HeadLSN) {
+		// A branch's or project's own lifecycle record is not an operation
+		// a reset takes away. Everything else is, including a merge's
+		// record and the marker of a collection resync.
+		switch entry.Operation {
+		case wal.OpCreateBranch, wal.OpDeleteBranch, wal.OpCreateProject, wal.OpDeleteProject:
+			continue
+		}
+		if !branch.IsDiscardedForRead(entry.LSN, branch.HeadLSN) {
 			discardedEntries = append(discardedEntries, entry)
 		}
 	}

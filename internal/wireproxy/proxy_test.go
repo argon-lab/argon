@@ -2,7 +2,6 @@ package wireproxy
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -43,7 +42,7 @@ func (s *stubLookups) GetBranchByID(id string) (*wal.Branch, error) {
 func (s *stubLookups) GetProjectIDByName(name string) (string, error) {
 	s.lookups++
 	if name != "shop" {
-		return "", errors.New("project not found")
+		return "", wal.ErrProjectNotFound
 	}
 	return "project-1", nil
 }
@@ -74,7 +73,7 @@ func (s *stubLookups) GetBranch(projectID, name string) (*wal.Branch, error) {
 	case projectID == "project-1" && name == "cold":
 		return &wal.Branch{ID: "b2", Name: "cold"}, nil
 	default:
-		return nil, errors.New("branch not found")
+		return nil, wal.ErrBranchNotFound
 	}
 }
 

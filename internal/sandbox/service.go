@@ -167,7 +167,13 @@ func (s *Service) removeFailed(branch *wal.Branch, userMayExist bool, cause erro
 	if branch.SandboxUsername != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := s.checkout.DiscardFailedSandbox(ctx, branch.ID, userMayExist); err != nil {
+		err := s.checkout.DiscardFailedSandbox(ctx, branch.ID, userMayExist)
+		if errors.Is(err, branchwal.ErrBranchNotFound) {
+			// Someone discarded it while it was being set up; nothing of
+			// this create is left, and its name may be another sandbox's.
+			return cause
+		}
+		if err != nil {
 			return fmt.Errorf("%w; cleanup of sandbox %q failed (%v): retry argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
 		}
 	}

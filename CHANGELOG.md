@@ -122,14 +122,18 @@ entry — a synchronization barrier, not in-proxy capture).
     name at once instead of sending commands to the discarded sandbox's
     database for up to five seconds; a command already in flight while a
     discard runs can still do that
-    ([#227](https://github.com/argon-lab/argon/issues/227));
+    ([#227](https://github.com/argon-lab/argon/issues/227)). When the proxy
+    cannot read its metadata it now fails the command with `HostUnreachable`
+    instead of answering `NamespaceNotFound`, which drivers take as success
+    for a `drop`;
   - a branch made by `argon restore --as`, or from a pin, records its
     `created_lsn` and keys its `create_branch` record by branch ID, like
     every other branch, so the record is reclaimed with the branch.
-- `argon restore preview` counts only writes among the operations a reset
-  would discard. It also counted a branch's own `create_branch` record.
-- Discarding a sandbox that another discard already removed answers "branch
-  not found" (it could answer with the driver's "no documents in result").
+- `argon restore preview` no longer counts a branch's own `create_branch`
+  record among the operations a reset would discard.
+- A branch that is gone is reported as "branch not found" wherever it is
+  looked up by ID: a sandbox another discard already removed, for one,
+  answered with the driver's "no documents in result".
 
 - `argon import` dropped the engine's `index_notes`, so an import whose
   source user lacked `listIndexes` gave no sign that checkouts would get

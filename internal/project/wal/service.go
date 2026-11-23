@@ -76,7 +76,7 @@ func (s *ProjectService) CreateProject(name string) (*wal.Project, error) {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.removeUnmade(cleanup, projectID); err != nil {
-			return nil, errors.Join(cause, fmt.Errorf("the main branch made for project %s (ID %s) could not be removed: %w", name, projectID, err))
+			return nil, errors.Join(cause, fmt.Errorf("what this create made for project %s (ID %s) could not be removed: %w", name, projectID, err))
 		}
 		return nil, cause
 	}
@@ -99,23 +99,38 @@ func (s *ProjectService) CreateProject(name string) (*wal.Project, error) {
 		CreatedAt:    time.Now(),
 		UseWAL:       true,
 	}
-	if _, err := s.collection.InsertOne(ctx, project); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return fail(s.nameTaken(ctx, name))
+	_, err = s.collection.InsertOne(ctx, project)
+	for tries := 0; mongo.IsDuplicateKeyError(err); tries++ {
+		taken, free := s.nameTaken(ctx, name)
+		if !free {
+			return fail(taken)
 		}
+		// What held the name is gone again (an import that was aborted, or
+		// a project deleted just now): the name is free, so insert again.
+		if tries >= 2 {
+			return fail(fmt.Errorf("project name %q was in use a moment ago and may be free now; try again", name))
+		}
+		_, err = s.collection.InsertOne(ctx, project)
+	}
+	if err != nil {
 		return fail(fmt.Errorf("failed to create project: %w", err))
 	}
 	return project, nil
 }
 
 // nameTaken says why a project name cannot be used: a project has it, or an
-// import that has not finished has reserved it.
-func (s *ProjectService) nameTaken(ctx context.Context, name string) error {
+// import that has not finished has reserved it. free reports that nothing
+// holds the name any more.
+func (s *ProjectService) nameTaken(ctx context.Context, name string) (taken error, free bool) {
 	var holder wal.Project
-	if err := s.collection.FindOne(ctx, bson.M{"name": name}).Decode(&holder); err == nil && holder.Importing {
-		return fmt.Errorf("project name %q is reserved by an import that has not finished; wait for it, or remove it with argon import cleanup --project %s --yes", name, name)
+	err := s.collection.FindOne(ctx, bson.M{"name": name}).Decode(&holder)
+	switch {
+	case err == mongo.ErrNoDocuments:
+		return nil, true
+	case err == nil && holder.Importing:
+		return fmt.Errorf("project name %q is reserved by an import that has not finished; wait for it, or, if that import is no longer running, remove it with argon import cleanup --project %s --yes", name, name), false
 	}
-	return wal.ErrProjectExists
+	return wal.ErrProjectExists, false
 }
 
 // removeUnmade removes the WAL records, branches and LSN counter of a
@@ -153,7 +168,7 @@ func (s *ProjectService) GetProject(projectID string) (*wal.Project, error) {
 	err := s.collection.FindOne(ctx, bson.M{"_id": projectID, "importing": bson.M{"$ne": true}}).Decode(&project)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return nil, errors.New("project not found")
+			return nil, wal.ErrProjectNotFound
 		}
 		return nil, err
 	}
