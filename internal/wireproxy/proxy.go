@@ -44,6 +44,7 @@ import (
 
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const (
@@ -73,6 +74,12 @@ const (
 	maxCachedAliases = 1024
 )
 
+// errMetadataUnavailable marks a command the proxy could not route because
+// its metadata store did not answer. That is a failure of the proxy, not a
+// missing namespace, and it is answered as one: drivers treat
+// NamespaceNotFound as success for commands such as drop.
+var errMetadataUnavailable = errors.New("argon's metadata is unavailable")
+
 // errMalformed marks a frame that cannot be a well-formed wire message.
 // The connection is dropped; nothing is forwarded upstream.
 var errMalformed = errors.New("malformed wire message")
@@ -82,9 +89,10 @@ type ProjectLookup interface {
 	GetProjectIDByName(name string) (string, error)
 }
 
-// BranchLookup resolves a branch by project ID and name.
+// BranchLookup resolves a live branch by project ID and name, or by ID.
 type BranchLookup interface {
 	GetBranch(projectID, name string) (*wal.Branch, error)
+	GetBranchByID(branchID string) (*wal.Branch, error)
 }
 
 // Proxy accepts client connections and forwards them to the upstream
@@ -99,6 +107,8 @@ type Proxy struct {
 }
 
 type cachedTarget struct {
+	// branchID is the branch the alias resolved to; empty for a failure.
+	branchID   string
 	physicalDB string
 	err        error
 	expires    time.Time
@@ -195,6 +205,14 @@ func (p *Proxy) pump(client net.Conn, upstream net.Conn) {
 			return
 		}
 		if errReply != nil {
+			// A client that asked for no reply (an unacknowledged write,
+			// moreToCome) reads none: one written here would be taken for
+			// the answer to its next command, and every answer after it
+			// would be one behind.
+			if unacknowledged(message) {
+				log.Printf("wireproxy: refused an unacknowledged command; the client asked for no reply")
+				continue
+			}
 			if _, err := client.Write(errReply); err != nil {
 				return
 			}
@@ -272,8 +290,13 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 				continue
 			}
 			physical, err := p.resolve(alias)
+			if errors.Is(err, errMetadataUnavailable) {
+				// HostUnreachable: a failure every driver reports, and one
+				// they may retry, which is safe: nothing was forwarded.
+				return nil, buildErrorReply(requestID, 6, "HostUnreachable", err.Error()), nil
+			}
 			if err != nil {
-				return nil, buildErrorReply(requestID, err.Error()), nil
+				return nil, buildErrorReply(requestID, 26, "NamespaceNotFound", err.Error()), nil
 			}
 			doc[i].Value = physical
 			changed = true
@@ -305,18 +328,42 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 	return out, nil, nil
 }
 
-// resolve maps "project~branch" to the physical database, with a short
-// cache so hot paths don't hit metadata every command.
+// resolve maps "project~branch" to the physical database. A short cache
+// saves the lookups by name. A cached target is still checked against its
+// branch, one read by ID, on every use: a branch name can be discarded and
+// used again within the cache's lifetime, and a command sent on to the
+// earlier branch's database would be written to a database that no longer
+// exists, which MongoDB creates again without a word. A command that is
+// already on its way while a discard drops the database can still do that;
+// the check covers every command that arrives after the branch is gone.
 func (p *Proxy) resolve(alias string) (string, error) {
 	now := time.Now()
 	p.cacheMu.Lock()
-	if hit, ok := p.cache[alias]; ok && now.Before(hit.expires) {
-		p.cacheMu.Unlock()
-		return hit.physicalDB, hit.err
-	}
+	hit, ok := p.cache[alias]
 	p.cacheMu.Unlock()
+	if ok && now.Before(hit.expires) {
+		if hit.err != nil {
+			return "", hit.err
+		}
+		branch, err := p.branches.GetBranchByID(hit.branchID)
+		switch {
+		case err == nil && branch.IsLive():
+			if own, err := branch.OwnDatabase(); err == nil && own == hit.physicalDB {
+				return hit.physicalDB, nil
+			}
+		case err != nil && !errors.Is(err, mongo.ErrNoDocuments):
+			// The metadata store did not answer. That is not a missing
+			// branch: fail this command and leave the cache as it is.
+			return "", fmt.Errorf("%w: cannot check branch alias %q against its branch: %v", errMetadataUnavailable, alias, err)
+		}
+		// The branch is gone or was released: resolve the name afresh.
+	}
 
-	physical, err := p.lookup(alias)
+	branchID, physical, err := p.lookup(alias)
+	if errors.Is(err, errMetadataUnavailable) {
+		// Not an answer about the alias: nothing to remember.
+		return "", err
+	}
 	ttl := resolveTTL
 	if err != nil {
 		ttl = resolveErrorTTL
@@ -325,7 +372,7 @@ func (p *Proxy) resolve(alias string) (string, error) {
 	if _, replacing := p.cache[alias]; !replacing && len(p.cache) >= maxCachedAliases {
 		p.evictLocked(now)
 	}
-	p.cache[alias] = cachedTarget{physicalDB: physical, err: err, expires: now.Add(ttl)}
+	p.cache[alias] = cachedTarget{branchID: branchID, physicalDB: physical, err: err, expires: now.Add(ttl)}
 	p.cacheMu.Unlock()
 	return physical, err
 }
@@ -345,35 +392,51 @@ func (p *Proxy) evictLocked(now time.Time) {
 	}
 }
 
-func (p *Proxy) lookup(alias string) (string, error) {
+func (p *Proxy) lookup(alias string) (branchID, physicalDB string, err error) {
 	parts := strings.SplitN(alias, aliasSeparator, 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", fmt.Errorf("invalid branch alias %q (want project%sbranch)", alias, aliasSeparator)
+		return "", "", fmt.Errorf("invalid branch alias %q (want project%sbranch)", alias, aliasSeparator)
 	}
 	projectID, err := p.projects.GetProjectIDByName(parts[0])
+	if errors.Is(err, wal.ErrProjectNotFound) {
+		return "", "", fmt.Errorf("project %q not found", parts[0])
+	}
 	if err != nil {
-		return "", fmt.Errorf("project %q not found", parts[0])
+		return "", "", fmt.Errorf("%w: cannot look up project %q: %v", errMetadataUnavailable, parts[0], err)
 	}
 	branch, err := p.branches.GetBranch(projectID, parts[1])
+	if errors.Is(err, wal.ErrBranchNotFound) {
+		return "", "", fmt.Errorf("branch %q not found in project %q", parts[1], parts[0])
+	}
 	if err != nil {
-		return "", fmt.Errorf("branch %q not found in project %q", parts[1], parts[0])
+		return "", "", fmt.Errorf("%w: cannot look up branch %q of project %q: %v", errMetadataUnavailable, parts[1], parts[0], err)
 	}
 	if !branch.IsLive() {
-		return "", fmt.Errorf("branch %q is not checked out; run argon checkout first", parts[1])
+		return "", "", fmt.Errorf("branch %q is not checked out; run argon checkout first", parts[1])
 	}
 	// Clients are routed to the database Argon created for the branch, never
 	// to whatever name a branch record happens to hold.
-	return branch.OwnDatabase()
+	physicalDB, err = branch.OwnDatabase()
+	return branch.ID, physicalDB, err
+}
+
+// unacknowledged reports whether an OP_MSG sets moreToCome: the sender
+// expects no reply.
+func unacknowledged(message []byte) bool {
+	const flagMoreToCome = 1 << 1
+	return len(message) >= opMsgMinimum &&
+		binary.LittleEndian.Uint32(message[12:16]) == opMsg &&
+		binary.LittleEndian.Uint32(message[16:20])&flagMoreToCome != 0
 }
 
 // buildErrorReply synthesizes an OP_MSG {ok: 0} response so drivers get a
 // clean command error instead of a dropped connection.
-func buildErrorReply(requestID uint32, message string) []byte {
+func buildErrorReply(requestID uint32, code int32, codeName, message string) []byte {
 	doc, err := bson.Marshal(bson.D{
 		{Key: "ok", Value: 0},
 		{Key: "errmsg", Value: "argon proxy: " + message},
-		{Key: "code", Value: 26}, // NamespaceNotFound
-		{Key: "codeName", Value: "NamespaceNotFound"},
+		{Key: "code", Value: code},
+		{Key: "codeName", Value: codeName},
 	})
 	if err != nil {
 		return nil

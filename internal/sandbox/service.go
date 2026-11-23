@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/checkout"
 	"github.com/argon-lab/argon/v2/internal/wal"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // DefaultTTL bounds sandboxes that don't specify one.
@@ -166,11 +168,26 @@ func (s *Service) removeFailed(branch *wal.Branch, userMayExist bool, cause erro
 	if branch.SandboxUsername != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := s.checkout.DiscardFailedSandbox(ctx, branch.ID, userMayExist); err != nil {
+		err := s.checkout.DiscardFailedSandbox(ctx, branch.ID, userMayExist)
+		if err != nil {
+			// If the branch is gone, someone discarded it while it was
+			// being set up, whatever step of the cleanup noticed: nothing
+			// of this create is left, and its name may be another
+			// sandbox's by now.
+			if _, getErr := s.branches.GetBranchByID(branch.ID); errors.Is(getErr, mongo.ErrNoDocuments) {
+				return cause
+			}
 			return fmt.Errorf("%w; cleanup of sandbox %q failed (%v): retry argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
 		}
 	}
-	if err := s.branches.DeleteBranch(branch.ProjectID, branch.Name); err != nil {
+	// By ID: the name may belong to another sandbox by now, created after
+	// someone discarded this one while it was still being set up.
+	err := s.branches.DeleteBranchByID(branch.ID)
+	if errors.Is(err, branchwal.ErrBranchNotFound) {
+		// Already removed; nothing of this create is left.
+		return cause
+	}
+	if err != nil {
 		return fmt.Errorf("%w; the sandbox branch %q was left behind and could not be removed (%v): remove it with argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
 	}
 	return cause
@@ -207,12 +224,15 @@ func (s *Service) Discard(ctx context.Context, branchID string) error {
 }
 
 func (s *Service) discard(ctx context.Context, branchID string, expiredBefore *time.Time) error {
+	// Another discard, or the sweeper, may remove the sandbox at any of
+	// these steps; each then answers "branch not found", not the driver's
+	// "no documents".
 	branch, err := s.branches.GetBranchByID(branchID)
 	if err != nil {
-		return fmt.Errorf("sandbox not found: %w", err)
+		return fmt.Errorf("sandbox not found: %w", branchwal.NotFound(err))
 	}
 	if err := s.branches.RequireDeletable(branchID); err != nil {
-		return err
+		return branchwal.NotFound(err)
 	}
 	if branch.IsLive() || branch.SandboxUsername != "" {
 		if expiredBefore != nil && branch.SandboxUsername != "" {
@@ -221,10 +241,16 @@ func (s *Service) discard(ctx context.Context, branchID string, expiredBefore *t
 			err = s.checkout.Discard(ctx, branch.ID)
 		}
 		if err != nil {
-			return fmt.Errorf("failed to release the sandbox: %w", err)
+			// Whatever step of the release noticed, if the sandbox is gone
+			// by now, that is the answer.
+			if _, getErr := s.branches.GetBranchByID(branch.ID); errors.Is(getErr, mongo.ErrNoDocuments) {
+				err = branchwal.ErrBranchNotFound
+			}
+			return fmt.Errorf("failed to release the sandbox: %w", branchwal.NotFound(err))
 		}
 	}
-	return s.branches.DeleteBranch(branch.ProjectID, branch.Name)
+	// By ID, never by name: another sandbox may have taken the name.
+	return s.branches.DeleteBranchByID(branch.ID)
 }
 
 // SweepReport summarizes one reaping pass.

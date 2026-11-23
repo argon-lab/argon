@@ -94,6 +94,50 @@ entry — a synchronization barrier, not in-proxy capture).
 
 ### Fixed
 
+- Creating a branch or sandbox under a name that is in use always answers
+  "branch already exists". Creates of one name that arrived together (two
+  agents over `argon mcp --http` or REST, or a client that retried) used to
+  give all but one a raw MongoDB `E11000 duplicate key` error naming the
+  metadata database, and each left a `create_branch` record in the WAL for
+  a branch that was never made. The record and the branch are now written
+  in one transaction, and a create that loses reserves no LSN. Creating a
+  project had the same race one level up, and left a `main` branch behind
+  for each create that lost; a create that loses now removes what it made
+  and answers "project already exists", or says that an unfinished import
+  holds the name and how to remove it.
+  ([#220](https://github.com/argon-lab/argon/issues/220))
+- The name of a deleted branch or discarded sandbox can be used again. It
+  failed with the same `E11000` error, because the name index also covered
+  deleted branches. The index now covers live branches only
+  (`project_id_1_name_1_live`), and the old one (`project_id_1_name_1`) is
+  dropped when a metadata database is opened. Upgrade every process that
+  shares a metadata database: a release up to 2.12.0 that connects
+  afterwards creates the old index again, or fails to start with a
+  duplicate-key error once a name has been reused. This release drops the
+  old index again when a create runs into it. With names reusable:
+  - a sandbox is discarded, and a failed sandbox create is cleaned up, by
+    branch ID, so neither can remove a later sandbox of the same name;
+  - the wire proxy checks a cached `project~branch` target against its
+    branch on every command (one read by ID), so the alias follows a reused
+    name at once instead of sending commands to the discarded sandbox's
+    database for up to five seconds; a command already in flight while a
+    discard runs can still do that
+    ([#227](https://github.com/argon-lab/argon/issues/227)). When the proxy
+    cannot read its metadata it now fails the command with `HostUnreachable`
+    instead of answering `NamespaceNotFound`, which drivers take as success
+    for a `drop`;
+  - a branch made by `argon restore --as`, or from a pin, records its
+    `created_lsn` and keys its `create_branch` record by branch ID, like
+    every other branch, so the record is reclaimed with the branch.
+- `argon restore preview` no longer counts a branch's own `create_branch`
+  record among the operations a reset would discard.
+- Discarding a sandbox that another discard, or the sweeper, removed at the
+  same moment answers "branch not found" instead of the driver's "no
+  documents in result".
+- The wire proxy no longer answers an unacknowledged (`w: 0`) write that it
+  refuses. The reply nobody read was taken for the answer to the client's
+  next command, and every answer on that connection after it was one late.
+
 - `argon import` dropped the engine's `index_notes`, so an import whose
   source user lacked `listIndexes` gave no sign that checkouts would get
   only `_id`; table and JSON output now show the notes. `argon pin sandbox`

@@ -230,7 +230,11 @@ func TestSource_DestructiveCallsAreConfined(t *testing.T) {
 		"cli/cmd/doctor.go:probeCapture WithTransaction",
 		"cli/cmd/doctor.go:probeCapture dropProbeCollections",
 		// Argon metadata indexes and checkout of a branch's own physical database.
-		"internal/branch/wal/service.go:NewBranchService CreateMany",
+		// Branch indexes, in the metadata database: the legacy name index is
+		// retired once the one over live branches exists.
+		"internal/branch/wal/service.go:NewBranchService ensureBranchIndexes",
+		"internal/branch/wal/service.go:ensureBranchIndexes CreateMany",
+		"internal/branch/wal/service.go:ensureBranchIndexes DropOne",
 		// User management targets the database derived from the branch ID.
 		// connectionStatus inspects the engine's authenticated connection.
 		"internal/checkout/credential.go:IssueSandboxCredential RunCommand",

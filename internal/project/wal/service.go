@@ -59,39 +59,39 @@ func NewProjectService(db *mongo.Database, walService *wal.Service, branchServic
 	return s, nil
 }
 
-// CreateProject creates a new WAL-enabled project
+// CreateProject creates a new WAL-enabled project. The project row goes in
+// last, so a project is never visible without its main branch, and the
+// unique name decides among creates that arrive together. A create that
+// loses there, or fails earlier, removes the record and main branch it made:
+// they belong to a project ID nothing else has seen.
 func (s *ProjectService) CreateProject(name string) (*wal.Project, error) {
 	ctx := context.Background()
 
-	// Check if project already exists
-	existing, _ := s.GetProjectByName(name)
-	if existing != nil {
-		return nil, errors.New("project already exists")
+	if existing, _ := s.GetProjectByName(name); existing != nil {
+		return nil, wal.ErrProjectExists
 	}
 
 	projectID := primitive.NewObjectID().Hex()
+	fail := func(cause error) (*wal.Project, error) {
+		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.removeUnmade(cleanup, projectID); err != nil {
+			return nil, errors.Join(cause, fmt.Errorf("what this create made for project %s (ID %s) could not be removed: %w", name, projectID, err))
+		}
+		return nil, cause
+	}
 
-	// Create WAL entry for project creation
-	entry := &wal.Entry{
+	if _, err := s.wal.Append(&wal.Entry{
 		ProjectID: projectID,
 		Operation: wal.OpCreateProject,
-		Metadata: map[string]interface{}{
-			"project_name": name,
-		},
+		Metadata:  map[string]interface{}{"project_name": name},
+	}); err != nil {
+		return fail(fmt.Errorf("failed to append WAL entry: %w", err))
 	}
-
-	_, err := s.wal.Append(entry)
-	if err != nil {
-		return nil, fmt.Errorf("failed to append WAL entry: %w", err)
-	}
-
-	// Create main branch
 	mainBranch, err := s.branches.CreateBranch(projectID, "main", "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create main branch: %w", err)
+		return fail(fmt.Errorf("failed to create main branch: %w", err))
 	}
-
-	// Create project record
 	project := &wal.Project{
 		ID:           projectID,
 		Name:         name,
@@ -99,14 +99,65 @@ func (s *ProjectService) CreateProject(name string) (*wal.Project, error) {
 		CreatedAt:    time.Now(),
 		UseWAL:       true,
 	}
-
-	// Insert project record
 	_, err = s.collection.InsertOne(ctx, project)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create project: %w", err)
+	for tries := 0; mongo.IsDuplicateKeyError(err); tries++ {
+		taken, free := s.nameTaken(ctx, name)
+		if !free {
+			return fail(taken)
+		}
+		// What held the name is gone again (an import that was aborted, or
+		// a project deleted just now): the name is free, so insert again.
+		if tries >= 2 {
+			return fail(fmt.Errorf("project name %q was in use a moment ago and may be free now; try again", name))
+		}
+		_, err = s.collection.InsertOne(ctx, project)
 	}
-
+	if err != nil {
+		return fail(fmt.Errorf("failed to create project: %w", err))
+	}
 	return project, nil
+}
+
+// nameTaken says why a project name cannot be used: a project has it, or an
+// import that has not finished has reserved it. free reports that nothing
+// holds the name any more.
+func (s *ProjectService) nameTaken(ctx context.Context, name string) (taken error, free bool) {
+	var holder wal.Project
+	err := s.collection.FindOne(ctx, bson.M{"name": name}).Decode(&holder)
+	switch {
+	case err == mongo.ErrNoDocuments:
+		return nil, true
+	case err == nil && holder.Importing:
+		return fmt.Errorf("project name %q is reserved by an import that has not finished; wait for it, or, if that import is no longer running, remove it with argon import cleanup --project %s --yes", name, name), false
+	}
+	return wal.ErrProjectExists, false
+}
+
+// removeUnmade removes the WAL records, branches and LSN counter of a
+// project ID that never got a project row. It refuses an ID that has one.
+func (s *ProjectService) removeUnmade(ctx context.Context, projectID string) error {
+	session, err := s.db.Client().StartSession()
+	if err != nil {
+		return err
+	}
+	defer session.EndSession(ctx)
+	_, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+		rows, err := s.collection.CountDocuments(sc, bson.M{"_id": projectID})
+		if err != nil {
+			return nil, err
+		}
+		if rows != 0 {
+			return nil, fmt.Errorf("refusing cleanup: project %s exists", projectID)
+		}
+		for _, name := range []string{"wal_log", "wal_branches"} {
+			if _, err := s.db.Collection(name).DeleteMany(sc, bson.M{"project_id": projectID}); err != nil {
+				return nil, err
+			}
+		}
+		_, err = s.db.Collection("wal_counters").DeleteOne(sc, bson.M{"_id": projectID})
+		return nil, err
+	})
+	return err
 }
 
 // GetProject retrieves a project by ID
@@ -117,7 +168,7 @@ func (s *ProjectService) GetProject(projectID string) (*wal.Project, error) {
 	err := s.collection.FindOne(ctx, bson.M{"_id": projectID, "importing": bson.M{"$ne": true}}).Decode(&project)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return nil, errors.New("project not found")
+			return nil, wal.ErrProjectNotFound
 		}
 		return nil, err
 	}
@@ -133,7 +184,7 @@ func (s *ProjectService) GetProjectByName(name string) (*wal.Project, error) {
 	err := s.collection.FindOne(ctx, bson.M{"name": name, "importing": bson.M{"$ne": true}}).Decode(&project)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return nil, errors.New("project not found")
+			return nil, wal.ErrProjectNotFound
 		}
 		return nil, err
 	}

@@ -2,7 +2,6 @@ package wireproxy
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,15 +13,36 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // stubLookups resolve one live branch, "shop~main", without a database.
-type stubLookups struct{ lookups int }
+type stubLookups struct {
+	lookups int
+	// gone lists branch IDs that were deleted after being resolved.
+	gone map[string]bool
+	// byID counts the checks of a cached target against its branch.
+	byID int
+}
+
+func (s *stubLookups) GetBranchByID(id string) (*wal.Branch, error) {
+	s.byID++
+	if s.gone[id] {
+		return nil, mongo.ErrNoDocuments
+	}
+	switch id {
+	case "b1":
+		return &wal.Branch{ID: "b1", Name: "main", State: wal.BranchStateLive, PhysicalDB: "argon_br_b1"}, nil
+	case "b3":
+		return &wal.Branch{ID: "b3", Name: "main", State: wal.BranchStateLive, PhysicalDB: "argon_br_b3"}, nil
+	}
+	return nil, mongo.ErrNoDocuments
+}
 
 func (s *stubLookups) GetProjectIDByName(name string) (string, error) {
 	s.lookups++
 	if name != "shop" {
-		return "", errors.New("project not found")
+		return "", wal.ErrProjectNotFound
 	}
 	return "project-1", nil
 }
@@ -45,12 +65,15 @@ func TestRewriteRejectsOldBinaryLengthMismatch(t *testing.T) {
 
 func (s *stubLookups) GetBranch(projectID, name string) (*wal.Branch, error) {
 	switch {
+	case projectID == "project-1" && name == "main" && s.gone["b1"]:
+		// The name was used again after b1 was discarded.
+		return &wal.Branch{ID: "b3", Name: "main", State: wal.BranchStateLive, PhysicalDB: "argon_br_b3"}, nil
 	case projectID == "project-1" && name == "main":
 		return &wal.Branch{ID: "b1", Name: "main", State: wal.BranchStateLive, PhysicalDB: "argon_br_b1"}, nil
 	case projectID == "project-1" && name == "cold":
 		return &wal.Branch{ID: "b2", Name: "cold"}, nil
 	default:
-		return nil, errors.New("branch not found")
+		return nil, wal.ErrBranchNotFound
 	}
 }
 
@@ -254,6 +277,15 @@ func TestResolveCacheIsBoundedAndForgetsFailuresQuickly(t *testing.T) {
 	_, err = proxy.resolve("shop~main")
 	require.NoError(t, err)
 	assert.Equal(t, 1, stub.lookups, "a fresh hit is served from the cache")
+	assert.Equal(t, 1, stub.byID, "and checked against its branch")
+
+	// The branch is discarded and its name used again within the cache's
+	// lifetime: the alias follows the name to the new branch at once.
+	stub.gone = map[string]bool{"b1": true}
+	physical, err := proxy.resolve("shop~main")
+	require.NoError(t, err)
+	assert.Equal(t, "argon_br_b3", physical)
+	assert.Equal(t, 2, stub.lookups, "the name is resolved afresh")
 
 	// A client inventing names must not grow the cache without bound.
 	for i := 0; i < maxCachedAliases*3; i++ {
