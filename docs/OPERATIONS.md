@@ -685,8 +685,8 @@ refused. A dedicated tier that allows `replSetGetConfig` records the ID as
 before.
 
 **Roles.** Create a custom role on the source database in the Atlas UI
-(Database Access, Custom Roles) or with the Atlas Admin API. Atlas spells the
-actions in capitals. No cluster action is needed:
+(Security → Database & Network Access → Custom Roles) or with the Atlas Admin
+API. Atlas spells the actions in capitals. No cluster action is needed:
 
 | Command | Atlas custom role actions on the source database |
 | --- | --- |
