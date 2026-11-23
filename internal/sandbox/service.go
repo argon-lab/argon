@@ -241,6 +241,11 @@ func (s *Service) discard(ctx context.Context, branchID string, expiredBefore *t
 			err = s.checkout.Discard(ctx, branch.ID)
 		}
 		if err != nil {
+			// Whatever step of the release noticed, if the sandbox is gone
+			// by now, that is the answer.
+			if _, getErr := s.branches.GetBranchByID(branch.ID); errors.Is(getErr, mongo.ErrNoDocuments) {
+				err = branchwal.ErrBranchNotFound
+			}
 			return fmt.Errorf("failed to release the sandbox: %w", branchwal.NotFound(err))
 		}
 	}
