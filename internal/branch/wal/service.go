@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/argon-lab/argon/v2/internal/wal"
@@ -115,45 +116,96 @@ func ensureBranchIndexes(ctx context.Context, collection *mongo.Collection) erro
 	return nil
 }
 
-// insertBranch appends the branch's create record and inserts the branch in
-// one transaction, so a create that loses to another of the same name
-// leaves no record of a branch that was never made. build receives the
-// record's LSN and returns the branch to insert.
-func (s *BranchService) insertBranch(projectID, name string, entry func() *wal.Entry, build func(lsn int64) *wal.Branch) (*wal.Branch, error) {
+// insertBranch inserts the branch and appends its create record in one
+// transaction, so a create that loses to another of the same name leaves no
+// record of a branch that was never made. The branch goes in first: a loser
+// stops there, before a sequence number is reserved for its record. stamp
+// sets on the branch what depends on the record's LSN and returns the same
+// as the fields to store.
+func (s *BranchService) insertBranch(branch *wal.Branch, entry func() *wal.Entry, stamp func(lsn int64) bson.M) error {
 	ctx := context.Background()
-	var branch *wal.Branch
+	runs := 0
 	attempt := func() error {
 		_, err := s.wal.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
+			// The driver runs this again at once while another create of
+			// the name is still uncommitted. Wait a little longer each time
+			// rather than spin.
+			if runs > 0 {
+				time.Sleep(min(time.Duration(runs)*5*time.Millisecond, 100*time.Millisecond))
+			}
+			runs++
+			if _, err := s.collection.InsertOne(sc, branch); err != nil {
+				return nil, err
+			}
 			lsn, err := s.wal.AppendContext(sc, entry())
 			if err != nil {
 				return nil, fmt.Errorf("failed to append WAL entry: %w", err)
 			}
-			branch = build(lsn)
-			if _, err := s.collection.InsertOne(sc, branch); err != nil {
-				return nil, err
+			if fields := stamp(lsn); len(fields) > 0 {
+				if _, err := s.collection.UpdateOne(sc, bson.M{"_id": branch.ID}, bson.M{"$set": fields}); err != nil {
+					return nil, err
+				}
 			}
 			return nil, nil
 		})
 		return err
 	}
-	err := attempt()
-	if mongo.IsDuplicateKeyError(err) {
-		if existing, _ := s.GetBranch(projectID, name); existing != nil {
-			return nil, ErrBranchExists
+	for tries := 0; ; tries++ {
+		err := attempt()
+		conflict, legacy := nameConflict(err)
+		if !conflict {
+			if err != nil {
+				return fmt.Errorf("failed to create branch: %w", err)
+			}
+			return nil
 		}
-		// No live branch has the name: the legacy index, created again by
-		// an older release, is counting a deleted one. Retire it and retry.
+		// On the live index a conflict means a live branch held the name
+		// when this one was inserted, whatever has become of it since.
+		if !legacy {
+			return ErrBranchExists
+		}
+		// The legacy index, created again by an older release, also counts
+		// deleted branches. If no live branch has the name, retire the
+		// index and try again.
+		if existing, _ := s.GetBranch(branch.ProjectID, branch.Name); existing != nil {
+			return ErrBranchExists
+		}
+		if tries >= 2 {
+			return fmt.Errorf("failed to create branch: the index %s keeps coming back, which an Argon release up to 2.12.0 running against this metadata database does; upgrade it: %w", legacyNameIndex, err)
+		}
 		if indexErr := ensureBranchIndexes(ctx, s.collection); indexErr != nil {
-			return nil, indexErr
-		}
-		if err = attempt(); mongo.IsDuplicateKeyError(err) {
-			return nil, ErrBranchExists
+			return indexErr
 		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to create branch: %w", err)
+}
+
+// nameConflict reports whether err is a duplicate key on a branch name
+// index, and whether that index is the legacy one. Other duplicates, such
+// as a branch ID in use or a WAL sequence collision, are not a name in use
+// and are reported as they are.
+func nameConflict(err error) (conflict, legacy bool) {
+	check := func(code int, message string) {
+		// "... collection: <db>.wal_branches index: <name> dup key: ..."
+		if code != 11000 || !strings.Contains(message, ".wal_branches index: "+legacyNameIndex) {
+			return
+		}
+		conflict = true
+		// The live index's name starts with the legacy one's.
+		if !strings.Contains(message, ".wal_branches index: "+liveNameIndex+" ") {
+			legacy = true
+		}
 	}
-	return branch, nil
+	var write mongo.WriteException
+	if errors.As(err, &write) {
+		for _, e := range write.WriteErrors {
+			check(e.Code, e.Message)
+		}
+	}
+	var command mongo.CommandError
+	if errors.As(err, &command) {
+		check(int(command.Code), command.Message)
+	}
+	return conflict, legacy
 }
 
 // CreateBranch creates a new WAL-based branch
@@ -200,29 +252,36 @@ func (s *BranchService) createBranch(projectID, name, parentID string, credentia
 			},
 		}
 	}
-	return s.insertBranch(projectID, name, entry, func(lsn int64) *wal.Branch {
-		branch := &wal.Branch{
-			ID:         branchID,
-			ProjectID:  projectID,
-			Name:       name,
-			ParentID:   parentID,
-			CreatedAt:  time.Now(),
-			CreatedLSN: lsn,
-			IsDeleted:  false,
+	branch := &wal.Branch{
+		ID:        branchID,
+		ProjectID: projectID,
+		Name:      name,
+		ParentID:  parentID,
+		CreatedAt: time.Now(),
+		IsDeleted: false,
+	}
+	if credentialExpiry != nil {
+		branch.SandboxUsername = "sandbox_" + branch.ID
+		branch.ExpiresAt = credentialExpiry
+	}
+	if parentBranch != nil {
+		branch.HeadLSN = parentBranch.HeadLSN // Inherit parent's HEAD
+		branch.BaseLSN = parentBranch.HeadLSN // Fork point
+	}
+	err := s.insertBranch(branch, entry, func(lsn int64) bson.M {
+		branch.CreatedLSN = lsn
+		fields := bson.M{"created_lsn": lsn}
+		if parentBranch == nil {
+			// A branch with no parent starts at its own create record.
+			branch.HeadLSN = lsn
+			fields["head_lsn"] = lsn
 		}
-		if credentialExpiry != nil {
-			branch.SandboxUsername = "sandbox_" + branch.ID
-			branch.ExpiresAt = credentialExpiry
-		}
-		if parentBranch != nil {
-			branch.HeadLSN = parentBranch.HeadLSN // Inherit parent's HEAD
-			branch.BaseLSN = parentBranch.HeadLSN // Fork point
-		} else {
-			branch.HeadLSN = lsn // New branch starts at creation LSN
-			branch.BaseLSN = 0   // No parent
-		}
-		return branch
+		return fields
 	})
+	if err != nil {
+		return nil, err
+	}
+	return branch, nil
 }
 
 // GetBranch retrieves a branch by project ID and name
@@ -391,13 +450,27 @@ func (s *BranchService) ListBranchesAny(projectID string) ([]*wal.Branch, error)
 
 // DeleteBranch deletes a branch (simple version - just removes the pointer)
 func (s *BranchService) DeleteBranch(projectID, name string) error {
-	ctx := context.Background()
-
-	// Get branch
 	branch, err := s.GetBranch(projectID, name)
 	if err != nil {
 		return err
 	}
+	return s.deleteBranch(branch)
+}
+
+// DeleteBranchByID deletes the branch with this ID. A caller that holds a
+// branch must delete it this way: by now its name may belong to another
+// branch, made after this one was deleted.
+func (s *BranchService) DeleteBranchByID(branchID string) error {
+	branch, err := s.GetBranchByID(branchID)
+	if err != nil {
+		return err
+	}
+	return s.deleteBranch(branch)
+}
+
+func (s *BranchService) deleteBranch(branch *wal.Branch) error {
+	ctx := context.Background()
+	projectID := branch.ProjectID
 	if err := s.RequireDeletable(branch.ID); err != nil {
 		return err
 	}
@@ -412,11 +485,10 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 		Operation: wal.OpDeleteBranch,
 		Metadata:  map[string]interface{}{"branch_id": branch.ID, "final_lsn": branch.HeadLSN},
 	}
-	if _, err = s.wal.Append(entry); err != nil {
+	if _, err := s.wal.Append(entry); err != nil {
 		return fmt.Errorf("failed to append WAL entry: %w", err)
 	}
-	_, err = s.collection.UpdateOne(ctx, bson.M{"_id": branch.ID}, bson.M{"$set": bson.M{"is_deleted": true}})
-	if err != nil {
+	if _, err := s.collection.UpdateOne(ctx, bson.M{"_id": branch.ID}, bson.M{"$set": bson.M{"is_deleted": true}}); err != nil {
 		return err
 	}
 	if s.onDelete != nil {
@@ -631,10 +703,12 @@ func (s *BranchService) CreateBranchWithData(branch *wal.Branch) error {
 		return ErrBranchExists
 	}
 
+	// Keyed by the branch ID, as every record of a branch is: the name can
+	// belong to another branch later.
 	entry := func() *wal.Entry {
 		return &wal.Entry{
 			ProjectID: branch.ProjectID,
-			BranchID:  branch.Name,
+			BranchID:  branch.ID,
 			Operation: wal.OpCreateBranch,
 			Metadata: map[string]interface{}{
 				"branch_name": branch.Name,
@@ -643,14 +717,17 @@ func (s *BranchService) CreateBranchWithData(branch *wal.Branch) error {
 			},
 		}
 	}
-	_, err := s.insertBranch(branch.ProjectID, branch.Name, entry, func(int64) *wal.Branch {
-		branch.IsDeleted = false
-		if branch.CreatedAt.IsZero() {
-			branch.CreatedAt = time.Now()
-		}
-		return branch
+	if branch.ID == "" {
+		branch.ID = primitive.NewObjectID().Hex()
+	}
+	branch.IsDeleted = false
+	if branch.CreatedAt.IsZero() {
+		branch.CreatedAt = time.Now()
+	}
+	return s.insertBranch(branch, entry, func(lsn int64) bson.M {
+		branch.CreatedLSN = lsn
+		return bson.M{"created_lsn": lsn}
 	})
-	return err
 }
 
 // SetFollows marks a branch as following an external database, or clears the

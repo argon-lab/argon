@@ -59,53 +59,58 @@ func NewProjectService(db *mongo.Database, walService *wal.Service, branchServic
 	return s, nil
 }
 
-// CreateProject creates a new WAL-enabled project
-func (s *ProjectService) CreateProject(name string) (*wal.Project, error) {
+// CreateProject creates a new WAL-enabled project. The project row is
+// inserted first, hidden as an import is until it is complete, so the
+// unique name decides among creates that arrive together before any of them
+// makes a main branch; a create that fails after that removes what it made.
+func (s *ProjectService) CreateProject(name string) (_ *wal.Project, err error) {
 	ctx := context.Background()
 
-	// Check if project already exists
-	existing, _ := s.GetProjectByName(name)
-	if existing != nil {
-		return nil, errors.New("project already exists")
+	if existing, _ := s.GetProjectByName(name); existing != nil {
+		return nil, wal.ErrProjectExists
 	}
 
-	projectID := primitive.NewObjectID().Hex()
+	project := &wal.Project{ID: primitive.NewObjectID().Hex(), Name: name, CreatedAt: time.Now(), UseWAL: true, Importing: true}
+	if _, err = s.collection.InsertOne(ctx, project); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			// Another create, or an import still in progress, has the name.
+			return nil, wal.ErrProjectExists
+		}
+		return nil, fmt.Errorf("failed to create project: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if cleanupErr := s.AbortImport(cleanup, project.ID); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("cleanup incomplete for project %s: %w", name, cleanupErr))
+			}
+		}
+	}()
 
-	// Create WAL entry for project creation
-	entry := &wal.Entry{
-		ProjectID: projectID,
+	if _, err = s.wal.Append(&wal.Entry{
+		ProjectID: project.ID,
 		Operation: wal.OpCreateProject,
-		Metadata: map[string]interface{}{
-			"project_name": name,
-		},
-	}
-
-	_, err := s.wal.Append(entry)
-	if err != nil {
+		Metadata:  map[string]interface{}{"project_name": name},
+	}); err != nil {
 		return nil, fmt.Errorf("failed to append WAL entry: %w", err)
 	}
-
-	// Create main branch
-	mainBranch, err := s.branches.CreateBranch(projectID, "main", "")
+	mainBranch, err := s.branches.CreateBranch(project.ID, "main", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create main branch: %w", err)
 	}
-
-	// Create project record
-	project := &wal.Project{
-		ID:           projectID,
-		Name:         name,
-		MainBranchID: mainBranch.ID,
-		CreatedAt:    time.Now(),
-		UseWAL:       true,
-	}
-
-	// Insert project record
-	_, err = s.collection.InsertOne(ctx, project)
+	// Publish the project with its main branch in one write.
+	result, err := s.collection.UpdateOne(ctx, bson.M{"_id": project.ID, "importing": true},
+		bson.M{"$set": bson.M{"main_branch_id": mainBranch.ID}, "$unset": bson.M{"importing": ""}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create project: %w", err)
 	}
-
+	if result.MatchedCount != 1 {
+		err = fmt.Errorf("failed to create project: its reservation was removed while it was being created")
+		return nil, err
+	}
+	project.MainBranchID = mainBranch.ID
+	project.Importing = false
 	return project, nil
 }
 

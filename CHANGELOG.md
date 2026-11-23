@@ -100,7 +100,9 @@ entry — a synchronization barrier, not in-proxy capture).
   give all but one a raw MongoDB `E11000 duplicate key` error naming the
   metadata database, and each left a `create_branch` record in the WAL for
   a branch that was never made. The record and the branch are now written
-  in one transaction.
+  in one transaction, and a create that loses reserves no LSN. Creating a
+  project had the same race one level up, and left a `main` branch behind
+  for each create that lost; the project name is now reserved first.
   ([#220](https://github.com/argon-lab/argon/issues/220))
 - The name of a deleted branch or discarded sandbox can be used again. It
   failed with the same `E11000` error, because the name index also covered
@@ -110,7 +112,16 @@ entry — a synchronization barrier, not in-proxy capture).
   shares a metadata database: a release up to 2.12.0 that connects
   afterwards creates the old index again, or fails to start with a
   duplicate-key error once a name has been reused. This release drops the
-  old index again when a create runs into it.
+  old index again when a create runs into it. With names reusable:
+  - a sandbox is discarded, and a failed sandbox create is cleaned up, by
+    branch ID, so neither can remove a later sandbox of the same name;
+  - the wire proxy checks a cached `project~branch` target against its
+    branch on every command (one read by ID), so the alias follows a reused
+    name at once instead of sending commands to the discarded sandbox's
+    database for up to five seconds;
+  - a branch made by `argon restore --as`, or from a pin, records its
+    `created_lsn` and keys its `create_branch` record by branch ID, like
+    every other branch, so the record is reclaimed with the branch.
 
 - `argon import` dropped the engine's `index_notes`, so an import whose
   source user lacked `listIndexes` gave no sign that checkouts would get

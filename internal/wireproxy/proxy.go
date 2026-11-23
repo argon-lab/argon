@@ -82,9 +82,10 @@ type ProjectLookup interface {
 	GetProjectIDByName(name string) (string, error)
 }
 
-// BranchLookup resolves a branch by project ID and name.
+// BranchLookup resolves a live branch by project ID and name, or by ID.
 type BranchLookup interface {
 	GetBranch(projectID, name string) (*wal.Branch, error)
+	GetBranchByID(branchID string) (*wal.Branch, error)
 }
 
 // Proxy accepts client connections and forwards them to the upstream
@@ -99,6 +100,8 @@ type Proxy struct {
 }
 
 type cachedTarget struct {
+	// branchID is the branch the alias resolved to; empty for a failure.
+	branchID   string
 	physicalDB string
 	err        error
 	expires    time.Time
@@ -305,18 +308,30 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 	return out, nil, nil
 }
 
-// resolve maps "project~branch" to the physical database, with a short
-// cache so hot paths don't hit metadata every command.
+// resolve maps "project~branch" to the physical database. A short cache
+// saves the lookups by name. A cached target is still checked against its
+// branch, one read by ID, on every use: a branch name can be discarded and
+// used again within the cache's lifetime, and a command sent to the earlier
+// branch's database would be written to a database that no longer exists,
+// which MongoDB creates again without a word.
 func (p *Proxy) resolve(alias string) (string, error) {
 	now := time.Now()
 	p.cacheMu.Lock()
-	if hit, ok := p.cache[alias]; ok && now.Before(hit.expires) {
-		p.cacheMu.Unlock()
-		return hit.physicalDB, hit.err
-	}
+	hit, ok := p.cache[alias]
 	p.cacheMu.Unlock()
+	if ok && now.Before(hit.expires) {
+		if hit.err != nil {
+			return "", hit.err
+		}
+		if branch, err := p.branches.GetBranchByID(hit.branchID); err == nil && branch.IsLive() {
+			if own, err := branch.OwnDatabase(); err == nil && own == hit.physicalDB {
+				return hit.physicalDB, nil
+			}
+		}
+		// The branch is gone or was released: resolve the name afresh.
+	}
 
-	physical, err := p.lookup(alias)
+	branchID, physical, err := p.lookup(alias)
 	ttl := resolveTTL
 	if err != nil {
 		ttl = resolveErrorTTL
@@ -325,7 +340,7 @@ func (p *Proxy) resolve(alias string) (string, error) {
 	if _, replacing := p.cache[alias]; !replacing && len(p.cache) >= maxCachedAliases {
 		p.evictLocked(now)
 	}
-	p.cache[alias] = cachedTarget{physicalDB: physical, err: err, expires: now.Add(ttl)}
+	p.cache[alias] = cachedTarget{branchID: branchID, physicalDB: physical, err: err, expires: now.Add(ttl)}
 	p.cacheMu.Unlock()
 	return physical, err
 }
@@ -345,25 +360,26 @@ func (p *Proxy) evictLocked(now time.Time) {
 	}
 }
 
-func (p *Proxy) lookup(alias string) (string, error) {
+func (p *Proxy) lookup(alias string) (branchID, physicalDB string, err error) {
 	parts := strings.SplitN(alias, aliasSeparator, 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", fmt.Errorf("invalid branch alias %q (want project%sbranch)", alias, aliasSeparator)
+		return "", "", fmt.Errorf("invalid branch alias %q (want project%sbranch)", alias, aliasSeparator)
 	}
 	projectID, err := p.projects.GetProjectIDByName(parts[0])
 	if err != nil {
-		return "", fmt.Errorf("project %q not found", parts[0])
+		return "", "", fmt.Errorf("project %q not found", parts[0])
 	}
 	branch, err := p.branches.GetBranch(projectID, parts[1])
 	if err != nil {
-		return "", fmt.Errorf("branch %q not found in project %q", parts[1], parts[0])
+		return "", "", fmt.Errorf("branch %q not found in project %q", parts[1], parts[0])
 	}
 	if !branch.IsLive() {
-		return "", fmt.Errorf("branch %q is not checked out; run argon checkout first", parts[1])
+		return "", "", fmt.Errorf("branch %q is not checked out; run argon checkout first", parts[1])
 	}
 	// Clients are routed to the database Argon created for the branch, never
 	// to whatever name a branch record happens to hold.
-	return branch.OwnDatabase()
+	physicalDB, err = branch.OwnDatabase()
+	return branch.ID, physicalDB, err
 }
 
 // buildErrorReply synthesizes an OP_MSG {ok: 0} response so drivers get a

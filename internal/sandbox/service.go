@@ -170,7 +170,13 @@ func (s *Service) removeFailed(branch *wal.Branch, userMayExist bool, cause erro
 			return fmt.Errorf("%w; cleanup of sandbox %q failed (%v): retry argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
 		}
 	}
-	if err := s.branches.DeleteBranch(branch.ProjectID, branch.Name); err != nil {
+	// By ID: the name may belong to another sandbox by now, created after
+	// someone discarded this one while it was still being set up.
+	if _, err := s.branches.GetBranchByID(branch.ID); err != nil {
+		// Already removed; nothing of this create is left.
+		return cause
+	}
+	if err := s.branches.DeleteBranchByID(branch.ID); err != nil {
 		return fmt.Errorf("%w; the sandbox branch %q was left behind and could not be removed (%v): remove it with argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
 	}
 	return cause
@@ -224,7 +230,8 @@ func (s *Service) discard(ctx context.Context, branchID string, expiredBefore *t
 			return fmt.Errorf("failed to release the sandbox: %w", err)
 		}
 	}
-	return s.branches.DeleteBranch(branch.ProjectID, branch.Name)
+	// By ID, never by name: another sandbox may have taken the name.
+	return s.branches.DeleteBranchByID(branch.ID)
 }
 
 // SweepReport summarizes one reaping pass.
