@@ -11,8 +11,26 @@ Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
 
+## [2.13.0] - 2026-11-22
+
+Argon can sit behind a hosted control plane: the MCP tools are served over
+HTTP with a bearer token, the console can be mounted under a path, and a
+merge into a checked-out branch can be undone exactly. The engine itself is
+now tested on an Atlas M0, not only Atlas as a source. Creating a branch,
+sandbox or project is safe when two creates of one name arrive together,
+and the name of a deleted branch can be used again.
+
+**Upgrading:** this release replaces the index on branch names in the
+metadata database. Upgrade every process that shares a metadata database
+together; see the second entry under Fixed.
+
 ### Added
 
+- `argon source status` shows a `Waiting:` line (`waiting_since` in JSON
+  output) while a change has been read from the source and is stored only
+  when the source writes again, which on an idle source takes 10 to 20
+  seconds. An unmoved head is no longer mistaken for a stuck follower.
+  ([#205](https://github.com/argon-lab/argon/pull/205))
 - `argon console --base-path /p/acme` (or `ARGON_CONSOLE_BASE_PATH`) serves
   the console behind a reverse proxy that mounts it under a path: the page
   names the path in `<base href>`, and its assets, client routes and API
