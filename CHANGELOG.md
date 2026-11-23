@@ -131,9 +131,12 @@ entry — a synchronization barrier, not in-proxy capture).
     every other branch, so the record is reclaimed with the branch.
 - `argon restore preview` no longer counts a branch's own `create_branch`
   record among the operations a reset would discard.
-- A branch that is gone is reported as "branch not found" wherever it is
-  looked up by ID: a sandbox another discard already removed, for one,
-  answered with the driver's "no documents in result".
+- Discarding a sandbox that another discard, or the sweeper, removed at the
+  same moment answers "branch not found" instead of the driver's "no
+  documents in result".
+- The wire proxy no longer answers an unacknowledged (`w: 0`) write that it
+  refuses. The reply nobody read was taken for the answer to the client's
+  next command, and every answer on that connection after it was one late.
 
 - `argon import` dropped the engine's `index_notes`, so an import whose
   source user lacked `listIndexes` gave no sign that checkouts would get

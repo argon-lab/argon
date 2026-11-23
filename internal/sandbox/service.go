@@ -13,6 +13,7 @@ import (
 	branchwal "github.com/argon-lab/argon/v2/internal/branch/wal"
 	"github.com/argon-lab/argon/v2/internal/checkout"
 	"github.com/argon-lab/argon/v2/internal/wal"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // DefaultTTL bounds sandboxes that don't specify one.
@@ -168,12 +169,14 @@ func (s *Service) removeFailed(branch *wal.Branch, userMayExist bool, cause erro
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		err := s.checkout.DiscardFailedSandbox(ctx, branch.ID, userMayExist)
-		if errors.Is(err, branchwal.ErrBranchNotFound) {
-			// Someone discarded it while it was being set up; nothing of
-			// this create is left, and its name may be another sandbox's.
-			return cause
-		}
 		if err != nil {
+			// If the branch is gone, someone discarded it while it was
+			// being set up, whatever step of the cleanup noticed: nothing
+			// of this create is left, and its name may be another
+			// sandbox's by now.
+			if _, getErr := s.branches.GetBranchByID(branch.ID); errors.Is(getErr, mongo.ErrNoDocuments) {
+				return cause
+			}
 			return fmt.Errorf("%w; cleanup of sandbox %q failed (%v): retry argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
 		}
 	}
@@ -221,12 +224,15 @@ func (s *Service) Discard(ctx context.Context, branchID string) error {
 }
 
 func (s *Service) discard(ctx context.Context, branchID string, expiredBefore *time.Time) error {
+	// Another discard, or the sweeper, may remove the sandbox at any of
+	// these steps; each then answers "branch not found", not the driver's
+	// "no documents".
 	branch, err := s.branches.GetBranchByID(branchID)
 	if err != nil {
-		return fmt.Errorf("sandbox not found: %w", err)
+		return fmt.Errorf("sandbox not found: %w", branchwal.NotFound(err))
 	}
 	if err := s.branches.RequireDeletable(branchID); err != nil {
-		return err
+		return branchwal.NotFound(err)
 	}
 	if branch.IsLive() || branch.SandboxUsername != "" {
 		if expiredBefore != nil && branch.SandboxUsername != "" {
@@ -235,7 +241,7 @@ func (s *Service) discard(ctx context.Context, branchID string, expiredBefore *t
 			err = s.checkout.Discard(ctx, branch.ID)
 		}
 		if err != nil {
-			return fmt.Errorf("failed to release the sandbox: %w", err)
+			return fmt.Errorf("failed to release the sandbox: %w", branchwal.NotFound(err))
 		}
 	}
 	// By ID, never by name: another sandbox may have taken the name.

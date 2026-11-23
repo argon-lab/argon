@@ -37,16 +37,19 @@ var ErrBranchChanged = errors.New("branch changed concurrently; reload and retry
 // ErrBranchNotFound reports that no live branch has the ID or name asked for.
 var ErrBranchNotFound = wal.ErrBranchNotFound
 
-// branchGone is what a lookup returns for a branch that does not exist. It
-// reads "branch not found" and matches ErrBranchNotFound, and also the
-// driver's mongo.ErrNoDocuments, which is what lookups by ID returned as it
-// was and what existing callers test for.
-type branchGone struct{}
-
-func (branchGone) Error() string { return ErrBranchNotFound.Error() }
-func (branchGone) Is(target error) bool {
-	return target == ErrBranchNotFound || target == mongo.ErrNoDocuments
+// notFound gives the driver's "no documents" from a lookup by ID its
+// meaning, a branch that is gone, where the error goes to a person. The
+// lookups themselves return the driver's error as they always have: callers
+// compare against it.
+func notFound(err error) error {
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return ErrBranchNotFound
+	}
+	return err
 }
+
+// NotFound is notFound for the packages that call the lookups.
+func NotFound(err error) error { return notFound(err) }
 
 // ErrBranchExists reports that the project already has a branch of that name.
 var ErrBranchExists = errors.New("branch already exists")
@@ -322,7 +325,7 @@ func (s *BranchService) GetBranch(projectID, name string) (*wal.Branch, error) {
 
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return nil, branchGone{}
+			return nil, ErrBranchNotFound
 		}
 		return nil, err
 	}
@@ -344,9 +347,6 @@ func (s *BranchService) GetBranchByIDContext(ctx context.Context, branchID strin
 		"is_deleted": false,
 	}).Decode(&branch)
 
-	if err == mongo.ErrNoDocuments {
-		return nil, branchGone{}
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -366,9 +366,6 @@ func (s *BranchService) GetBranchByIDAnyContext(ctx context.Context, branchID st
 	var branch wal.Branch
 
 	err := s.collection.FindOne(ctx, bson.M{"_id": branchID}).Decode(&branch)
-	if err == mongo.ErrNoDocuments {
-		return nil, branchGone{}
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -494,9 +491,9 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 func (s *BranchService) DeleteBranchByID(branchID string) error {
 	branch, err := s.GetBranchByID(branchID)
 	if err != nil {
-		return err
+		return notFound(err)
 	}
-	return s.deleteBranch(branch)
+	return notFound(s.deleteBranch(branch))
 }
 
 func (s *BranchService) deleteBranch(branch *wal.Branch) error {

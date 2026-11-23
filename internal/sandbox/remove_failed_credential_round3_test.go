@@ -40,9 +40,9 @@ func newRound3Process(t *testing.T, db *mongo.Database) *round3Process {
 // which that process then starts again under the same name: the case
 // removeFailed's own comment describes ("the name may belong to another
 // sandbox by now, created after someone discarded this one while it was
-// still being set up"). It returns the failed create's error and the ID of
-// the sandbox that now holds the name.
-func round3DiscardedWhileCreating(t *testing.T, credential bool) (createErr error, retryID string, retry *round3Process) {
+// still being set up"). It returns the ID of the sandbox that now holds the
+// name, and the failed create's error.
+func round3DiscardedWhileCreating(t *testing.T, credential bool) (retryID string, retry *round3Process, createErr error) {
 	t.Helper()
 	ctx := context.Background()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
@@ -96,7 +96,7 @@ func round3DiscardedWhileCreating(t *testing.T, credential bool) (createErr erro
 	}
 	require.Error(t, createErr, "the create's branch was discarded while it checked out")
 	require.NotEmpty(t, retryID)
-	return createErr, retryID, retry
+	return retryID, retry, createErr
 }
 
 // Round 3 (6aa0f7a: removeFailed treats ErrBranchNotFound from the delete as
@@ -116,12 +116,12 @@ func round3DiscardedWhileCreating(t *testing.T, credential bool) (createErr erro
 // answers with the cause alone.
 func TestRound3_FailedCredentialCreateWhoseSandboxIsGoneDoesNotSayToDiscardItsName(t *testing.T) {
 	t.Run("control: without a credential", func(t *testing.T) {
-		createErr, _, _ := round3DiscardedWhileCreating(t, false)
+		_, _, createErr := round3DiscardedWhileCreating(t, false)
 		t.Logf("create returned: %v", createErr)
 		assert.NotContains(t, createErr.Error(), "argon sandbox discard -b run-1")
 	})
 	t.Run("with a credential", func(t *testing.T) {
-		createErr, retryID, retry := round3DiscardedWhileCreating(t, true)
+		retryID, retry, createErr := round3DiscardedWhileCreating(t, true)
 		t.Logf("create returned: %v", createErr)
 		holder, err := retry.branches.GetBranch("round3-credential", "run-1")
 		require.NoError(t, err)

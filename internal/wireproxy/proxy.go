@@ -205,6 +205,14 @@ func (p *Proxy) pump(client net.Conn, upstream net.Conn) {
 			return
 		}
 		if errReply != nil {
+			// A client that asked for no reply (an unacknowledged write,
+			// moreToCome) reads none: one written here would be taken for
+			// the answer to its next command, and every answer after it
+			// would be one behind.
+			if unacknowledged(message) {
+				log.Printf("wireproxy: refused an unacknowledged command; the client asked for no reply")
+				continue
+			}
 			if _, err := client.Write(errReply); err != nil {
 				return
 			}
@@ -410,6 +418,15 @@ func (p *Proxy) lookup(alias string) (branchID, physicalDB string, err error) {
 	// to whatever name a branch record happens to hold.
 	physicalDB, err = branch.OwnDatabase()
 	return branch.ID, physicalDB, err
+}
+
+// unacknowledged reports whether an OP_MSG sets moreToCome: the sender
+// expects no reply.
+func unacknowledged(message []byte) bool {
+	const flagMoreToCome = 1 << 1
+	return len(message) >= opMsgMinimum &&
+		binary.LittleEndian.Uint32(message[12:16]) == opMsg &&
+		binary.LittleEndian.Uint32(message[16:20])&flagMoreToCome != 0
 }
 
 // buildErrorReply synthesizes an OP_MSG {ok: 0} response so drivers get a

@@ -184,7 +184,7 @@ func (s *ProjectService) GetProjectByName(name string) (*wal.Project, error) {
 	err := s.collection.FindOne(ctx, bson.M{"name": name, "importing": bson.M{"$ne": true}}).Decode(&project)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return nil, errors.New("project not found")
+			return nil, wal.ErrProjectNotFound
 		}
 		return nil, err
 	}
