@@ -220,8 +220,8 @@ func TestRewriteNeverTrustsClientLengths(t *testing.T) {
 		"checksum only, no section":        {withFlags(24, flagChecksumPresent), false},
 		"document longer than the frame":   {hugeDocument, false},
 		"document length overflows int32":  {negativeDocument, false},
-		"legacy opcode, header only":       {header(16, 2004), false},
-		"compressed opcode, header only":   {header(16, opCompressed), false},
+		"query opcode, header only":        {header(16, opQuery), true},
+		"other legacy opcode, header only": {header(16, 2005), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var forward, reply []byte

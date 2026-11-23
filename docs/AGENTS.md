@@ -303,8 +303,10 @@ that requires authentication.
 
 The proxy rewrites each command's `$db` to the branch's physical database;
 mongod still evaluates every query. Constraints: `directConnection=true`
-required, compression negotiated away, `authSource=admin` with auth,
-unresolvable aliases return a clean command error. Capture stays
+required, compression negotiated away in both legacy and OP_MSG handshakes,
+`authSource=admin` with auth,
+unresolvable aliases return a clean command error. A client that still sends
+compressed frames has its connection closed before any command is forwarded. Capture stays
 asynchronous — run `argon watch` (or use API/MCP sandboxes) behind it.
 
 ## Complete business-data example

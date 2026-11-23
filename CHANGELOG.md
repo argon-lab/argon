@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The wire proxy disables compression in legacy handshakes as well as
+  OP_MSG handshakes. Clients requesting zlib, zstd or snappy keep their
+  writes routed to the branch. Unexpected compressed frames close the
+  connection before reaching MongoDB. ([#228](https://github.com/argon-lab/argon/issues/228))
+
 Planned: GCS chunk-store backend; an opt-in read-your-writes barrier in
 the wire proxy (hold a write's ack until the ingester confirms the WAL
 entry — a synchronization barrier, not in-proxy capture).
