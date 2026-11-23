@@ -102,7 +102,9 @@ entry — a synchronization barrier, not in-proxy capture).
   a branch that was never made. The record and the branch are now written
   in one transaction, and a create that loses reserves no LSN. Creating a
   project had the same race one level up, and left a `main` branch behind
-  for each create that lost; the project name is now reserved first.
+  for each create that lost; a create that loses now removes what it made
+  and answers "project already exists", or says that an unfinished import
+  holds the name and how to remove it.
   ([#220](https://github.com/argon-lab/argon/issues/220))
 - The name of a deleted branch or discarded sandbox can be used again. It
   failed with the same `E11000` error, because the name index also covered
@@ -118,10 +120,16 @@ entry — a synchronization barrier, not in-proxy capture).
   - the wire proxy checks a cached `project~branch` target against its
     branch on every command (one read by ID), so the alias follows a reused
     name at once instead of sending commands to the discarded sandbox's
-    database for up to five seconds;
+    database for up to five seconds; a command already in flight while a
+    discard runs can still do that
+    ([#227](https://github.com/argon-lab/argon/issues/227));
   - a branch made by `argon restore --as`, or from a pin, records its
     `created_lsn` and keys its `create_branch` record by branch ID, like
     every other branch, so the record is reclaimed with the branch.
+- `argon restore preview` counts only writes among the operations a reset
+  would discard. It also counted a branch's own `create_branch` record.
+- Discarding a sandbox that another discard already removed answers "branch
+  not found" (it could answer with the driver's "no documents in result").
 
 - `argon import` dropped the engine's `index_notes`, so an import whose
   source user lacked `listIndexes` gave no sign that checkouts would get

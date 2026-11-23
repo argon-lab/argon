@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // stubLookups resolve one live branch, "shop~main", without a database.
@@ -28,7 +29,7 @@ type stubLookups struct {
 func (s *stubLookups) GetBranchByID(id string) (*wal.Branch, error) {
 	s.byID++
 	if s.gone[id] {
-		return nil, errors.New("branch not found")
+		return nil, mongo.ErrNoDocuments
 	}
 	switch id {
 	case "b1":
@@ -36,7 +37,7 @@ func (s *stubLookups) GetBranchByID(id string) (*wal.Branch, error) {
 	case "b3":
 		return &wal.Branch{ID: "b3", Name: "main", State: wal.BranchStateLive, PhysicalDB: "argon_br_b3"}, nil
 	}
-	return nil, errors.New("branch not found")
+	return nil, mongo.ErrNoDocuments
 }
 
 func (s *stubLookups) GetProjectIDByName(name string) (string, error) {

@@ -34,6 +34,9 @@ type BranchService struct {
 
 var ErrBranchChanged = errors.New("branch changed concurrently; reload and retry")
 
+// ErrBranchNotFound reports that no live branch has the ID or name asked for.
+var ErrBranchNotFound = errors.New("branch not found")
+
 // ErrBranchExists reports that the project already has a branch of that name.
 var ErrBranchExists = errors.New("branch already exists")
 
@@ -185,14 +188,23 @@ func (s *BranchService) insertBranch(branch *wal.Branch, entry func() *wal.Entry
 // and are reported as they are.
 func nameConflict(err error) (conflict, legacy bool) {
 	check := func(code int, message string) {
-		// "... collection: <db>.wal_branches index: <name> dup key: ..."
-		if code != 11000 || !strings.Contains(message, ".wal_branches index: "+legacyNameIndex) {
+		if code != 11000 {
 			return
 		}
-		conflict = true
-		// The live index's name starts with the legacy one's.
-		if !strings.Contains(message, ".wal_branches index: "+liveNameIndex+" ") {
-			legacy = true
+		// "... collection: <db>.wal_branches index: <name> dup key: {...}".
+		// The index is named before the key values, which hold the branch
+		// name and can say anything.
+		head, _, _ := strings.Cut(message, " dup key:")
+		const marker = ".wal_branches index: "
+		at := strings.LastIndex(head, marker)
+		if at < 0 {
+			return
+		}
+		switch strings.TrimSpace(head[at+len(marker):]) {
+		case liveNameIndex:
+			conflict = true
+		case legacyNameIndex:
+			conflict, legacy = true, true
 		}
 	}
 	var write mongo.WriteException
@@ -297,7 +309,7 @@ func (s *BranchService) GetBranch(projectID, name string) (*wal.Branch, error) {
 
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return nil, errors.New("branch not found")
+			return nil, ErrBranchNotFound
 		}
 		return nil, err
 	}
@@ -462,6 +474,9 @@ func (s *BranchService) DeleteBranch(projectID, name string) error {
 // branch, made after this one was deleted.
 func (s *BranchService) DeleteBranchByID(branchID string) error {
 	branch, err := s.GetBranchByID(branchID)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return ErrBranchNotFound
+	}
 	if err != nil {
 		return err
 	}

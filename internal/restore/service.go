@@ -210,7 +210,9 @@ func (s *Service) GetRestorePreview(branchID string, targetLSN int64) (*RestoreP
 	}
 	discardedEntries := candidates[:0]
 	for _, entry := range candidates {
-		if !branch.IsDiscardedForRead(entry.LSN, branch.HeadLSN) {
+		// Only writes count: a branch's own create record, or a merge's
+		// audit record, is not an operation a reset takes away.
+		if entry.IsData() && !branch.IsDiscardedForRead(entry.LSN, branch.HeadLSN) {
 			discardedEntries = append(discardedEntries, entry)
 		}
 	}

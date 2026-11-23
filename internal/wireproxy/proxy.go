@@ -44,6 +44,7 @@ import (
 
 	"github.com/argon-lab/argon/v2/internal/wal"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const (
@@ -311,9 +312,11 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 // resolve maps "project~branch" to the physical database. A short cache
 // saves the lookups by name. A cached target is still checked against its
 // branch, one read by ID, on every use: a branch name can be discarded and
-// used again within the cache's lifetime, and a command sent to the earlier
-// branch's database would be written to a database that no longer exists,
-// which MongoDB creates again without a word.
+// used again within the cache's lifetime, and a command sent on to the
+// earlier branch's database would be written to a database that no longer
+// exists, which MongoDB creates again without a word. A command that is
+// already on its way while a discard drops the database can still do that;
+// the check covers every command that arrives after the branch is gone.
 func (p *Proxy) resolve(alias string) (string, error) {
 	now := time.Now()
 	p.cacheMu.Lock()
@@ -323,10 +326,16 @@ func (p *Proxy) resolve(alias string) (string, error) {
 		if hit.err != nil {
 			return "", hit.err
 		}
-		if branch, err := p.branches.GetBranchByID(hit.branchID); err == nil && branch.IsLive() {
+		branch, err := p.branches.GetBranchByID(hit.branchID)
+		switch {
+		case err == nil && branch.IsLive():
 			if own, err := branch.OwnDatabase(); err == nil && own == hit.physicalDB {
 				return hit.physicalDB, nil
 			}
+		case err != nil && !errors.Is(err, mongo.ErrNoDocuments):
+			// The metadata store did not answer. That is not a missing
+			// branch: fail this command and leave the cache as it is.
+			return "", fmt.Errorf("cannot check branch alias %q against its branch: %w", alias, err)
 		}
 		// The branch is gone or was released: resolve the name afresh.
 	}

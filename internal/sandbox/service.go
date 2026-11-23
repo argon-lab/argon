@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -172,11 +173,12 @@ func (s *Service) removeFailed(branch *wal.Branch, userMayExist bool, cause erro
 	}
 	// By ID: the name may belong to another sandbox by now, created after
 	// someone discarded this one while it was still being set up.
-	if _, err := s.branches.GetBranchByID(branch.ID); err != nil {
+	err := s.branches.DeleteBranchByID(branch.ID)
+	if errors.Is(err, branchwal.ErrBranchNotFound) {
 		// Already removed; nothing of this create is left.
 		return cause
 	}
-	if err := s.branches.DeleteBranchByID(branch.ID); err != nil {
+	if err != nil {
 		return fmt.Errorf("%w; the sandbox branch %q was left behind and could not be removed (%v): remove it with argon sandbox discard -b %s", cause, branch.Name, err, branch.Name)
 	}
 	return cause
