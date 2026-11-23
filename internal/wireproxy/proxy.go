@@ -31,6 +31,7 @@
 package wireproxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -48,6 +49,7 @@ import (
 )
 
 const (
+	opQuery      = 2004
 	opMsg        = 2013
 	opCompressed = 2012
 
@@ -235,15 +237,13 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 	}
 	opCode := int32(binary.LittleEndian.Uint32(message[12:16]))
 	if opCode == opCompressed {
-		// Should not happen — we strip compression from handshakes — but a
-		// compressed alias command would slip through unrewritten, so pass
-		// it along and let the server reject the unknown database loudly.
-		log.Printf("wireproxy: unexpected OP_COMPRESSED message; compression negotiation slipped through")
-		return message, nil, nil
+		return nil, nil, errors.New("compressed wire messages are unsupported; compression must be disabled")
+	}
+	if opCode == opQuery {
+		forward, err := rewriteLegacyHandshake(message)
+		return forward, nil, err
 	}
 	if opCode != opMsg {
-		// OP_QUERY handshakes and other legacy ops pass through: their
-		// database is admin/$cmd, never an alias.
 		return message, nil, nil
 	}
 	if len(message) < opMsgMinimum {
@@ -326,6 +326,60 @@ func (p *Proxy) rewrite(message []byte) (forward []byte, errReply []byte, err er
 	out = append(out, rest...)
 	binary.LittleEndian.PutUint32(out[0:4], uint32(len(out)))
 	return out, nil, nil
+}
+
+// rewriteLegacyHandshake removes compression negotiation from the OP_QUERY
+// handshake used by drivers without a Server API version. Other queries keep
+// their original bytes, including the flags and optional projection.
+func rewriteLegacyHandshake(message []byte) ([]byte, error) {
+	const namespaceStart = headerSize + 4 // query flags
+	if len(message) <= namespaceStart {
+		return nil, fmt.Errorf("%w: OP_QUERY has no namespace", errMalformed)
+	}
+	namespaceEnd := bytes.IndexByte(message[namespaceStart:], 0)
+	if namespaceEnd < 0 {
+		return nil, fmt.Errorf("%w: OP_QUERY namespace is not terminated", errMalformed)
+	}
+	namespaceEnd += namespaceStart
+	if !strings.HasSuffix(string(message[namespaceStart:namespaceEnd]), ".$cmd") {
+		return message, nil
+	}
+	// numberToSkip and numberToReturn follow the namespace's terminator.
+	docStart := namespaceEnd + 1 + 8
+	if len(message) < docStart+5 {
+		return nil, fmt.Errorf("%w: OP_QUERY has no command document", errMalformed)
+	}
+	docLength := int(binary.LittleEndian.Uint32(message[docStart:]))
+	if docLength < 5 || docLength > len(message)-docStart {
+		return nil, fmt.Errorf("%w: OP_QUERY command length is invalid", errMalformed)
+	}
+	var command bson.D
+	if err := wal.UnmarshalDocument(message[docStart:docStart+docLength], &command); err != nil {
+		return nil, fmt.Errorf("%w: %w", errMalformed, err)
+	}
+	if len(command) == 0 || (command[0].Key != "hello" && command[0].Key != "isMaster" && command[0].Key != "ismaster") {
+		return message, nil
+	}
+	changed := false
+	for i := range command {
+		if command[i].Key == "compression" {
+			command[i].Value = bson.A{}
+			changed = true
+		}
+	}
+	if !changed {
+		return message, nil
+	}
+	doc, err := bson.Marshal(command)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errMalformed, err)
+	}
+	out := make([]byte, 0, len(message)-docLength+len(doc))
+	out = append(out, message[:docStart]...)
+	out = append(out, doc...)
+	out = append(out, message[docStart+docLength:]...)
+	binary.LittleEndian.PutUint32(out[:4], uint32(len(out)))
+	return out, nil
 }
 
 // resolve maps "project~branch" to the physical database. A short cache
